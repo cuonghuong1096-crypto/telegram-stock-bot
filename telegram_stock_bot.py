@@ -129,7 +129,7 @@ def fetch_market_tape_data(symbol):
         "prop_net": np.random.randint(-15, 25),
         "put_through_val": round(np.random.uniform(0.0, 180.5), 1),
         "foreign_room_pct": round(np.random.uniform(15.0, 48.5), 1),
-        "domestic_ instytuc_net": np.random.randint(-50, 80),
+        "domestic_institution_net": np.random.randint(-50, 80),
         "basis": round(np.random.uniform(-3.0, 4.0), 1),
         "oi_change": np.random.choice(["Tăng mạnh", "Giảm", "Đi ngang"]),
     }
@@ -347,7 +347,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Tự doanh: {tape['prop_net']} tỷ\n"
     text += f"• 🤝 Giao dịch Thỏa thuận (Put-through): `{tape['put_through_val']} tỷ`\n"
     text += f"• 🌐 Room khối ngoại còn lại: `{tape['foreign_room_pct']}%`\n"
-    text += f"• 🏛️ Tổ chức trong nước (Net): `{tape['domestic_ instytuc_net']} tỷ`\n\n"
+    text += f"• 🏛️ Tổ chức trong nước (Net): `{tape['domestic_institution_net']} tỷ`\n\n"
 
     text += f"📊 3. VOLUME PROFILE:\n"
     text += f"• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n\n"
@@ -538,7 +538,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 5. TELEGRAM HANDLERS (ĐÃ FIX LỖI MARKDOWN)
+# 5. TELEGRAM HANDLERS (ĐÃ BỌC TRY-EXCEPT AN TOÀN)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -563,10 +563,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 *Lưu ý:* Báo cáo kỹ thuật nay đã tích hợp thêm chi tiết Giao dịch thỏa thuận, Room ngoại & Dòng tiền tổ chức."
     )
     
-    await update.message.reply_text(
-        welcome_text,
-        parse_mode="Markdown"
-    )
+    try:
+        await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Lỗi: {str(e)}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -663,7 +663,10 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"🔹 **{symbol}**: Không lấy được dữ liệu giá hiện tại.\n"
 
     text += "\n💡 Dùng lệnh `/reset <MÃ>` để xóa mã khỏi danh mục."
-    await update.message.reply_text(text, parse_mode="Markdown")
+    try:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"Lỗi hiển thị portfolio: {str(e)}")
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
