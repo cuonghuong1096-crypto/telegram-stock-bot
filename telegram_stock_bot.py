@@ -37,7 +37,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# Phân loại nhóm ngành để quét dòng tiền tự động
 SECTOR_MAPPING = {
     "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB"],
     "Bất động sản": ["VHM", "VIC", "VRE", "KDH", "NLG", "DIG", "NVL", "PDR", "DXG", "CEO"],
@@ -153,34 +152,30 @@ def fetch_financial_metrics(symbol):
 
 
 def analyze_sector_cash_flow():
-    """Tự động gọi API quét giá trị giao dịch và RVOL của từng nhóm ngành để xếp hạng dòng tiền"""
     sector_scores = {}
-    
     for sector_name, symbols in SECTOR_MAPPING.items():
         total_rvol = 0
         active_count = 0
-        for sym in symbols[:5]: # Lấy top 5 mã đại diện mỗi ngành để tiết kiệm thời gian gọi API
+        for sym in symbols[:5]:
             df, err = fetch_stock_data(sym, resolution="D", count=25)
             if not err and not df.empty and len(df) >= 20:
                 df = calculate_indicators(df)
-                last_rvol = df.iloc[-1]["RVOL"]
-                if not np.isnan(last_rvol):
-                    total_rvol += last_rvol
-                    active_count += 1
-        
+                if "RVOL" in df.columns:
+                    last_rvol = df.iloc[-1]["RVOL"]
+                    if not np.isnan(last_rvol):
+                        total_rvol += last_rvol
+                        active_count += 1
         avg_rvol = (total_rvol / active_count) if active_count > 0 else 1.0
         sector_scores[sector_name] = avg_rvol
 
-    # Sắp xếp nhóm ngành có dòng tiền/RVOL cao nhất
     sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
     top_sector, top_rvol = sorted_sectors[0]
     second_sector, _ = sorted_sectors[1]
-    
     return top_sector, top_rvol, second_sector
 
 
 def calculate_indicators(df):
-    if df.empty or len(df) < 52:
+    if df.empty or len(df) < 20:
         return df
 
     delta = df["Close"].diff()
@@ -293,7 +288,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP SECTOR API FLOW)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (FIXED RVOL KEY ERROR)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -307,26 +302,29 @@ def analyze_stock(symbol, resolution="D", count=250):
     last = df.iloc[-1]
 
     close = last["Close"]
-    cmf = last["CMF"]
-    mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
-    rvol = last["RVOL"]
-    stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
-    rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
-    ema50 = last["EMA50"]
-    ema200 = last["EMA200"]
-    lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
+    cmf = last["CMF"] if "CMF" in last and not np.isnan(last["CMF"]) else 0.0
+    mfi = last["MFI"] if "MFI" in last and not np.isnan(last["MFI"]) else 50.0
+    
+    # Kiểm tra an toàn cột RVOL tránh lỗi KeyError
+    rvol = last["RVOL"] if "RVOL" in last and not np.isnan(last["RVOL"]) else 1.0
+    
+    stoch_rsi = last["Stoch_RSI"] if "Stoch_RSI" in last and not np.isnan(last["Stoch_RSI"]) else 50.0
+    rsi = last["RSI"] if "RSI" in last and not np.isnan(last["RSI"]) else 50.0
+    ema50 = last["EMA50"] if "EMA50" in last and not np.isnan(last["EMA50"]) else close
+    ema200 = last["EMA200"] if "EMA200" in last and not np.isnan(last["EMA200"]) else close
+    lr_slope = last["LR_Slope"] if "LR_Slope" in last and not np.isnan(last["LR_Slope"]) else 0.0
 
-    macd = last["MACD"] if not np.isnan(last["MACD"]) else 0.0
-    macd_signal = last["MACD_Signal"] if not np.isnan(last["MACD_Signal"]) else 0.0
-    macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
-    bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
-    bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
-    bb_width = last["BB_Width"] if not np.isnan(last["BB_Width"]) else 0.1
+    macd = last["MACD"] if "MACD" in last and not np.isnan(last["MACD"]) else 0.0
+    macd_signal = last["MACD_Signal"] if "MACD_Signal" in last and not np.isnan(last["MACD_Signal"]) else 0.0
+    macd_hist = last["MACD_Hist"] if "MACD_Hist" in last and not np.isnan(last["MACD_Hist"]) else 0.0
+    bb_upper = last["BB_Upper"] if "BB_Upper" in last and not np.isnan(last["BB_Upper"]) else close
+    bb_lower = last["BB_Lower"] if "BB_Lower" in last and not np.isnan(last["BB_Lower"]) else close
+    bb_width = last["BB_Width"] if "BB_Width" in last and not np.isnan(last["BB_Width"]) else 0.1
 
-    tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
-    kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
-    span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
-    span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
+    tenkan = last["Tenkan_sen"] if "Tenkan_sen" in last and not np.isnan(last["Tenkan_sen"]) else close
+    kijun = last["Kijun_sen"] if "Kijun_sen" in last and not np.isnan(last["Kijun_sen"]) else close
+    span_a = last["Senkou_Span_A"] if "Senkou_Span_A" in last and not np.isnan(last["Senkou_Span_A"]) else close
+    span_b = last["Senkou_Span_B"] if "Senkou_Span_B" in last and not np.isnan(last["Senkou_Span_B"]) else close
     cloud_top = max(span_a, span_b)
     cloud_bottom = min(span_a, span_b)
 
@@ -397,7 +395,8 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     confidence_score = min(max(score, 10), 98)
 
-    entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
+    ema20_val = last["EMA20"] if "EMA20" in last and not np.isnan(last["EMA20"]) else close
+    entry_1 = round(max(val, ema20_val, close * 0.98), 2)
     entry_2 = round(close, 2)
     entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
     stop_loss = round(entry_avg * 0.935, 2)
@@ -422,8 +421,6 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
     fa_data = fetch_financial_metrics(symbol)
-    
-    # GỌI HÀM QUÉT DÒNG TIỀN NGÀNH THỰC TẾ QUA API
     top_sector, top_rvol_val, second_sector = analyze_sector_cash_flow()
 
     # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
@@ -472,7 +469,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 9 (MỤC 7 CẬP NHẬT TỪ API DÒNG TIỀN NGÀNH) ---
+    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 9 ---
     text_part2 = ""
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
@@ -491,7 +488,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7: TỰ ĐỘNG QUÉT QUA API DÒNG TIỀN NGÀNH (REAL-TIME SECTOR SCANNER)
     text_part2 += f"🌐 7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (API SCAN):\n"
     text_part2 += f"• Ngành hút tiền mạnh nhất phiên: **{top_sector}** (RVOL trung bình: `{top_rvol_val:.2f}x`)\n"
     text_part2 += f"• Ngành theo sau thu hút dòng tiền: **{second_sector}**\n"
@@ -550,12 +546,14 @@ def run_market_screener():
         if err or df.empty or len(df) < 30:
             continue
         df = calculate_indicators(df)
+        if "RVOL" not in df.columns or "CMF" not in df.columns:
+            continue
         last = df.iloc[-1]
         
         rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
         cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
         close = last["Close"]
-        ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
+        ema50 = last["EMA50"] if "EMA50" in last and not np.isnan(last["EMA50"]) else close
         
         if rvol >= 1.25 and cmf > 0.02 and close > ema50:
             score = (rvol * 2) + (cmf * 5)
@@ -586,16 +584,19 @@ def check_realtime_alerts(application):
             continue
         
         df = calculate_indicators(df)
+        if "RVOL" not in df.columns:
+            continue
+            
         last = df.iloc[-1]
         prev = df.iloc[-2]
         
         close = last["Close"]
         rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
         high_20 = df["High"].iloc[-20:-1].max()
-        rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
-        prev_rsi = prev["RSI"] if not np.isnan(prev["RSI"]) else 50.0
-        macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
-        prev_macd_hist = prev["MACD_Hist"] if not np.isnan(prev["MACD_Hist"]) else 0.0
+        rsi = last["RSI"] if "RSI" in last and not np.isnan(last["RSI"]) else 50.0
+        prev_rsi = prev["RSI"] if "RSI" in prev and not np.isnan(prev["RSI"]) else 50.0
+        macd_hist = last["MACD_Hist"] if "MACD_Hist" in last and not np.isnan(last["MACD_Hist"]) else 0.0
+        prev_macd_hist = prev["MACD_Hist"] if "MACD_Hist" in prev and not np.isnan(prev["MACD_Hist"]) else 0.0
 
         alert_key_breakout = f"{symbol}_breakout_{today_str}"
         alert_key_div_bull = f"{symbol}_div_bull_{today_str}"
@@ -639,6 +640,9 @@ def run_strategy_backtest(symbol):
         return f"⚠️ Không đủ dữ liệu lịch sử để backtest mã {symbol}. Chi tiết: {err}"
     
     df = calculate_indicators(df)
+    if "RVOL" not in df.columns or "CMF" not in df.columns or "EMA50" not in df.columns:
+        return f"⚠️ Mã {symbol} không đủ dữ liệu chỉ báo kỹ thuật để backtest."
+        
     trades, wins, losses, total_return = 0, 0, 0, 0.0
     
     for i in range(30, len(df) - 10):
@@ -1016,7 +1020,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot with Real-Time API Sector Flow Scanner is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot with RVOL Safety Patch is running live!")
 
 
 def run_http_server():
@@ -1044,5 +1048,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System kèm Quét dòng tiền ngành thời gian thực đang hoạt động...")
+    print("🚀 Bot Quant Trading System đã vá lỗi RVOL hoàn chỉnh!")
     app.run_polling(drop_pending_updates=True)
+
