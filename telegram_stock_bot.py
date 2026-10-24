@@ -471,7 +471,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{symbol}|D|250"),
-            InlineKeyboardButton("📅 1W (100 nến)", callback_data=f"{symbol}|W|100"),
         ],
         [
             InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{symbol}|15|200"),
