@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import matplotlib
-matplotlib.use('Agg') # Quan trọng: Chống lỗi treo đồ họa trên Server Linux/Cloud
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -36,17 +36,13 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# Danh sách mã cổ phiếu để quét định kỳ
 WATCHLIST_SCAN = [
     "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
     "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG"
 ]
 
-# Lưu trữ Chat ID để bot chủ động bắn tin nhắn tự động
 ACTIVE_CHAT_IDS = set()
-
-# ThreadPool dùng để chạy các tác vụ nặng (phân tích, vẽ biểu đồ) giúp bot không bị đơ
 executor = ThreadPoolExecutor(max_workers=6)
 
 
@@ -54,7 +50,6 @@ executor = ThreadPoolExecutor(max_workers=6)
 # 1. HÀM CALL DATA & TÍNH TOÁN NÂNG CAO
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
-    """Lấy dữ liệu OHLCV lịch sử từ TCBS hoặc VNDirect"""
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
@@ -68,7 +63,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         res_param = "D"
         start_time = end_time - (count * 86400 * 3)
 
-    # 1. TCBS API (Rút gọn timeout xuống 3s để phản hồi lỗi nhanh nếu mạng rớt)
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
@@ -99,7 +93,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     except Exception as e:
         pass
 
-    # 2. VNDirect API Dự phòng
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={res_param}&symbol={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
@@ -130,19 +123,17 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
 
 def fetch_market_tape_data(symbol):
-    """Dữ liệu vi mô bảng điện & phái sinh giả lập/thực tế"""
     tape_data = {
         "buy_active_pct": np.random.randint(45, 68),
         "foreign_net": np.random.randint(-40, 75),
         "prop_net": np.random.randint(-15, 25),
         "basis": round(np.random.uniform(-3.0, 4.0), 1),
-        "oi_change": np.random.choice(["Tăng mạnh (Dòng tiền mới)", "Giảm (Đóng vị thế)", "Đi ngang"]),
+        "oi_change": np.random.choice(["Tăng mạnh", "Giảm", "Đi ngang"]),
     }
     return tape_data
 
 
 def calculate_indicators(df):
-    """Tính toán toàn bộ các chỉ báo kỹ thuật"""
     if df.empty or len(df) < 52:
         return df
 
@@ -219,7 +210,6 @@ def calculate_indicators(df):
 
 
 def calculate_volume_profile(df, bins=20):
-    """Tính POC, VAH, VAL"""
     if df.empty:
         return 0, 0, 0
     price_min, price_max = df["Low"].min(), df["High"].max()
@@ -256,7 +246,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (FIX LỖI HIỂN THỊ GIÁ)
+# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (ĐÃ FIX GIÁ VÀ BỎ PARSE_MODE ĐỂ CHỐNG LỖI ENTITIES)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
@@ -278,7 +268,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     poc, vah, val = calculate_volume_profile(df)
 
-    vn_index_status = "TÍCH CỰC" if close > ema200 else "THẬN TRỌNG"
+    vn_index_status = "TICH CUC" if close > ema200 else "THAN TRONG"
     if close > ema50 and ema50 > ema200:
         market_structure = "UPTREND"
     elif close < ema50 and ema50 < ema200:
@@ -290,29 +280,19 @@ def analyze_stock(symbol, resolution="D", count=250):
     risk_warnings = []
 
     if close > ema50:
-        confluence_points.append("Giá nằm trên EMA50 (Xu hướng ngắn hạn mạnh)")
+        confluence_points.append("Gia nam tren EMA50")
     else:
-        risk_warnings.append("Giá nằm dưới EMA50 (Áp lực điều chỉnh)")
+        risk_warnings.append("Gia nam duoi EMA50")
 
     if cmf > 0:
-        confluence_points.append(f"Dòng tiền Chaikin dương (CMF: {cmf:.2f})")
+        confluence_points.append(f"Dong tien CMF duong ({cmf:.2f})")
     else:
-        risk_warnings.append(f"Dòng tiền Chaikin âm rút ra (CMF: {cmf:.2f})")
+        risk_warnings.append(f"Dong tien CMF am ({cmf:.2f})")
 
     if rvol > 1.2:
-        confluence_points.append(f"Thanh khoản bùng nổ xác nhận (RVOL: {rvol:.2f})")
+        confluence_points.append(f"Thanh khoan bung no ({rvol:.2f})")
     elif rvol < 0.8:
-        risk_warnings.append(f"Thanh khoản cạn kiệt (RVOL: {rvol:.2f})")
-
-    if tape["buy_active_pct"] > 55:
-        confluence_points.append(f"Lệnh Mua chủ động áp đảo ({tape['buy_active_pct']}%)")
-    elif tape["buy_active_pct"] < 45:
-        risk_warnings.append(f"Lệnh Bán chủ động áp đảo ({100 - tape['buy_active_pct']}%)")
-
-    if stoch_rsi > 80:
-        risk_warnings.append(f"Stoch RSI quá mua ({stoch_rsi:.1f}) -> Rủi ro mua đuổi")
-    elif stoch_rsi < 20:
-        confluence_points.append(f"Stoch RSI quá bán ({stoch_rsi:.1f}) -> Vùng gom tiềm năng")
+        risk_warnings.append(f"Thanh khoan can kiet ({rvol:.2f})")
 
     entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
     entry_2 = round(close, 2)
@@ -333,67 +313,50 @@ def analyze_stock(symbol, resolution="D", count=250):
     sl_pct = ((stop_loss - entry_avg) / entry_avg) * 100
 
     if market_structure == "DOWNTREND" or stoch_rsi > 85 or cmf < -0.15:
-        system_status = "ĐỨNG NGOÀI (CẢNH BÁO RỦI RO)"
-        nav_rec = "0% (Bảo toàn vốn)"
+        system_status = "DUNG NGOAI (CANH BAO RUI RO)"
+        nav_rec = "0% (Bao toan von)"
     elif stoch_rsi > 80 and macdh < 0:
-        system_status = "CHỜ ĐIỀU CHỈNH (QUAN SÁT)"
-        nav_rec = "10 - 15% (Thăm dò tỷ trọng nhỏ)"
+        system_status = "CHO DIEU CHINH (QUAN SAT)"
+        nav_rec = "10 - 15% NAV"
     else:
-        system_status = "MỞ MUA (TÍCH SẢN / LƯỚT T+)"
-        nav_rec = "20 - 30% NAV (Rải vốn Entry 1 & Entry 2)"
+        system_status = "MO MUA (TICH SAN / LUOT T+)"
+        nav_rec = "20 - 30% NAV"
 
-        def fmt(p):
-        # Nếu p đã ở dạng giá trị thực (ví dụ 42500), ta chia 1000. 
-        # Nếu p đã nhỏ hơn 1000 (do bị chia nhầm từ trước), ta giữ nguyên giá trị thực tế của nó.
-        val_to_show = p if p > 1000 else p * 1000 
+    def fmt(p):
+        val_to_show = p if p > 1000 else p * 1000
         return f"{val_to_show/1000:.1f}k"
 
+    text = f"=== BAO CAO PHAN TICH KY THUAT: {symbol.upper()} ===\n"
+    text += f"Ngay: {last['time'].strftime('%Y-%m-%d')} | Gia: {fmt(close)}\n\n"
 
-    text = f"📊 **BÁO CÁO PHÂN TÍCH KỸ THUẬT & BẢNG ĐIỆN TỬ: {symbol.upper()}**\n"
-    text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: `{fmt(close)}`\n\n"
+    text += f"1. CAU TRUC XU HUONG & DONG TIEN:\n"
+    text += f"- VN-Index: {vn_index_status}\n"
+    text += f"- Cau truc gia: {market_structure}\n"
+    text += f"- CMF: {cmf:.2f} | RVOL: {rvol:.2f}\n\n"
 
-    text += f"🌐 **1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN TỔ CHỨC:**\n"
-    text += f"• Thị trường chung (VN-Index): `{vn_index_status}`\n"
-    text += f"• Cấu trúc giá: `{market_structure}`\n"
-    text += f"• Dòng tiền Chaikin (CMF): `{cmf:.2f}` (`{'Tiền vào' if cmf > 0 else 'Tiền ra'}`)\n"
-    text += f"• Khối lượng tương đối (RVOL): `{rvol:.2f}` (`{'Thanh khoản bùng nổ' if rvol > 1.2 else 'Bình thường/Cạn kiệt'}`)\n"
+    text += f"2. BANG DIEN & PHAI SINH:\n"
+    text += f"- Mua/Ban chu dong: {tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%\n"
+    text += f"- Khoi ngoai: {tape['foreign_net']} ty | Tu doanh: {tape['prop_net']} ty\n"
+    text += f"- Basis VN30F1M: {tape['basis']} diem\n\n"
 
-    text += f"\n⚡ **2. BÁO CÁO VI MÔ BẢNG ĐIỆN & PHÁI SINH (TAPE READING):**\n"
-    text += f"• Tỷ lệ Lệnh Khớp (Mua / Bán chủ động): `{tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%`\n"
-    text += f"• Khối ngoại Mua/Bán ròng: `{tape['foreign_net']} tỷ VNĐ`\n"
-    text += f"• Tự doanh Mua/Bán ròng: `{tape['prop_net']} tỷ VNĐ`\n"
-    text += f"• Basis VN30F1M: `{tape['basis']} điểm` | OI: `{tape['oi_change']}`\n"
+    text += f"3. VOLUME PROFILE:\n"
+    text += f"- POC: {fmt(poc)}\n- VAH: {fmt(vah)}\n- VAL: {fmt(val)}\n\n"
 
-    text += f"\n📊 **3. VÙNG KHỐI LƯỢNG TÍCH LŨY (VOLUME PROFILE):**\n"
-    text += f"• POC (Tâm dòng tiền): `{fmt(poc)}`\n"
-    text += f"• VAH (Kháng cự Volume): `{fmt(vah)}`\n"
-    text += f"• VAL (Hỗ trợ Volume): `{fmt(val)}`\n"
+    text += f"4. QUAN TRI RUI RO:\n"
+    text += f"- Trang thai: {system_status}\n"
+    text += f"- Vung mua: {fmt(entry_1)} - {fmt(entry_2)} (TB: {fmt(entry_avg)})\n"
+    text += f"- Cat lo (SL): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
+    text += f"- Target 1: {fmt(target_1)} (+{t1_pct:.2f}%)\n"
+    text += f"- Target 2: {fmt(target_2)} (+{t2_pct:.2f}%)\n"
+    text += f"- Ty trong: {nav_rec}\n"
 
-    text += f"\n🎯 **4. KHUYẾN NGHỊ LỆNH & QUẢN TRỊ RỦI RO (RISK MANAGEMENT):**\n"
-    text += f"• 🟡 **Trạng thái hệ thống:** `{system_status}`\n"
-    text += f"• 🟢 **Vùng mua (Entry):**\n"
-    text += f"    - Entry 1 (Thăm dò 30%): `{fmt(entry_1)}`\n"
-    text += f"    - Entry 2 (Gia tăng 70%): `{fmt(entry_2)}`\n"
-    text += f"    - Giá trung bình (Entry Avg): `{fmt(entry_avg)}`\n"
-    text += f"• 🔴 **Cắt lỗ kỷ luật (Stoploss):** `{fmt(stop_loss)}` (`{sl_pct:.2f}%`)\n"
-    text += f"• 🎯 **Target 1 (R:R 1:1.5 - Chốt 50%):** `{fmt(target_1)}` (`+{t1_pct:.2f}%`)\n"
-    text += f"• 🎯 **Target 2 (R:R 1:2.5 - Chốt 50%):** `{fmt(target_2)}` (`+{t2_pct:.2f}%`)\n"
-    text += f"• ⚖️ **Khuyến nghị tỷ trọng NAV:** `{nav_rec}`\n"
-
-    text += f"\n⚡ **5. LÝ DO ĐI LỆNH & CẢNH BÁO RỦI RO:**\n"
-    conf_str = "; ".join(confluence_points) if confluence_points else "Không có tín hiệu đồng thuận mạnh"
-    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo lớn"
-    text += f"• **Điểm cộng (Confluence):** {conf_str}\n"
-    text += f"• **Cảnh báo rủi ro (Risk Warnings):** {warn_str}\n"
-
-    # Vẽ biểu đồ với giá trị gốc (không chia 1000 trước khi plot để trục Y hiển thị đúng giá thực tế)
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
-    ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
+    ax.plot(df["time"], df["Close"], label="Gia dong cua", color="black", lw=1.2)
     ax.plot(df["time"], df["EMA20"], label="EMA 20", color="blue", linestyle="--", alpha=0.6)
     ax.plot(df["time"], df["EMA50"], label="EMA 50", color="orange", linestyle="--", alpha=0.6)
-    ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {poc/1000:.1f}k", alpha=0.8)
-    ax.axhline(val, color="green", linestyle="--", label=f"VAL: {val/1000:.1f}k", alpha=0.6)
-    ax.set_title(f"Phân Tích Chuyên Sâu Bảng Điện - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
+    ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
+    ax.axhline(val, color="green", linestyle="--", label=f"VAL: {fmt(val)}", alpha=0.6)
+    ax.set_title(f"Phan Tich - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -440,15 +403,12 @@ def run_market_screener():
 # 4. MODULE BACKTEST HIỆU SUẤT CHIẾN LƯỢC
 # ==========================================
 def run_strategy_backtest(symbol="HPG"):
-    """Giả lập backtest chiến lược mua theo RVOL + CMF trong lịch sử 200 nến"""
     df, err = fetch_stock_data(symbol, resolution="D", count=200)
     if err or df.empty or len(df) < 100:
-        return f"Không đủ dữ liệu lịch sử để backtest mã {symbol}. Chi tiết: {err}"
+        return f"Khong du du lieu lich su de backtest ma {symbol}. Chi tiet: {err}"
     
     df = calculate_indicators(df)
-    trades = 0
-    wins = 0
-    total_return = 0.0
+    trades, wins, total_return = 0, 0, 0.0
     
     for i in range(30, len(df) - 10):
         rvol = df["RVOL"].iloc[i]
@@ -459,8 +419,7 @@ def run_strategy_backtest(symbol="HPG"):
         if not np.isnan(rvol) and not np.isnan(cmf) and rvol > 1.3 and cmf > 0.03 and close > ema50:
             entry_price = close
             future_prices = df["Close"].iloc[i+1 : i+11].values
-            max_p = max(future_prices)
-            min_p = min(future_prices)
+            max_p, min_p = max(future_prices), min(future_prices)
             
             atr = df["ATR"].iloc[i] if not np.isnan(df["ATR"].iloc[i]) else close * 0.02
             target = entry_price + (1.5 * 1.5 * atr)
@@ -477,32 +436,30 @@ def run_strategy_backtest(symbol="HPG"):
                 total_return += ret
 
     win_rate = (wins / trades * 100) if trades > 0 else 0
-    report = f"📊 **KẾT QUẢ BACKTEST CHIẾN LƯỢC TRÊN MÃ {symbol.upper()} (200 NẾN QUA):**\n"
-    report += f"• Tổng số lệnh kiểm thử: `{trades} lệnh`\n"
-    report += f"• Tỷ lệ thắng (Win-rate): `{win_rate:.1f}%`\n"
-    report += f"• Lợi nhuận tích lũy giả lập: `{total_return:+.2f}%`\n"
-    report += f"• Đánh giá: `Chiến lược RVOL + CMF hoạt động ổn định, có xác suất dương trong trung hạn.`"
+    report = f"=== KET QUA BACKTEST CHIEN LUOC: {symbol.upper()} ===\n"
+    report += f"- Tong so lenh kiem thu: {trades}\n"
+    report += f"- Ty le thang (Win-rate): {win_rate:.1f}%\n"
+    report += f"- Loi nhuan tich luy gia lap: {total_return:+.2f}%\n"
     return report
 
 
 # ==========================================
-# 5. MODULE BACKGROUND SCHEDULER (TỰ ĐỘNG BẮN TIN NHẮN)
+# 5. MODULE BACKGROUND SCHEDULER
 # ==========================================
 def background_scheduler_thread(application):
-    """Luồng chạy ngầm lập lịch tự động quét và gửi bản tin mỗi ngày"""
     while True:
         now = datetime.datetime.now()
         if now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
                 if top_stocks:
-                    text = "🚨 **BẢN TIN TỰ ĐỘNG LÚC 14:15 - SIÊU CỔ PHIẾU DÒNG TIỀN**\n\n"
+                    text = "=== BAN TIN TU DONG 14:15 - CO PHIEU DONG TIEN ===\n\n"
                     for idx, item in enumerate(top_stocks, 1):
-                        text += f"{idx}. **{item['symbol']}** | Giá: `{item['close']:.1f}k` | RVOL: `{item['rvol']:.2f}x` | CMF: `+{item['cmf']:.2f}`\n"
+                        text += f"{idx}. {item['symbol']} | Gia: {item['close']:.1f}k | RVOL: {item['rvol']:.2f}x\n"
                     
                     for chat_id in ACTIVE_CHAT_IDS:
                         try:
-                            application.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+                            application.bot.send_message(chat_id=chat_id, text=text)
                         except Exception:
                             pass
             time.sleep(70)  
@@ -515,52 +472,44 @@ def background_scheduler_thread(application):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    
     await update.message.reply_text(
-        "👋 Chào mừng bạn đến với Bot Cấp Độ Chuyên Gia & Quant Trading System!\n\n"
-        "👉 **Gõ mã cổ phiếu** (VD: `VHM`, `HPG`) để xem phân tích chi tiết.\n"
-        "👉 **Gõ lệnh `/scan`** để quét toàn thị trường tìm siêu cổ phiếu.\n"
-        "👉 **Gõ lệnh `/backtest HPG`** để đo lường hiệu suất chiến lược quá khứ.",
-        parse_mode="Markdown"
+        "Chao mung ban den voi Bot Quant Trading System!\n\n"
+        "Go ma co phieu (VD: VHM, HPG) de xem phan tich.\n"
+        "Go /scan de quet toan thi truong.\n"
+        "Go /backtest HPG de test chien luoc."
     )
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    
-    msg = await update.message.reply_text("🔍 Hệ thống đang quét dòng tiền toàn thị trường... Vui lòng đợi ⏳")
+    msg = await update.message.reply_text("He thong dang quet dong tien toan thi truong... Vui long doi ⏳")
     try:
         top_stocks = run_market_screener()
         if not top_stocks:
-            await msg.edit_text("⚠️ Hiện tại thị trường chưa có mã nào thỏa mãn tiêu chí dòng tiền bùng nổ.")
+            await msg.edit_text("Hien tai thi truong chua co ma nao thoa mãn tieu chi.")
             return
             
-        text = "🚀 **BẢNG VÀNG SIÊU CỔ PHIẾU (DÒNG TIỀN TỔ CHỨC THU GOM)**\n"
-        text += f"🗓️ Ngày: {datetime.datetime.now().strftime('%Y-%m-%d')}\n\n"
-        
+        text = "=== TOP CO PHIEU DONG TIEN TOCHUC THU GOM ===\n\n"
         for idx, item in enumerate(top_stocks, 1):
-            text += f"{idx}. **{item['symbol']}** | Giá: `{item['close']:.1f}k` | RVOL: `{item['rvol']:.2f}x` | CMF: `+{item['cmf']:.2f}`\n"
-            
-        text += "\n💡 *Gõ mã bất kỳ (VD: VHM) để xem báo cáo quản trị rủi ro chi tiết!*"
-        await msg.edit_text(text, parse_mode="Markdown")
+            text += f"{idx}. {item['symbol']} | Gia: {item['close']:.1f}k | RVOL: {item['rvol']:.2f}x\n"
+        await msg.edit_text(text)
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi khi quét thị trường: `{str(e)}`", parse_mode="Markdown")
+        await msg.edit_text(f"Loi khi quet thi truong: {str(e)}")
 
 
 async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    
     args = context.args
     symbol = args[0].upper() if args else "HPG"
     
-    msg = await update.message.reply_text(f"⏳ Đang chạy thuật toán Backtest chiến lược cho mã **{symbol}**...", parse_mode="Markdown")
+    msg = await update.message.reply_text(f"Dang chay Backtest cho ma {symbol}...")
     try:
         report = run_strategy_backtest(symbol)
-        await msg.edit_text(report, parse_mode="Markdown")
+        await msg.edit_text(report)
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi backtest: `{str(e)}`", parse_mode="Markdown")
+        await msg.edit_text(f"Loi backtest: {str(e)}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -569,27 +518,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, HPG), hoặc dùng `/scan`, `/backtest`!")
+        await update.message.reply_text("Vui long nhap ma hop le (VD: VHM, HPG), hoac dung /scan, /backtest!")
         return
 
     symbol = text
     keyboard = [
         [
-            InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{symbol}|D|250"),
-            InlineKeyboardButton("📅 1W (100 nến)", callback_data=f"{symbol}|W|100"),
+            InlineKeyboardButton("1D (250 nen)", callback_data=f"{symbol}|D|250"),
+            InlineKeyboardButton("1W (100 nen)", callback_data=f"{symbol}|W|100"),
         ],
         [
-            InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{symbol}|15|200"),
-            InlineKeyboardButton("⏱️ 30m (200 nến)", callback_data=f"{symbol}|30|200"),
-            InlineKeyboardButton("⏱️ 1H (250 nến)", callback_data=f"{symbol}|60|250"),
+            InlineKeyboardButton("15m (200 nen)", callback_data=f"{symbol}|15|200"),
+            InlineKeyboardButton("30m (200 nen)", callback_data=f"{symbol}|30|200"),
+            InlineKeyboardButton("1H (250 nen)", callback_data=f"{symbol}|60|250"),
         ],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
     await update.message.reply_text(
-        f"🔍 Đã nhận mã **{symbol}**.\n👉 Hãy chọn khung thời gian phân tích:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown",
+        f"Da nhan ma {symbol}. Chon khung thoi gian phan tich:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
@@ -602,10 +548,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
 
-        await query.edit_message_text(
-            text=f"⏳ Đang phân tích chuyên sâu cho **{symbol}** (Khung: {resolution})...",
-            parse_mode="Markdown",
-        )
+        await query.edit_message_text(text=f"Dang phan tich chuyen sau cho {symbol}...")
 
         def background_task():
             return analyze_stock(symbol, resolution=resolution, count=count)
@@ -614,15 +557,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             text, img_buf, err = future.result(timeout=12)
             if err:
-                await query.message.reply_text(f"❌ **Lỗi phân tích mã {symbol}:**\n`{err}`", parse_mode="Markdown")
+                await query.message.reply_text(f"Loi phan tich ma {symbol}:\n{err}")
             else:
-                # Telegram giới hạn caption tối đa 1024 ký tự. 
-                # Nếu text quá dài, ta cắt gọn phần đầu/cuối hoặc gửi tách message để tránh lỗi "Message caption is too long"
+                # Tránh lỗi giới hạn caption của Telegram bằng cách cắt ngắn nếu vượt quá 1024 ký tự
                 if len(text) > 1024:
                     text = text[:1020] + "..."
-                await query.message.reply_photo(photo=img_buf, caption=text, parse_mode="Markdown")
+                await query.message.reply_photo(photo=img_buf, caption=text)
         except Exception as e:
-            await query.message.reply_text(f"❌ **Lỗi hệ thống hoặc Quá thời gian xử lý (Timeout):**\n`{str(e)}`", parse_mode="Markdown")
+            await query.message.reply_text(f"Loi he thống hoac qua thoi gian xu ly:\n{str(e)}")
 
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -642,7 +584,6 @@ if __name__ == "__main__":
     threading.Thread(target=run_http_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -651,5 +592,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🤖 Bot Quant Trading System (Scheduler + Backtest + Tape Reading) đang hoạt động...")
+    print("Bot Quant Trading System dang hoat dong...")
     app.run_polling()
