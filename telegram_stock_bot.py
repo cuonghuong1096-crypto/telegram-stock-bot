@@ -337,44 +337,65 @@ def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
         return f"{p:.1f}k"
 
+    # Xây dựng báo cáo tối ưu hành động từng phần và phần tổng kết cuối cùng
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
+    # MỤC 1
     text += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
     text += f"• Chỉ số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
     text += f"• Chỉ báo: CMF: {cmf:.2f} | RVOL: {rvol:.2f} | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
     if cmf > 0 and rvol >= 1.0:
-        text += f"👉 **Hành động Mục 1:** Dòng tiền tích cực, ưu tiên giữ vị thế hoặc canh gia tăng tỷ trọng khi rung lắc.\n\n"
+        text += f"👉 **Hành động Mục 1:** Dòng tiền tích cực, ưu tiên nắm giữ.\n\n"
     else:
-        text += f"👉 **Hành động Mục 1:** Dòng tiền yếu/âm, hạn chế mua mới, ưu tiên quản trị và quan sát.\n\n"
+        text += f"👉 **Hành động Mục 1:** Dòng tiền yếu/âm, hạn chế mua đuổi.\n\n"
 
+    # MỤC 2
     text += f"⚡ 2. BẢNG ĐIỆN & ÁP LỰC CUNG CẦU (TAPE READING):\n"
     text += f"• Mua/Bán chủ động: {tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%\n"
-    text += f"👉 **Hành động Mục 2:** Theo dõi sát áp lực mua bán chủ động tại vùng giá hiện tại để quyết định điểm vào.\n\n"
+    if tape['buy_active_pct'] >= 55:
+        text += f"👉 **Hành động Mục 2:** Lực mua chủ động áp đảo, có thể canh nhịp test hỗ trợ.\n\n"
+    else:
+        text += f"👉 **Hành động Mục 2:** Áp lực bán chiếm ưu thế, thận trọng quan sát.\n\n"
 
+    # MỤC 3
     text += f"📊 3. VOLUME PROFILE:\n"
-    text += f"• POC (Giá khớp nhiều nhất): {fmt(poc)}\n"
-    text += f"• VAL (Hỗ trợ dưới): {fmt(val)} | VAH (Kháng cự trên): {fmt(vah)}\n"
-    text += f"👉 **Hành động Mục 3:** Đặt vùng mua gom quanh **{fmt(val)} - {fmt(poc)}** và chuẩn bị chốt lời khi tiệm cận **{fmt(vah)}**.\n\n"
+    text += f"• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
+    text += f"👉 **Hành động Mục 3:** Mua gom quanh vùng **{fmt(val)} - {fmt(poc)}**, chốt lời sát **{fmt(vah)}**.\n\n"
 
+    # MỤC 4
     text += f"🎯 4. QUẢN TRỊ RỦI RO (RISK MANAGEMENT):\n"
     text += f"• Trạng thái hệ thống: {system_status}\n"
     text += f"• Khuyến nghị NAV phân bổ: {nav_rec}\n"
     if is_standing_aside:
-        text += f"• 🛡️ *Watchzone an toàn:* {fmt(entry_1)} - {fmt(entry_2)}\n"
-        text += f"👉 **Hành động Mục 4:** Đứng ngoài quan sát, chưa giải ngân cho đến khi cấu trúc giá cải thiện.\n\n"
+        text += f"• 🛡️ *Watchzone:* {fmt(entry_1)} - {fmt(entry_2)}\n"
+        text += f"👉 **Hành động Mục 4:** Đứng ngoài bảo toàn vốn.\n\n"
     else:
-        text += f"• Vùng mua khuyến nghị: {fmt(entry_1)} - {fmt(entry_2)} (TB: {fmt(entry_avg)})\n"
-        text += f"• Cắt lỗ (SL mẫu): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
-        text += f"• Target 1: {fmt(target_1)} (+{t1_pct:.2f}%)\n"
-        text += f"👉 **Hành động Mục 4:** Thực hiện giải ngân theo phân bổ NAV, tuân thủ tuyệt đối điểm cắt lỗ `(SL: {fmt(stop_loss)})`.\n\n"
+        text += f"• Vùng mua: {fmt(entry_1)} - {fmt(entry_2)} | SL: {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
+        text += f"👉 **Hành động Mục 4:** Giải ngân theo NAV, tuân thủ tuyệt đối điểm cắt lỗ.\n\n"
 
+    # MỤC 5
     text += f"⚡ 5. ĐIỂM CỘNG & CẢNH BÁO TỔNG HỢP:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Không có"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có"
     text += f"• Điểm cộng: {conf_str}\n"
     text += f"• Cảnh báo: {warn_str}\n"
-    text += f"👉 **Hành động Tổng kết:** Cân đối tỷ trọng danh mục cá nhân dựa trên các tín hiệu trên trước khi đưa ra quyết định giao dịch cuối cùng."
+    text += f"👉 **Hành động Mục 5:** Cân nhắc kỹ các điểm cộng/trừ trước khi xuống tiền.\n\n"
+
+    # MỤC 6: TỔNG KẾT & KHUYẾN NGHỊ CUỐI CÙNG (CÓ ICON RÕ RÀNG)
+    if is_standing_aside:
+        final_icon = "🔴 **ĐỨNG NGOÀI (BẢO TOÀN VỐN)**"
+        final_action = "Thị trường/cổ phiếu rủi ro cao, không nên giải ngân mới lúc này."
+    elif cmf > 0 and rvol >= 1.0 and not is_standing_aside:
+        final_icon = "🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG**"
+        final_action = f"Dòng tiền và cấu trúc ủng hộ, canh gom giá đỏ quanh `{fmt(val)} - {fmt(poc)}`."
+    else:
+        final_icon = "🟡 **QUAN SÁT / CHỜ CHIẾT KHẤU**"
+        final_action = "Tín hiệu chưa thực sự đồng thuận, kiên nhẫn chờ vùng giá an toàn hơn."
+
+    text += f"🏁 **6. TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG:**\n"
+    text += f"• Khuyến nghị: {final_icon}\n"
+    text += f"• Hành động quyết định: {final_action}"
 
     keyboard = [
         [
@@ -568,7 +589,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
         "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
         "------------------------------------\n"
-        "💡 *Lưu ý:* Hệ thống hoạt động ổn định với cơ chế chống treo tiến trình."
+        "💡 *Lưu ý:* Hệ thống báo cáo kỹ thuật nay đã tích hợp phần Tổng kết chiến lược cuối cùng với icon quyết định trực quan."
     )
     
     try:
@@ -836,5 +857,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đang hoạt động mượt mà với cơ chế chống treo...")
+    print("🚀 Bot Quant Trading System đang hoạt động mượt mà với phần Tổng kết chiến lược cuối cùng...")
     app.run_polling(drop_pending_updates=True)
