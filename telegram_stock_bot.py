@@ -124,7 +124,6 @@ def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
 
-    # --- 1. RSI & Stochastic RSI ---
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -135,14 +134,12 @@ def calculate_indicators(df):
     rsi_max = df["RSI"].rolling(14).max()
     df["Stoch_RSI"] = ((df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)) * 100
 
-    # --- 2. MACD ---
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-    # --- 3. CMF & MFI (Dòng tiền) ---
     mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
     df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
 
@@ -153,7 +150,6 @@ def calculate_indicators(df):
     mfi_ratio = positive_flow / (negative_flow + 1e-9)
     df["MFI"] = 100 - (100 / (1 + mfi_ratio))
 
-    # --- 4. RVOL & OBV ---
     df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
     df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
 
@@ -168,12 +164,10 @@ def calculate_indicators(df):
     df["OBV"] = obv
     df["OBV_EMA"] = df["OBV"].ewm(span=20, adjust=False).mean()
 
-    # --- 5. EMA & VWAP ---
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-    # --- 6. Linear Regression Slope (Độ dốc hồi quy tuyến tính 14 phiên) ---
     def linreg_slope(ser):
         y = ser.values
         x = np.arange(len(y))
@@ -181,7 +175,6 @@ def calculate_indicators(df):
         return slope
     df["LR_Slope"] = df["Close"].rolling(14).apply(linreg_slope, raw=False)
 
-    # --- 7. ICHIMOKU CLOUD ---
     nine_high = df["High"].rolling(window=9).max()
     nine_low = df["Low"].rolling(window=9).min()
     df["Tenkan_sen"] = (nine_high + nine_low) / 2
@@ -255,7 +248,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     ema200 = last["EMA200"]
     lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
 
-    # Ichimoku data
     tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
     kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
     span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
@@ -329,7 +321,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
         return f"{p:.1f}k"
 
-    # --- XÂY DỰNG BÁO CÁO CHUYÊN GIA (MỖI MỤC ĐỀU CÓ THÔNG SỐ & KẾT LUẬN HÀNH ĐỘNG) ---
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -337,41 +328,41 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
     text += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
     text += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
-    text += f"• Đồ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
+    text += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
+    text += f"👉 **Kết luận & Hành động:** "
     if cmf > 0 and mfi > 50 and lr_slope >= 0:
-        text += f"👉 **Kết luận & Hành động:** Dòng tiền và động lượng tăng trưởng tốt, ưu tiên nắm giữ hoặc canh gia tăng tỷ trọng khi rung lắc.\n\n"
+        text += f"Dòng tiền và động lượng tăng trưởng tốt, ưu tiên nắm giữ hoặc canh gia tăng tỷ trọng khi rung lắc.\n\n"
     else:
-        text += f"👉 **Kết luận & Hành động:** Dòng tiền và độ dốc xu hướng đang suy yếu, hạn chế mua đuổi, ưu tiên quản trị rủi ro.\n\n"
+        text += f"Dòng tiền và độ dốc xu hướng đang suy yếu, hạn chế mua đuổi, ưu tiên quản trị rủi ro.\n\n"
 
     # MỤC 2
     text += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
     text += f"• Thông số mây: {ichi_status}\n"
     text += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
     text += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
+    text += f"👉 **Kết luận & Hành động:** "
     if close > cloud_top and tenkan > kijun:
-        text += f"👉 **Kết luận & Hành động:** Trạng thái kỹ thuật mạnh mẽ trên mây Kumo, canh mua chủ động khi giá test đường Kijun-sen.\n\n"
+        text += f"Trạng thái kỹ thuật mạnh mẽ trên mây Kumo, canh mua chủ động khi giá test đường Kijun-sen (`{fmt(kijun)}`).\n\n"
     elif close < cloud_bottom:
-        text += f"👉 **Kết luận & Hành động:** Giá nằm hoàn toàn dưới mây Kumo, cấu trúc xu hướng giảm dài hạn, tuyệt đối không bắt đáy.\n\n"
+        text += f"👉 Giá nằm hoàn toàn dưới mây Kumo, cấu trúc xu hướng giảm dài hạn, tuyệt đối không bắt đáy.\n\n"
     else:
-        text += f"👉 **Kết luận & Hành động:** Giá đi ngang trong mây, tín hiệu nhiễu cao, kiên nhẫn chờ giá bứt phá hẳn khỏi mây.\n\n"
+        text += f"Giá đi ngang trong mây, tín hiệu nhiễu cao, kiên nhẫn chờ giá bứt phá hẳn khỏi mây (`{fmt(cloud_top)}`).\n\n"
 
     # MỤC 3
-    text += f"📊 3. VOLUME PROFILE & CẤN ĐỐI KHỐI LƯỢNG:\n"
+    text += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text += f"👉 **Kết luận & Hành động:** Xây dựng vị thế gom hàng quanh vùng hỗ trợ **{fmt(val)} - {fmt(poc)}** và hiện thực hóa lợi nhuận khi tiệm cận **{fmt(vah)}**.\n\n"
+    text += f"👉 **Kết luận & Hành động:** Xây dựng vị thế gom hàng quanh vùng hỗ trợ **{fmt(val)} - {fmt(poc)}** và hiện thực hóa lợi nhuận khi tiệm cận kháng cự **{fmt(vah)}**.\n\n"
 
     # MỤC 4
     text += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text += f"• Thông số hệ thống: {system_status}\n"
     text += f"• Khuyến nghị NAV: {nav_rec}\n"
+    text += f"👉 **Kết luận & Hành động:** "
     if is_standing_aside:
-        text += f"• Vùng quan sát an toàn (Watchzone): {fmt(entry_1)} - {fmt(entry_2)}\n"
-        text += f"👉 **Kết luận & Hành động:** Đứng ngoài quan sát, bảo toàn 100% tiền mặt cho đến khi cấu trúc giá chuyển biến tích cực.\n\n"
+        text += f"Đứng ngoài quan sát, bảo toàn 100% tiền mặt cho đến khi cấu trúc giá chuyển biến tích cực.\n\n"
     else:
-        text += f"• Vùng mua giải ngân: {fmt(entry_1)} - {fmt(entry_2)} (Trung bình: {fmt(entry_avg)})\n"
-        text += f"• Điểm cắt lỗ (Stoploss): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
-        text += f"👉 **Kết luận & Hành động:** Giải ngân theo đúng tỷ trọng NAV khuyến nghị và tuân thủ tuyệt đối kỷ luật cắt lỗ tại mốc `{fmt(stop_loss)}`.\n\n"
+        text += f"Giải ngân vùng `{fmt(entry_1)} - {fmt(entry_2)}` và tuân thủ kỷ luật cắt lỗ tại mốc `{fmt(stop_loss)}`.\n\n"
 
     # MỤC 5
     text += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
@@ -381,7 +372,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Cảnh báo rủi ro: {warn_str}\n"
     text += f"👉 **Kết luận & Hành động:** Cân đối kỹ lưỡng các yếu tố ủng hộ và rủi ro trước khi thực thi lệnh mua/bán.\n\n"
 
-    # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG (DỰA TRÊN TẤT CẢ DỮ LIỆU)
+    # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG
     if is_standing_aside:
         final_icon = "🔴 **ĐỨNG NGOÀI (BẢO TOÀN VỐN)**"
         final_action = "Tín hiệu kỹ thuật và Ichimoku tiêu cực, rủi ro cao, không nên giải ngân mới."
@@ -521,7 +512,7 @@ def run_strategy_backtest(symbol):
 
 
 # ==========================================
-# 4. BACKGROUND SCHEDULER & GIÁM SÁT VI PHẠM SL
+# 4. BACKGROUND SCHEDULER & GIÁM SÁT VI PHẠM SL (CÓ SO SÁNH GIÁ CHỐT LỜI / CẮT LỖ CỤ THỂ)
 # ==========================================
 def background_scheduler_thread(application):
     while True:
@@ -530,18 +521,40 @@ def background_scheduler_thread(application):
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
-                    df, err = fetch_stock_data(symbol, resolution="D", count=5)
+                    df, err = fetch_stock_data(symbol, resolution="D", count=10)
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         sl_price = pos["sl"]
+                        entry_price = pos["entry"]
+                        
+                        # Tính toán vùng chốt lời linh hoạt theo Volume Profile (VAH / POC)
+                        poc, vah, val = calculate_volume_profile(df)
+                        target_take_profit = max(entry_price * 1.05, vah) # Mục tiêu chốt lời tối thiểu 5% hoặc vùng VAH kháng cự trên
+
+                        # Cảnh báo vi phạm Cắt Lỗ (Stoploss)
                         if current_price <= sl_price:
                             alert_text = (
-                                f"🚨 **CẢNH BÁO VI PHẠM CẮT LỖ (STOPLOSS)!** 🚨\n\n"
+                                f"🚨 **CẢNH BÁO KHẨN CẤP: THỦNG MỨC CẮT LỖ (STOPLOSS)!** 🚨\n\n"
                                 f"• Mã cổ phiếu: **{symbol}**\n"
-                                f"• Giá mua của bạn: `{pos['entry']}`\n"
-                                f"• Ngưỡng cắt lỗ cài đặt: `{sl_price}`\n"
-                                f"• **Giá hiện tại:** `{current_price}` 📉\n\n"
-                                f"⚠️ Đã chạm hoặc thủng điểm cắt lỗ! Hãy cân nhắc xử lý ngay để bảo toàn vốn."
+                                f"• Giá vốn của bạn: `{entry_price}k`\n"
+                                f"• **Ngưỡng cắt lỗ bắt buộc (SL):** `{sl_price}k`\n"
+                                f"• **Giá hiện tại:** `{current_price:.1f}k` 📉\n\n"
+                                f"👉 **Hành động ngay:** Giá thị trường đã chạm hoặc thủng mốc cắt lỗ `{sl_price}k`. Hãy BÁN HẠ TỶ TRỌNG hoặc CẮT LỖ NGAY LẬP TỨC để bảo toàn vốn!"
+                            )
+                            try:
+                                application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
+                            except Exception:
+                                pass
+
+                        # Cảnh báo đạt mục tiêu Chốt Lời (Take Profit)
+                        elif current_price >= target_take_profit:
+                            alert_text = (
+                                f"🎯 **CẢNH BÁO TÍN HIỆU: ĐẠT MỤC TIÊU CHỐT LỜI!** 🎯\n\n"
+                                f"• Mã cổ phiếu: **{symbol}**\n"
+                                f"• Giá vốn của bạn: `{entry_price}k`\n"
+                                f"• **Mức giá chốt lời khuyến nghị (Target):** `≥ {target_take_profit:.1f}k`\n"
+                                f"• **Giá hiện tại:** `{current_price:.1f}k` 🚀\n\n"
+                                f"👉 **Hành động ngay:** Vị thế đang có lãi tốt và chạm vùng kháng cự chốt lời. Hãy canh BÁN CHỐT LỜI 50% đến 100% tỷ trọng để hiện thực hóa thành quả!"
                             )
                             try:
                                 application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
@@ -566,7 +579,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 5. TELEGRAM HANDLERS
+# 5. TELEGRAM HANDLERS (PORTFOLIO CHI TIẾT CHỐT LỜI / CẮT LỖ)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -579,7 +592,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, VIC)*\n\n"
         "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
         "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
-        "3️⃣ **Xem danh mục đầu tư & Phương án xử lý Lợi nhuận / SL:**\n"
+        "3️⃣ **Xem danh mục đầu tư & Mức giá cụ thể Chốt lời / Cắt lỗ:**\n"
         "`/portfolio` \n\n"
         "4️⃣ **Quét dòng tiền bùng nổ toàn thị trường:**\n"
         "`/scan` \n\n"
@@ -588,7 +601,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
         "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
         "------------------------------------\n"
-        "💡 *Lưu ý:* Hệ thống phân tích chuyên sâu tích hợp Ichimoku, MFI, Linear Regression Slope và tổng kết chiến lược cuối cùng đã sẵn sàng."
+        "💡 *Lưu ý:* Lệnh `/portfolio` hiện đã tự động so sánh giá để chỉ rõ mức giá chính xác cần chốt lời và cắt lỗ."
     )
     
     try:
@@ -636,7 +649,7 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- Khối lượng: {qty} cổ phiếu\n"
         f"- Giá mua: {entry_price}\n"
         f"- Cắt lỗ (SL): {sl_price}\n\n"
-        f"Bot sẽ tự động giám sát và cảnh báo ngay lập tức nếu giá thị trường thủng mức SL này!"
+        f"Bot sẽ tự động giám sát và cảnh báo ngay lập tức nếu giá thị trường chạm mốc chốt lời hoặc thủng mức SL!"
     )
 
 
@@ -650,9 +663,9 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & CHIẾN LƯỢC XỬ LÝ (MỤC 1 & 2)**\n\n"
+    text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & CHIẾN LƯỢC QUẢN TRỊ VỊ THẾ**\n\n"
     for symbol, pos in USER_PORTFOLIOS[chat_id].items():
-        df, err = fetch_stock_data(symbol, resolution="D", count=5)
+        df, err = fetch_stock_data(symbol, resolution="D", count=20)
         if not err and not df.empty:
             current_price = df.iloc[-1]["Close"]
             qty = pos.get("qty", 1000)
@@ -663,28 +676,33 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pnl_vnd = (current_price - entry) * qty
             status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
             
+            # Tính toán các mốc giá chốt lời theo Volume Profile
+            poc, vah, val = calculate_volume_profile(df)
+            target_1 = max(entry * 1.05, vah) # Mức chốt lời mục tiêu 1
+            target_2 = target_1 * 1.08        # Mức chốt lời mục tiêu 2 (mở rộng)
+
             text += f"🔹 **Mã Cổ Phiếu: {symbol}** ({qty} cổ)\n"
-            text += f"  • Giá vốn: `{entry}` | Giá hiện tại: `{current_price:.1f}k`\n"
-            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n"
-            text += f"  • Cắt lỗ hiện tại (SL): `{sl}`\n\n"
+            text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.1f}k`\n"
+            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n\n"
             
-            text += f"🎯 **CHIẾN LƯỢC TỐI ƯU HÓA LỢI NHUẬN:**\n"
-            if current_price >= entry * 1.03:
-                target_1_qty = int(qty * 0.5) 
-                text += f"  ✅ **[Mục 1 - Chốt lời từng phần]:** Giá đã đạt vùng mục tiêu ngắn hạn.\n"
-                text += f"     👉 *Hành động:* Bán chốt lời trước **{target_1_qty} cổ** quanh vùng giá mục tiêu.\n"
-            else:
-                text += f"  ⏳ **[Mục 1 - Chờ giá mục tiêu]:** Giá hiện tại chưa chạm cản trên.\n"
-                text += f"     👉 *Hành động:* Giữ nguyên tỷ trọng, sẵn sàng bán 50% khi tiến sát vùng cản.\n"
-                
-            text += f"  🛡️ **[Mục 2 - Quản trị rủi ro & Trailing Stop]:**\n"
-            if entry <= current_price:
-                text += f"     👉 *Khuyến nghị:* Nâng mức Stoploss lên vùng hòa vốn hoặc chặn lãi, bảo vệ thành quả vị thế.\n"
-            else:
-                text += f"     👉 *Khuyến nghị:* Giữ nguyên mức SL cố định (`{sl}`) để kiểm soát rủi ro tuyệt đối.\n"
-                
+            text += f"🎯 **CHIẾN LƯỢC CHỐT LỜI & CẮT LỖ CỤ THỂ:**\n"
+            
+            # 1. PHẦN CẮT LỖ BẮT BUỘC
             if current_price <= sl:
-                text += f"  🚨 *CẢNH BÁO KHẨN CẤP:* **Đã chạm hoặc thủng mức Cắt Lỗ! Cần xử lý ngay!**\n"
+                text += f"  🔴 **CẮT LỖ KHẨN CẤP:** Giá hiện tại (`{current_price:.1f}k`) đã **THỦNG HOẶC CHẠM** mức cắt lỗ cài đặt là **`{sl}k`**. \n"
+                text += f"     👉 **Hành động bắt buộc:** BÁN CẮT LỖ NGAY LẬP TỨC để bảo toàn vốn!\n"
+            else:
+                sl_distance = ((current_price - sl) / current_price) * 100
+                text += f"  🛡️ **Mức Cắt Lỗ (SL):** Bắt buộc bán hạ tỷ trọng/cắt lỗ nếu giá giảm chạm mốc **`{sl}k`** (cách giá hiện tại `{sl_distance:.1f}%`).\n"
+
+            # 2. PHẦN CHỐT LỜI TỪNG PHẦN
+            if current_price >= target_1:
+                text += f"  ✅ **CHỐT LỜI NGAY:** Giá hiện tại (`{current_price:.1f}k`) đã vượt mốc mục tiêu 1 (**`{target_1:.1f}k`**).\n"
+                text += f"     👉 **Hành động bắt buộc:** Chốt lời trước **50% tỷ trọng** (`{int(qty*0.5)} cổ`), phần còn lại nâng SL lên giá vốn (`{entry}k`) và chờ bán tại **`{target_2:.1f}k`**.\n"
+            else:
+                tp_distance = ((target_1 - current_price) / current_price) * 100
+                text += f"  ⏳ **Mục tiêu Chốt Lời 1:** Canh bán chốt lời 50% khi giá tăng chạm mốc **`{target_1:.1f}k`** (cách giá hiện tại `+{tp_distance:.1f}%`).\n"
+                text += f"  🚀 **Mục tiêu Chốt Lời 2:** Canh chốt nốt phần còn lại khi giá vươn tới mốc **`{target_2:.1f}k`**.\n"
                 
             text += "------------------------------------\n"
         else:
@@ -856,5 +874,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System (Phiên bản Chuyên Gia) đang hoạt động mượt mà...")
+    print("🚀 Bot Quant Trading System (Phiên bản Quản Trị Vị Thế Cụ Thể) đang hoạt động mượt mà...")
     app.run_polling(drop_pending_updates=True)
