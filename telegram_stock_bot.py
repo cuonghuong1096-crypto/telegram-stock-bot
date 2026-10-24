@@ -123,7 +123,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
 
 def fetch_financial_metrics(symbol):
-    """Trích xuất nhanh các chỉ số định giá P/E, P/B, ROE, Tăng trưởng LN từ TCBS API"""
     symbol = symbol.upper().strip()
     url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/second-tc-price?tickers={symbol}"
     try:
@@ -227,13 +226,15 @@ def calculate_indicators(df):
 
 
 def calculate_volume_profile(df, bins=20):
+    """Tính Volume Profile trên 60 nến gần nhất để phản ánh đúng thực tế sóng giá gần nhất"""
     if df.empty:
         return 0, 0, 0
-    price_min, price_max = df["Low"].min(), df["High"].max()
+    sub_df = df.tail(60)
+    price_min, price_max = sub_df["Low"].min(), sub_df["High"].max()
     if price_min == price_max:
         return price_min, price_min, price_min
 
-    hist, bin_edges = np.histogram(df["Close"], bins=bins, weights=df["Volume"])
+    hist, bin_edges = np.histogram(sub_df["Close"], bins=bins, weights=sub_df["Volume"])
     poc_idx = np.argmax(hist)
     poc = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
 
@@ -261,7 +262,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (9 MỤC - TÁCH 2 TIN NHẮN)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (SỬA LỖI MỤC 3)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -419,11 +420,17 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
-    # MỤC 3
+    # MỤC 3 (ĐÃ SỬA LỖI LOGIC GIÁ VỚI VÙNG VOLUME PROFILE)
     text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
-    text_part1 += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text_part1 += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n"
+    text_part1 += f"• Vùng giá giao dịch: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** "
+    if close < val:
+        text_part1 += f"Giá ({fmt(close)}) giảm sâu lọt dưới hẳn vùng Volume Profile ({fmt(val)} - {fmt(vah)}). Vùng **{fmt(val)} - {fmt(poc)}** hiện tại trở thành **KHÁNG CỰ CỰC MẠNH** trên cao (vùng kẹp hàng lớn), tuyệt đối không vội bắt đáy.\n\n"
+    elif close > vah:
+        text_part1 += f"Giá ({fmt(close)}) bứt phá vượt qua vùng VAH ({fmt(vah)}). Vùng **{fmt(poc)} - {fmt(vah)}** trở thành **HỖ TRỢ NỀN VỮNG CHẮC** cho nhịp tăng tiếp theo.\n\n"
+    else:
+        text_part1 += f"Giá ({fmt(close)}) đang vận động trong vùng Volume Profile. Lực cầu đỡ giá ổn định tại dải **{fmt(val)} - {fmt(poc)}**, chốt lời khi tiến sát cản trên **{fmt(vah)}**.\n\n"
 
     # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
@@ -445,7 +452,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG
+    # MỤC 6
     text_part2 += f"📈 6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:\n"
     text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
@@ -456,13 +463,13 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN
+    # MỤC 7
     text_part2 += f"🌐 7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:\n"
     text_part2 += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
     text_part2 += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
 
-    # MỤC 8: ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN
+    # MỤC 8
     text_part2 += f"🏢 8. ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN (FA):\n"
     text_part2 += f"• Định giá: P/E = `{fa_data['pe']:.1f}x` | P/B = `{fa_data['pb']:.1f}x` (So sánh trung bình ngành)\n"
     text_part2 += f"• Hiệu quả & Tăng trưởng: ROE = `{fa_data['roe']:.1f}%` | Tăng trưởng EPS năm = `{fa_data['eps_growth']:+.1f}%`\n"
@@ -472,7 +479,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Định giá ở mức trung bình, cẩn trọng kiểm soát tỷ trọng ngắn hạn.\n\n"
 
-    # MỤC 9: TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP
+    # MỤC 9
     text_part2 += f"🏁 9. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng quyết định: {final_action}"
@@ -725,7 +732,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 4. TELEGRAM HANDLERS (BẮT LỖI HIỂN THỊ MÀN HÌNH & TÁCH 2 TIN NHẮN)
+# 4. TELEGRAM HANDLERS
 # ==========================================
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     err_msg = f"❌ **HỆ THỐNG PHÁT HIỆN LỖI RUNTIME:**\n\n`{context.error}`"
@@ -970,11 +977,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if err:
                     await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
                 else:
-                    # Gửi Biểu đồ
                     await query.message.reply_photo(photo=img_buf)
-                    # Gửi Tin nhắn 1: Mục 1 -> Mục 4
                     await query.message.reply_text(text_part1, parse_mode="Markdown")
-                    # Gửi Tin nhắn 2: Mục 5 -> Mục 9 kèm các Nút trợ giúp
                     await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
             except Exception as e:
                 await query.message.reply_text(f"❌ Lỗi hệ thống trong quá trình xử lý mã {symbol}:\n{str(e)}")
@@ -986,7 +990,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot Complete 9-Section Edition is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot Corrected Volume Profile Edition is running live!")
 
 
 def run_http_server():
@@ -1014,5 +1018,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System 9 Mục hoàn chỉnh đang hoạt động...")
+    print("🚀 Bot Quant Trading System đã hoàn thiện chuẩn xác...")
     app.run_polling(drop_pending_updates=True)
