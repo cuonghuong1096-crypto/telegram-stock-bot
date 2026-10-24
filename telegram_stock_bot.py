@@ -1,5 +1,6 @@
 import datetime
 import io
+import os
 import logging
 import os
 import matplotlib.pyplot as plt
@@ -18,8 +19,10 @@ from telegram.ext import (
 # ==========================================
 # CẤU HÌNH TOKEN & API KEY
 # ==========================================
-TELEGRAM_BOT_TOKEN = "8631778119:AAGC4SRXVUjr9ZKIcANDeeLBCsy_j-fPwFc"
-TCBS_API_KEY = "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TCBS_API_KEY = os.environ.get(
+    "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
+)
 
 # Configuration Logging
 logging.basicConfig(
