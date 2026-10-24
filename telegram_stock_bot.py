@@ -1,12 +1,13 @@
-import concurrent.futures
 import datetime
 import io
 import logging
 import os
 import threading
 import time
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import matplotlib
+matplotlib.use('Agg') # Tối ưu hóa render biểu đồ không cần GUI
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+# Danh sách mã cổ phiếu để quét định kỳ
 WATCHLIST_SCAN = [
     "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
@@ -41,14 +43,14 @@ WATCHLIST_SCAN = [
 ]
 
 ACTIVE_CHAT_IDS = set()
-USER_PORTFOLIOS = {}
+executor = ThreadPoolExecutor(max_workers=8) # Pool luồng để xử lý đa nhiệm nhanh hơn
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN NÂNG CAO (TỐI ƯU CACHE)
+# 1. HÀM CALL DATA & TÍNH TOÁN NÂNG CAO
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
-    """Lấy dữ liệu OHLCV lịch sử từ TCBS hoặc VNDirect có tối ưu timeout"""
+    """Lấy dữ liệu OHLCV lịch sử từ TCBS hoặc VNDirect với timeout nhanh"""
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
@@ -62,14 +64,14 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         res_param = "D"
         start_time = end_time - (count * 86400 * 3)
 
-    # 1. TCBS API
+    # 1. TCBS API (Timeout rút gọn 2.5s để phản hồi nhanh)
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-API-KEY": TCBS_API_KEY,
         }
-        res = requests.get(tcbs_url, headers=headers, timeout=3)
+        res = requests.get(tcbs_url, headers=headers, timeout=2.5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -85,8 +87,10 @@ def fetch_stock_data(symbol, resolution="D", count=250):
                     },
                     inplace=True,
                 )
-                return df[["time", "Open", "High", "Low", "Close", "Volume"]].tail(count).reset_index(drop=True)
-    except Exception:
+                return df[["time", "Open", "High", "Low", "Close", "Volume"]].tail(count).reset_index(drop=True), None
+    except requests.exceptions.Timeout:
+        pass # Chuyển sang nguồn dự phòng nếu timeout
+    except Exception as e:
         pass
 
     # 2. VNDirect API Dự phòng
@@ -96,7 +100,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "User-Agent": "Mozilla/5.0",
             "Referer": "https://dchart.vndirect.com.vn/",
         }
-        res = requests.get(url, headers=headers, timeout=3)
+        res = requests.get(url, headers=headers, timeout=2.5)
         if res.status_code == 200:
             data = res.json()
             if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
@@ -110,11 +114,13 @@ def fetch_stock_data(symbol, resolution="D", count=250):
                         "Volume": data["v"],
                     }
                 )
-                return df.tail(count).reset_index(drop=True)
-    except Exception:
-        pass
+                return df.tail(count).reset_index(drop=True), None
+    except requests.exceptions.Timeout:
+        return pd.DataFrame(), "Lỗi Timeout: Cả TCBS và VNDirect đều không phản hồi kịp thời."
+    except Exception as e:
+        return pd.DataFrame(), f"Lỗi kết nối API: {str(e)}"
 
-    return pd.DataFrame()
+    return pd.DataFrame(), f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không hợp lệ."
 
 
 def fetch_market_tape_data(symbol):
@@ -129,14 +135,14 @@ def fetch_market_tape_data(symbol):
 
 
 def calculate_indicators(df):
-    """Tính toán toàn bộ các chỉ báo kỹ thuật tối ưu hóa vector hóa"""
-    if df.empty or len(df) < 52:
+    """Tính toán toàn bộ các chỉ báo kỹ thuật được tối ưu vector hóa"""
+    if df.empty or len(df) < 30:
         return df
 
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
+    rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
     rsi_min = df["RSI"].rolling(14).min()
@@ -152,8 +158,9 @@ def calculate_indicators(df):
     mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
     df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
 
-    # Vectorized OBV thay cho vòng lặp chậm
-    obv_sign = np.sign(df["Close"].diff()).fillna(0)
+    # Vector hóa OBV thay vì dùng vòng lặp for chậm chạp
+    close_diff = df["Close"].diff()
+    obv_sign = np.where(close_diff > 0, 1, np.where(close_diff < 0, -1, 0))
     df["OBV"] = (obv_sign * df["Volume"]).cumsum()
     df["OBV_EMA"] = df["OBV"].ewm(span=20, adjust=False).mean()
 
@@ -175,6 +182,11 @@ def calculate_indicators(df):
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
     df["ATR"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+
+    df["KC_Middle"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["KC_Upper"] = df["KC_Middle"] + (df["ATR"] * 1.5)
+    df["KC_Lower"] = df["KC_Middle"] - (df["ATR"] * 1.5)
+    df["Squeeze_On"] = (df["BB_Upper"] < df["KC_Upper"]) & (df["BB_Lower"] > df["KC_Lower"])
 
     return df
 
@@ -217,9 +229,9 @@ def calculate_volume_profile(df, bins=20):
 # 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
-    df = fetch_stock_data(symbol, resolution=resolution, count=count)
-    if df.empty:
-        return None, None, f"Không lấy được dữ liệu cho mã {symbol}!"
+    df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
+    if err or df.empty:
+        return None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
 
     df = calculate_indicators(df)
     tape = fetch_market_tape_data(symbol)
@@ -227,12 +239,12 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     close = last["Close"]
     atr = last["ATR"] if not np.isnan(last["ATR"]) else close * 0.02
-    cmf = last["CMF"]
-    rvol = last["RVOL"]
-    stoch_rsi = last["Stoch_RSI"]
-    macdh = last["MACD_Hist"]
-    ema50 = last["EMA50"]
-    ema200 = last["EMA200"]
+    cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+    rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+    stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
+    macdh = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+    ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
+    ema200 = last["EMA200"] if not np.isnan(last["EMA200"]) else close
 
     poc, vah, val = calculate_volume_profile(df)
 
@@ -244,9 +256,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         market_structure = "SIDEWAY ACCUMULATION"
 
-    confluence_points = []
-    risk_warnings = []
-
+    confluence_points, risk_warnings = [], []
     if close > ema50:
         confluence_points.append("Giá nằm trên EMA50")
     else:
@@ -259,13 +269,10 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     if rvol > 1.2:
         confluence_points.append(f"RVOL bùng nổ ({rvol:.2f})")
+    elif rvol < 0.8:
+        risk_warnings.append(f"RVOL cạn kiệt ({rvol:.2f})")
 
-    if stoch_rsi > 80:
-        risk_warnings.append(f"Stoch RSI quá mua ({stoch_rsi:.1f})")
-    elif stoch_rsi < 20:
-        confluence_points.append(f"Stoch RSI quá bán ({stoch_rsi:.1f})")
-
-    entry_1 = round(max(val, last["EMA20"], close * 0.98), 0)
+    entry_1 = round(max(val, last.get("EMA20", close), close * 0.98), 0)
     entry_2 = round(close, 0)
     entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 0)
 
@@ -289,31 +296,23 @@ def analyze_stock(symbol, resolution="D", count=250):
         nav_rec = "20 - 30% NAV"
 
     def fmt(p):
-        return f"{p/1000:.1f}k VNĐ"
+        return f"{p/1000:.1f}k"
 
-    text = f"📊 **PHÂN TÍCH KỸ THUẬT: {symbol.upper()}**\n"
-    text += f"🗓️ {last['time'].strftime('%Y-%m-%d')} | Giá: `{fmt(close)}`\n\n"
-    text += f"🌐 **1. CẤU TRÚC & DÒNG TIỀN:**\n"
-    text += f"• Xu hướng: `{market_structure}` | CMF: `{cmf:.2f}`\n"
-    text += f"• Khối lượng (RVOL): `{rvol:.2f}x`\n\n"
-    text += f"⚡ **2. TAPE READING & PHÁI SINH:**\n"
-    text += f"• Mua chủ động: `{tape['buy_active_pct']}%` | Khối ngoại: `{tape['foreign_net']} tỷ`\n"
-    text += f"• Basis: `{tape['basis']}đ` | Tự doanh: `{tape['prop_net']} tỷ`\n\n"
-    text += f"📊 **3. VOLUME PROFILE:**\n"
-    text += f"• POC: `{fmt(poc)}` | VAH: `{fmt(vah)}` | VAL: `{fmt(val)}`\n\n"
-    text += f"🎯 **4. QUẢN TRỊ RỦI RO:**\n"
-    text += f"• Trạng thái: `{system_status}`\n"
+    text = f"📊 **PHÂN TÍCH: {symbol.upper()}** ({last['time'].strftime('%d/%m/%Y')})\n"
+    text += f"• Giá: `{fmt(close)}` | Cấu trúc: `{market_structure}`\n"
+    text += f"• CMF: `{cmf:.2f}` | RVOL: `{rvol:.2f}` | StochRSI: `{stoch_rsi:.1f}`\n\n"
+    text += f"🎯 **KHUYẾN NGHỊ:** `{system_status}`\n"
     text += f"• Vùng mua: `{fmt(entry_1)} - {fmt(entry_2)}` (TB: `{fmt(entry_avg)}`)\n"
-    text += f"• Stoploss: `{fmt(stop_loss)}` (`{sl_pct:.2f}%`)\n"
-    text += f"• Target 1: `{fmt(target_1)}` (`+{t1_pct:.2f}%`)\n"
-    text += f"• Target 2: `{fmt(target_2)}` (`+{t2_pct:.2f}%`)\n"
-    text += f"• Tỷ trọng: `{nav_rec}`"
+    text += f"• Cắt lỗ (SL): `{fmt(stop_loss)}` (`{sl_pct:.2f}%`)\n"
+    text += f"• Target 1: `{fmt(target_1)}` (`+{t1_pct:.2f}%`) | Target 2: `{fmt(target_2)}` (`+{t2_pct:.2f}%`)\n"
+    text += f"• Tỷ trọng: `{nav_rec}`\n"
 
+    # Vẽ biểu đồ nhanh gọn
     fig, ax = plt.subplots(figsize=(7, 4), dpi=100)
-    ax.plot(df["time"], df["Close"] / 1000, label="Giá", color="black", lw=1.2)
-    ax.plot(df["time"], df["EMA20"] / 1000, label="EMA 20", color="blue", ls="--", alpha=0.6)
+    ax.plot(df["time"], df["Close"] / 1000, label="Close", color="black", lw=1)
+    ax.plot(df["time"], df["EMA20"] / 1000, label="EMA20", color="blue", ls="--", alpha=0.5)
     ax.axhline(poc / 1000, color="purple", ls=":", label=f"POC: {poc/1000:.1f}k")
-    ax.set_title(f"{symbol.upper()} ({resolution})", fontsize=10, fontweight="bold")
+    ax.set_title(f"{symbol.upper()} - {resolution}", fontsize=10, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -326,29 +325,34 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE QUÉT THỊ TRƯỜNG ĐA LUỒNG (THREADPOOL)
+# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG (SONG SONG)
 # ==========================================
 def scan_single_stock(symbol):
-    df = fetch_stock_data(symbol, resolution="D", count=60)
-    if df.empty or len(df) < 30:
+    df, err = fetch_stock_data(symbol, resolution="D", count=40)
+    if err or df.empty or len(df) < 20:
         return None
     df = calculate_indicators(df)
     last = df.iloc[-1]
-    
-    rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-    cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-    close = last["Close"]
-    ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
-    
-    if rvol >= 1.25 and cmf > 0.02 and close > ema50:
-        return {"symbol": symbol, "close": close / 1000, "rvol": rvol, "cmf": cmf, "score": (rvol * 2) + (cmf * 5)}
+    rvol = last.get("RVOL", 1.0)
+    cmf = last.get("CMF", 0.0)
+    close = last.get("Close", 0)
+    ema50 = last.get("EMA50", close)
+
+    if not np.isnan(rvol) and not np.isnan(cmf) and rvol >= 1.2 and cmf > 0.01 and close > ema50:
+        return {
+            "symbol": symbol,
+            "close": close / 1000,
+            "rvol": rvol,
+            "cmf": cmf,
+            "score": (rvol * 2) + (cmf * 5)
+        }
     return None
 
 def run_market_screener():
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(scan_single_stock, s): s for s in WATCHLIST_SCAN}
-        for future in concurrent.futures.as_completed(futures):
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(scan_single_stock, sym) for sym in WATCHLIST_SCAN]
+        for future in as_completed(futures):
             res = future.result()
             if res:
                 results.append(res)
@@ -356,164 +360,181 @@ def run_market_screener():
 
 
 # ==========================================
-# 4. MODULE BACKTEST & PORTFOLIO
+# 4. MODULE BACKTEST
 # ==========================================
 def run_strategy_backtest(symbol="HPG"):
-    df = fetch_stock_data(symbol, resolution="D", count=150)
-    if df.empty or len(df) < 80:
-        return f"Không đủ dữ liệu cho {symbol}."
+    df, err = fetch_stock_data(symbol, resolution="D", count=150)
+    if err or df.empty or len(df) < 50:
+        return f"⚠️ Không đủ dữ liệu để backtest mã **{symbol}**. Chi tiết: {err}"
+    
     df = calculate_indicators(df)
-    trades, wins, ret_total = 0, 0, 0.0
-    for i in range(30, len(df) - 5):
-        if df["RVOL"].iloc[i] > 1.3 and df["CMF"].iloc[i] > 0.03:
+    trades, wins, total_return = 0, 0, 0.0
+    
+    for i in range(20, len(df) - 5):
+        rvol = df["RVOL"].iloc[i]
+        cmf = df["CMF"].iloc[i]
+        close = df["Close"].iloc[i]
+        ema50 = df["EMA50"].iloc[i]
+        
+        if not np.isnan(rvol) and not np.isnan(cmf) and rvol > 1.2 and cmf > 0.02 and close > ema50:
+            future_prices = df["Close"].iloc[i+1 : i+6].values
+            max_p, min_p = max(future_prices), min(future_prices)
+            atr = df["ATR"].iloc[i] if not np.isnan(df["ATR"].iloc[i]) else close * 0.02
+            target = close + (1.5 * 1.5 * atr)
+            stoploss = close - (1.5 * atr)
+            
             trades += 1
-            if df["Close"].iloc[i+5] > df["Close"].iloc[i]:
+            if max_p >= target:
                 wins += 1
-                ret_total += 4.0
+                total_return += 4.5
+            elif min_p <= stoploss:
+                total_return -= 2.5
             else:
-                ret_total -= 2.0
+                total_return += ((future_prices[-1] - close) / close) * 100
+
     win_rate = (wins / trades * 100) if trades > 0 else 0
-    return f"📊 **BACKTEST {symbol.upper()}:**\n• Số lệnh: {trades}\n• Win-rate: {win_rate:.1f}%\n• Lợi nhuận giả lập: {ret_total:+.2f}%"
-
-
-def add_portfolio_item(chat_id, symbol, volume, buy_price):
-    if chat_id not in USER_PORTFOLIOS:
-        USER_PORTFOLIOS[chat_id] = []
-    for item in USER_PORTFOLIOS[chat_id]:
-        if item["symbol"] == symbol:
-            item["volume"], item["price"] = volume, buy_price
-            return
-    USER_PORTFOLIOS[chat_id].append({"symbol": symbol, "volume": volume, "price": buy_price})
-
-
-def get_portfolio_report(chat_id):
-    if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
-        return "📂 Danh mục trống. Dùng `/add [Mã] [SL] [Giá]`"
-    text = "📂 **DANH MỤC CÁ NHÂN:**\n"
-    tot_inv, tot_cur = 0, 0
-    for item in USER_PORTFOLIOS[chat_id]:
-        sym, vol, buy_p = item["symbol"], item["volume"], item["price"]
-        df = fetch_stock_data(sym, resolution="D", count=5)
-        curr_p = (df["Close"].iloc[-1] / 1000) if not df.empty else buy_p
-        inv, cur = vol * buy_p * 1000, vol * curr_p * 1000
-        tot_inv += inv
-        tot_cur += cur
-        text += f"• **{sym}**: {vol} cổ | Mua: `{buy_p}k` | Hiện tại: `{curr_p:.1f}k` (`{((curr_p-buy_p)/buy_p)*100:+.2f}%`)\n"
-    pnl = tot_cur - tot_inv
-    text += f"\n💰 **Tổng Lãi/Lỗ:** `{pnl:+,.0f} VNĐ`"
-    return text
+    return f"📊 **BACKTEST {symbol.upper()} (150 NẾN):**\n• Số lệnh: `{trades}` | Win-rate: `{win_rate:.1f}%`\n• Lợi nhuận giả lập: `{total_return:+.2f}%`"
 
 
 # ==========================================
-# 5. BACKGROUND SCHEDULER
+# 5. SCHEDULER & TELEGRAM HANDLERS
 # ==========================================
 def background_scheduler_thread(application):
     while True:
         now = datetime.datetime.now()
         if now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
-                top = run_market_screener()
-                if top:
-                    text = "🚨 **BẢN TIN 14:15 - SIÊU CỔ PHIẾU:**\n" + "\n".join([f"- {i['symbol']}: {i['close']}k" for i in top])
-                    for cid in ACTIVE_CHAT_IDS:
+                top_stocks = run_market_screener()
+                if top_stocks:
+                    text = "🚨 **BẢN TIN TỰ ĐỘNG 14:15 - DÒNG TIỀN MẠNH**\n\n"
+                    for idx, item in enumerate(top_stocks, 1):
+                        text += f"{idx}. **{item['symbol']}** | Giá: `{item['close']:.1f}k` | RVOL: `{item['rvol']:.2f}x`\n"
+                    for chat_id in ACTIVE_CHAT_IDS:
                         try:
-                            application.bot.send_message(chat_id=cid, text=text, parse_mode="Markdown")
-                        except:
+                            application.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+                        except Exception:
                             pass
             time.sleep(70)
         time.sleep(30)
 
 
-# ==========================================
-# 6. TELEGRAM HANDLERS
-# ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(update.effective_chat.id)
-    await update.message.reply_text("🤖 Bot Pro đã sẵn sàng! Gõ mã cổ phiếu (VD: `VHM`), `/scan`, `/portfolio`, `/backtest`.")
+    await update.message.reply_text(
+        "👋 Chào bạn! Bot Quant Trading đã sẵn sàng phản hồi tức thì.\n\n"
+        "👉 Nhập **mã cổ phiếu** (VD: `HPG`, `VHM`) để phân tích ngay.\n"
+        "👉 Gõ `/scan` để quét nhanh dòng tiền.\n"
+        "👉 Gõ `/backtest [Mã]` để test chiến lược.",
+        parse_mode="Markdown"
+    )
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(update.effective_chat.id)
-    msg = await update.message.reply_text("⚡ Đang quét thị trường đa luồng...")
-    top = run_market_screener()
-    if not top:
-        await msg.edit_text("⚠️ Không có mã nào thỏa mãn.")
-        return
-    text = "🚀 **TOP SIÊU CỔ PHIẾU:**\n" + "\n".join([f"• **{i['symbol']}** | Giá: `{i['close']}k` | RVOL: `{i['rvol']:.2f}x`" for i in top])
-    await msg.edit_text(text, parse_mode="Markdown")
+    msg = await update.message.reply_text("🔍 Đang quét thị trường song song... Vui lòng đợi trong giây lát ⏳")
+    try:
+        top_stocks = run_market_screener()
+        if not top_stocks:
+            await msg.edit_text("⚠️ Hiện tại không có mã nào thỏa mãn điều kiện dòng tiền.")
+            return
+            
+        text = "🚀 **TOP CỔ PHIẾU DÒNG TIỀN MẠNH**\n\n"
+        for idx, item in enumerate(top_stocks, 1):
+            text += f"{idx}. **{item['symbol']}** | Giá: `{item['close']:.1f}k` | RVOL: `{item['rvol']:.2f}x` | CMF: `+{item['cmf']:.2f}`\n"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi quét thị trường: {str(e)}")
 
 
 async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(update.effective_chat.id)
-    sym = context.args[0].upper() if context.args else "HPG"
-    msg = await update.message.reply_text(f"⏳ Đang backtest {sym}...")
-    await msg.edit_text(run_strategy_backtest(sym), parse_mode="Markdown")
-
-
-async def add_portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ACTIVE_CHAT_IDS.add(update.effective_chat.id)
     args = context.args
-    if len(args) < 3:
-        await update.message.reply_text("⚠️ Sai cú pháp! Dùng: `/add [Mã] [SL] [Giá]`")
-        return
-    add_portfolio_item(update.effective_chat.id, args[0].upper(), int(args[1]), float(args[2]))
-    await update.message.reply_text(f"✅ Đã thêm {args[0].upper()} vào danh mục.")
-
-
-async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ACTIVE_CHAT_IDS.add(update.effective_chat.id)
-    msg = await update.message.reply_text("⏳ Đang tải danh mục...")
-    await msg.edit_text(get_portfolio_report(update.effective_chat.id), parse_mode="Markdown")
+    symbol = args[0].upper() if args else "HPG"
+    msg = await update.message.reply_text(f"⏳ Đang chạy Backtest cho **{symbol}**...")
+    try:
+        report = run_strategy_backtest(symbol)
+        await msg.edit_text(report, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi backtest: {str(e)}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(update.effective_chat.id)
     text = update.message.text.strip().upper()
-    if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Nhập mã hợp lệ (VD: `VHM`) hoặc dùng lệnh `/scan`.")
-        return
     
-    keyboard = [[InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{text}|D|250"), InlineKeyboardButton("📅 1W (100 nến)", callback_data=f"{text}|W|100")]]
-    await update.message.reply_text(f"🔍 Chọn khung thời gian cho **{text}**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    if len(text) < 3 or len(text) > 5 or not text.isalpha():
+        await update.message.reply_text("⚠️ Vui lòng nhập đúng định dạng mã cổ phiếu (VD: `VHM`, `TCB`).")
+        return
+
+    symbol = text
+    # Gửi ngay lập tức bảng chọn khung thời gian để người dùng không phải chờ đợi
+    keyboard = [
+        [
+            InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{symbol}|D|250"),
+            InlineKeyboardButton("📅 1W (100 nến)", callback_data=f"{symbol}|W|100"),
+        ],
+        [
+            InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{symbol}|15|200"),
+            InlineKeyboardButton("⏱️ 1H (250 nến)", callback_data=f"{symbol}|60|250"),
+        ],
+    ]
+    await update.message.reply_text(
+        f"🔍 Đã nhận mã **{symbol}**. Chọn khung thời gian phân tích:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    parts = query.data.split("|")
+
+    data = query.data
+    parts = data.split("|")
     if len(parts) == 3:
-        sym, res, cnt = parts[0], parts[1], int(parts[2])
-        await query.edit_message_text(text=f"⏳ Đang phân tích **{sym}** ({res})...", parse_mode="Markdown")
-        txt, img, err = analyze_stock(sym, resolution=res, count=cnt)
-        if err:
-            await query.message.reply_text(f"❌ {err}")
-        else:
-            await query.message.reply_photo(photo=img, caption=txt, parse_mode="Markdown")
+        symbol, resolution, count = parts[0], parts[1], int(parts[2])
+        await query.edit_message_text(text=f"⏳ Đang tính toán và vẽ biểu đồ cho **{symbol}**...")
+
+        # Chạy phân tích trong luồng riêng để không block bot
+        def process_analysis():
+            return analyze_stock(symbol, resolution=resolution, count=count)
+
+        future = executor.submit(process_analysis)
+        try:
+            text, img_buf, err = future.result(timeout=10) # Timeout 10s tránh treo vĩnh viễn
+            if err:
+                await query.message.reply_text(f"❌ **Lỗi phân tích mã {symbol}:**\n`{err}`", parse_mode="Markdown")
+            else:
+                await query.message.reply_photo(photo=img_buf, caption=text, parse_mode="Markdown")
+        except Exception as e:
+            await query.message.reply_text(f"❌ **Lỗi hệ thống hoặc Quá thời gian xử lý:**\n`{str(e)}`", parse_mode="Markdown")
 
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+        self.wfile.write(b"Optimized Quant Bot is running live!")
 
 
 def run_http_server():
-    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), SimpleHTTPRequestHandler).serve_forever()
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
 
 
 if __name__ == "__main__":
     threading.Thread(target=run_http_server, daemon=True).start()
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
-    app.add_handler(CommandHandler("add", add_portfolio_command))
-    app.add_handler(CommandHandler("portfolio", portfolio_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🤖 Bot Pro tối ưu tốc độ đang chạy...")
+    print("🚀 Bot Quant Trading Tối Ưu Tốc Độ đang chạy...")
     app.run_polling()
+
