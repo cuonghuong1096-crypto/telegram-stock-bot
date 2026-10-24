@@ -43,6 +43,9 @@ WATCHLIST_SCAN = [
 ]
 
 ACTIVE_CHAT_IDS = set()
+# Lưu danh mục cá nhân theo chat_id: {chat_id: {"VHM": {"entry": 64.3, "sl": 60.1}, ...}}
+USER_PORTFOLIOS = {}
+
 executor = ThreadPoolExecutor(max_workers=6)
 
 
@@ -242,19 +245,18 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (TÍCH HỢP RSI, SQUEEZE VÀ XỬ LÝ MÂU THUẪN TRẠNG THÁI)
+# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
     if err or df.empty:
-        return None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
+        return None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
 
     df = calculate_indicators(df)
     tape = fetch_market_tape_data(symbol)
     last = df.iloc[-1]
 
     close = last["Close"]
-    atr = last["ATR"] if not np.isnan(last["ATR"]) else close * 0.02
     cmf = last["CMF"]
     rvol = last["RVOL"]
     stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
@@ -310,7 +312,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     t2_pct = ((target_2 - entry_avg) / entry_avg) * 100
     sl_pct = ((stop_loss - entry_avg) / entry_avg) * 100
 
-    # Logic Trạng thái hệ thống
     if market_structure == "DOWNTREND" or stoch_rsi > 85 or cmf < -0.15:
         system_status = "ĐỨNG NGOÀI (CẢNH BÁO RỦI RO)"
         nav_rec = "0% (Bảo toàn vốn)"
@@ -334,28 +335,24 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• VN-Index: {vn_index_status}\n"
     text += f"• Cấu trúc giá: {market_structure}\n"
     text += f"• CMF: {cmf:.2f} | RVOL: {rvol:.2f}\n"
-    text += f"• RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
-    text += f"• Trạng thái nén (Squeeze): {'Đang tích nén chặt' if squeeze_on else 'Bình thường'}\n\n"
+    text += f"• RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n\n"
 
     text += f"⚡ 2. BẢNG ĐIỆN & PHÁI SINH (TAPE READING):\n"
     text += f"• Mua/Bán chủ động: {tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%\n"
-    text += f"• Khối ngoại: {tape['foreign_net']} tỷ | Tự doanh: {tape['prop_net']} tỷ\n"
-    text += f"• Basis VN30F1M: {tape['basis']} điểm\n\n"
+    text += f"• Khối ngoại: {tape['foreign_net']} tỷ | Tự doanh: {tape['prop_net']} tỷ\n\n"
 
     text += f"📊 3. VOLUME PROFILE:\n"
-    text += f"• POC: {fmt(poc)}\n• VAH: {fmt(vah)}\n• VAL: {fmt(val)}\n\n"
+    text += f"• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n\n"
 
-    # Tinh chỉnh logic hiển thị Mục 4: Khắc phục mâu thuẫn khi đứng ngoài
     text += f"🎯 4. QUẢN TRỊ RỦI RO (RISK MANAGEMENT):\n"
     text += f"• Trạng thái hệ thống: {system_status}\n"
-    text += f"• Khuyến nghị phân bổ NAV: {nav_rec}\n"
+    text += f"• Khuyến nghị NAV: {nav_rec}\n"
     if is_standing_aside:
-        text += f"• 🛡️ *Vùng quan sát gom hàng (Watchzone):* {fmt(entry_1)} - {fmt(entry_2)} (Chưa vội giải ngân cho đến khi dòng tiền cải thiện)\n\n"
+        text += f"• 🛡️ *Watchzone:* {fmt(entry_1)} - {fmt(entry_2)}\n\n"
     else:
-        text += f"• Vùng mua (Entry): {fmt(entry_1)} - {fmt(entry_2)} (TB: {fmt(entry_avg)})\n"
-        text += f"• Cắt lỗ (SL): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
-        text += f"• Target 1: {fmt(target_1)} (+{t1_pct:.2f}%)\n"
-        text += f"• Target 2: {fmt(target_2)} (+{t2_pct:.2f}%)\n\n"
+        text += f"• Vùng mua: {fmt(entry_1)} - {fmt(entry_2)} (TB: {fmt(entry_avg)})\n"
+        text += f"• Cắt lỗ (SL mẫu): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
+        text += f"• Target 1: {fmt(target_1)} (+{t1_pct:.2f}%)\n\n"
 
     text += f"⚡ 5. ĐIỂM CỘNG & CẢNH BÁO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Không có"
@@ -363,15 +360,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Điểm cộng: {conf_str}\n"
     text += f"• Cảnh báo: {warn_str}"
 
-    # Bổ sung bàn phím Inline chứa các nút giải thích chỉ số đơn giản
     keyboard = [
         [
             InlineKeyboardButton("💡 Giải thích CMF/RVOL", callback_data="help_cmf"),
-            InlineKeyboardButton("💡 Giải thích RSI/Stoch", callback_data="help_rsi"),
+            InlineKeyboardButton("💡 Giải thích RSI", callback_data="help_rsi"),
         ],
         [
             InlineKeyboardButton("💡 Giải thích Volume Profile", callback_data="help_vp"),
-            InlineKeyboardButton("💡 Giải thích Squeeze", callback_data="help_squeeze"),
+            InlineKeyboardButton("💡 Hướng dẫn Lệnh Cá Nhân", callback_data="help_portfolio"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -395,7 +391,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG
+# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG & GIÁM SÁT SL
 # ==========================================
 def run_market_screener():
     results = []
@@ -425,9 +421,6 @@ def run_market_screener():
     return results[:8]
 
 
-# ==========================================
-# 4. MODULE BACKTEST HIỆU SUẤT CHIẾN LƯỢC
-# ==========================================
 def run_strategy_backtest(symbol):
     symbol = symbol.upper().strip()
     df, err = fetch_stock_data(symbol, resolution="D", count=200)
@@ -487,22 +480,40 @@ def run_strategy_backtest(symbol):
     report += f"• Tổng số lệnh phát sinh: {trades} lệnh\n"
     report += f"• Lệnh thắng: {wins} | Lệnh thua: {losses}\n"
     report += f"• Tỷ lệ thắng (Win-rate): {win_rate:.1f}%\n"
-    report += f"• Hiệu suất tích lũy giả lập: {total_return:+.2f}%\n\n"
-    
-    if win_rate >= 55 and total_return > 0:
-        report += f"💡 Đánh giá: Mã {symbol} tương thích TỐT với chiến lược RVOL + CMF."
-    else:
-        report += f"💡 Đánh giá: Mã {symbol} phản ứng TRUNG BÌNH/YẾU với chiến lược này."
-        
+    report += f"• Hiệu suất tích lũy giả lập: {total_return:+.2f}%\n"
     return report
 
 
 # ==========================================
-# 5. MODULE BACKGROUND SCHEDULER
+# 4. BACKGROUND SCHEDULER & GIÁM SÁT VI PHẠM SL
 # ==========================================
 def background_scheduler_thread(application):
     while True:
         now = datetime.datetime.now()
+        
+        # 1. Kiểm tra giám sát Stoploss định kỳ trong danh mục người dùng
+        if USER_PORTFOLIOS:
+            for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
+                for symbol, pos in list(portfolio.items()):
+                    df, err = fetch_stock_data(symbol, resolution="D", count=5)
+                    if not err and not df.empty:
+                        current_price = df.iloc[-1]["Close"]
+                        sl_price = pos["sl"]
+                        if current_price <= sl_price:
+                            alert_text = (
+                                f"🚨 **CẢNH BÁO VI PHẠM CẮT LỖ (STOPLOSS)!** 🚨\n\n"
+                                f"• Mã cổ phiếu: **{symbol}**\n"
+                                f"• Giá mua của bạn: `{pos['entry']}`\n"
+                                f"• Ngưỡng cắt lỗ cài đặt: `{sl_price}`\n"
+                                f"• **Giá hiện tại:** `{current_price}` 📉\n\n"
+                                f"⚠️ Đã chạm hoặc thủng điểm cắt lỗ! Hãy cân nhắc xử lý ngay để bảo toàn vốn."
+                            )
+                            try:
+                                application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
+                            except Exception:
+                                pass
+
+        # 2. Bản tin tự động lúc 14:15
         if now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -510,18 +521,18 @@ def background_scheduler_thread(application):
                     text = "=== BẢN TIN TỰ ĐỘNG 14:15 - CỔ PHIẾU DÒNG TIỀN ===\n\n"
                     for idx, item in enumerate(top_stocks, 1):
                         text += f"{idx}. {item['symbol']} | Giá: {item['close']:.1f}k | RVOL: {item['rvol']:.2f}x\n"
-                    
                     for chat_id in ACTIVE_CHAT_IDS:
                         try:
                             application.bot.send_message(chat_id=chat_id, text=text)
                         except Exception:
                             pass
             time.sleep(70)  
-        time.sleep(30)
+            
+        time.sleep(60)
 
 
 # ==========================================
-# 6. TELEGRAM HANDLERS
+# 5. TELEGRAM HANDLERS (BỔ SUNG LỆNH PORTFOLIO & SETBUY)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -529,9 +540,106 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Chào mừng bạn đến với Bot Quant Trading System!\n\n"
         "• Gõ mã cổ phiếu (VD: VHM, HPG) để xem phân tích.\n"
-        "• Gõ /scan để quét toàn thị trường.\n"
-        "• Gõ /backtest [mã] (VD: /backtest VHM) để đo lường hiệu suất chiến lược."
+        "• Gõ `/setbuy VHM 64.3 60.1` để lưu giá mua và cắt lỗ.\n"
+        "• Gõ `/portfolio` để xem danh mục và trạng thái lãi/lỗ.\n"
+        "• Gõ `/reset VHM` để xóa mã khỏi danh mục theo dõi.\n"
+        "• Gõ `/scan` để quét toàn thị trường.\n"
+        "• Gõ `/backtest VHM` để đo lường hiệu suất chiến lược.",
+        parse_mode="Markdown"
     )
+
+
+async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text(
+            "⚠️ **Sai cú pháp!**\n\n"
+            "👉 Vui lòng nhập: `/setbuy <MÃ> <giá_mua> <giá_cắt_lỗ>`\n"
+            "📌 *Ví dụ:* `/setbuy VHM 64.3 60.1`",
+            parse_mode="Markdown"
+        )
+        return
+
+    symbol = args[0].upper().strip()
+    try:
+        entry_price = float(args[1])
+        sl_price = float(args[2])
+    except ValueError:
+        await update.message.reply_text("❌ Giá mua và giá cắt lỗ phải là số hợp lệ!")
+        return
+
+    if chat_id not in USER_PORTFOLIOS:
+        USER_PORTFOLIOS[chat_id] = {}
+
+    USER_PORTFOLIOS[chat_id][symbol] = {
+        "entry": entry_price,
+        "sl": sl_price
+    }
+
+    await update.message.reply_text(
+        f"✅ Đã lưu thành công vào danh mục:\n"
+        f"• Mã: **{symbol}**\n"
+        f"• Giá mua: `{entry_price}`\n"
+        f"• Cắt lỗ (SL): `{sl_price}`\n\n"
+        f"🤖 Bot sẽ tự động giám sát và cảnh báo ngay lập tức nếu giá thị trường thủng mức SL này!",
+        parse_mode="Markdown"
+    )
+
+
+async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
+        await update.message.reply_text(
+            "📂 Danh mục của bạn đang trống.\n"
+            "👉 Dùng lệnh `/setbuy <MÃ> <giá_mua> <SL>` để thêm mã vào danh mục theo dõi.",
+            parse_mode="Markdown"
+        )
+        return
+
+    text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & GIÁM SÁT SL**\n\n"
+    for symbol, pos in USER_PORTFOLIOS[chat_id].items():
+        df, err = fetch_stock_data(symbol, resolution="D", count=5)
+        if not err and not df.empty:
+            current_price = df.iloc[-1]["Close"]
+            pnl_pct = ((current_price - pos["entry"]) / pos["entry"]) * 100
+            status = "🟢 Lãi" if pnl_pct >= 0 else "🔴 Lỗ"
+            text += f"🔹 **{symbol}**:\n"
+            text += f"  • Giá mua: `{pos['entry']}` | Hiện tại: `{current_price:.1f}`\n"
+            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` ({status})\n"
+            text += f"  • Cắt lỗ (SL): `{pos['sl']}`\n"
+            if current_price <= pos["sl"]:
+                text += f"  ⚠️ *CẢNH BÁO: Đã chạm/thủng SL!*\n"
+            text += "------------------------------------\n"
+        else:
+            text += f"🔹 **{symbol}**: Không lấy được dữ liệu giá hiện tại.\n"
+
+    text += "\n💡 Dùng lệnh `/reset <MÃ>` để xóa mã khỏi danh mục."
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "⚠️ Vui lòng nhập mã cần xóa! Ví dụ: `/reset VHM` hoặc `/reset ALL` để xóa sạch.",
+            parse_mode="Markdown"
+        )
+        return
+
+    target = args[0].upper().strip()
+    if chat_id in USER_PORTFOLIOS:
+        if target == "ALL":
+            USER_PORTFOLIOS[chat_id] = {}
+            await update.message.reply_text("🗑️ Đã xóa toàn bộ danh mục theo dõi của bạn.")
+        elif target in USER_PORTFOLIOS[chat_id]:
+            del USER_PORTFOLIOS[chat_id][target]
+            await update.message.reply_text(f"🗑️ Đã xóa mã **{target}** khỏi danh mục theo dõi.", parse_mode="Markdown")
+        else:
+            await update.message.reply_text(f"⚠️ Không tìm thấy mã **{target}** trong danh mục của bạn.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("📂 Danh mục của bạn đang trống.")
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -561,13 +669,12 @@ async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "⚠️ **Thiếu mã cổ phiếu!**\n\n"
             "👉 Vui lòng nhập đúng cú pháp: `/backtest <MÃ_CP>`\n"
-            "📌 *Ví dụ:* `/backtest VHM` hoặc `/backtest SSI`",
+            "📌 *Ví dụ:* `/backtest VHM`",
             parse_mode="Markdown"
         )
         return
         
     symbol = args[0].upper().strip()
-    
     msg = await update.message.reply_text(f"⏳ Đang chạy thuật toán Backtest chiến lược cho mã {symbol}...")
     try:
         report = run_strategy_backtest(symbol)
@@ -582,14 +689,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, HPG), hoặc dùng /scan, /backtest!")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, HPG), hoặc dùng /scan, /portfolio, /backtest!")
         return
 
     symbol = text
     keyboard = [
         [
             InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{symbol}|D|250"),
-            InlineKeyboardButton("📅 1W (100 nến)", callback_data=f"{symbol}|W|100"),
         ],
         [
             InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{symbol}|15|200"),
@@ -610,18 +716,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # Xử lý các nút bấm giải thích chỉ số
     if data.startswith("help_"):
         explanations = {
-            "help_cmf": "💡 **Giải thích CMF & RVOL:**\n• **CMF (Dòng tiền Chaikin):** Đo dòng tiền lớn. >0 là tiền vào, <0 là tiền rút ra.\n• **RVOL (Khối lượng tương đối):** So thanh khoản hôm nay với trung bình 20 phiên. >1.2 là thanh khoản bùng nổ.",
-            "help_rsi": "💡 **Giải thích RSI & Stoch RSI:**\n• **RSI:** Đo sức mạnh giá (0-100). >70 là quá mua, <30 là quá bán.\n• **Stoch RSI:** Phiên bản nhạy hơn của RSI, giúp bắt các bước ngoặt ngắn hạn cực nhanh.",
-            "help_vp": "💡 **Giải thích Volume Profile (POC, VAH, VAL):**\n• **POC:** Mức giá khớp lệnh nhiều nhất (tâm dòng tiền).\n• **VAL - VAH:** Vùng chứa 70% khối lượng giao dịch (Hỗ trợ và Kháng cự mạnh).",
-            "help_squeeze": "💡 **Giải thích Trạng thái nén (Squeeze):**\n• Khi dải Bollinger Band co thắt chặt vào trong Keltner Channel (Squeeze On), cổ phiếu đang tích nén cực mạnh, chuẩn bị 'nổ vol' bùng nổ xu hướng mới."
+            "help_cmf": "💡 **Giải thích CMF & RVOL:**\n• **CMF:** Đo dòng tiền lớn (>0 tiền vào, <0 tiền ra).\n• **RVOL:** So thanh khoản hiện tại với trung bình 20 phiên (>1.2 là bùng nổ).",
+            "help_rsi": "💡 **Giải thích RSI:** Đo sức mạnh giá (0-100). >70 quá mua, <30 quá bán.",
+            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá khớp nhiều nhất.\n• **VAL - VAH:** Vùng hỗ trợ và kháng cự mạnh.",
+            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 64.3 60.1` để lưu giá mua & cắt lỗ.\n• Dùng `/portfolio` để xem lãi/lỗ và kiểm tra cảnh báo vi phạm SL."
         }
         await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
         return
 
-    # Xử lý khung thời gian phân tích cổ phiếu
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
@@ -665,6 +769,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
+    app.add_handler(CommandHandler("setbuy", setbuy_command))
+    app.add_handler(CommandHandler("portfolio", portfolio_command))
+    app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
