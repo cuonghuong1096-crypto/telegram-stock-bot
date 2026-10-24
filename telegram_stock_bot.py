@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -406,7 +408,25 @@ async def handle_message(
         )
 
 
+# Tạo web server giả lập để Render duy trì service Free
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot Telegram is running live!")
+
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+
 if __name__ == "__main__":
+    # Chạy HTTP Server ẩn ở luồng riêng
+    threading.Thread(target=run_http_server, daemon=True).start()
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(
@@ -415,3 +435,5 @@ if __name__ == "__main__":
 
     print("🤖 Bot Telegram đang hoạt động...")
     app.run_polling()
+
+
