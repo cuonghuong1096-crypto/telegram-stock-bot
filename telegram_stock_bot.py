@@ -227,7 +227,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (ĐÃ FIX LOGIC ĐỒNG BỘ)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍNH ĐIỂM TIN CẬY & LINH HOẠT KẾT LUẬN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
@@ -274,45 +274,84 @@ def analyze_stock(symbol, resolution="D", count=250):
     confluence_points = []
     risk_warnings = []
 
+    # --- HỆ THỐNG TÍNH ĐIỂM ĐỘ TIN CẬY (QUANT CONFIDENCE SCORE 0 - 100%) ---
+    score = 0
+    # 1. Ichimoku Cloud (Trọng số 30%)
+    if close > cloud_top:
+        score += 30
+        confluence_points.append("Giá nằm trên mây Kumo (30%)")
+    elif close >= cloud_bottom:
+        score += 15
+        risk_warnings.append("Giá đang nằm trong mây Kumo")
+    else:
+        risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")
+
+    # 2. Dòng tiền CMF & MFI (Trọng số 25%)
+    if cmf > 0.05 and mfi > 50:
+        score += 25
+        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận mạnh (25%)")
+    elif cmf > 0 or mfi > 45:
+        score += 15
+        confluence_points.append(f"Dòng tiền duy trì dương nhẹ (CMF: {cmf:.2f})")
+    else:
+        risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
+
+    # 3. Độ dốc Hồi quy LR Slope (Trọng số 20%)
+    if lr_slope > 0.1:
+        score += 20
+        confluence_points.append("Độ dốc tăng giá LR Slope mạnh (20%)")
+    elif lr_slope >= 0:
+        score += 10
+    else:
+        risk_warnings.append("Độ dốc giá âm (Đang hướng xuống)")
+
+    # 4. Xu hướng EMA & Volume Profile (Trọng số 15%)
     if close > ema50:
+        score += 10
         confluence_points.append("Giá nằm trên EMA50")
     else:
         risk_warnings.append("Giá nằm dưới EMA50")
 
-    if close > cloud_top:
-        confluence_points.append("Giá vượt mây Kumo")
-    else:
-        risk_warnings.append("Giá nằm dưới hoặc trong mây Kumo")
+    if close >= poc:
+        score += 5
+        confluence_points.append("Giá nằm trên vùng giá khớp nhiều nhất (POC)")
 
-    if cmf > 0 and mfi > 40:
-        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận vào")
-    else:
-        risk_warnings.append(f"Dòng tiền suy yếu (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
-
-    if rvol > 1.2:
+    # 5. RVOL Thanh khoản bùng nổ (Trọng số 10%)
+    if rvol >= 1.2:
+        score += 10
         confluence_points.append(f"Thanh khoản bùng nổ ({rvol:.2f}x)")
+    elif rvol >= 0.8:
+        score += 5
     else:
-        risk_warnings.append(f"Thanh khoản thấp ({rvol:.2f}x)")
+        risk_warnings.append(f"Thanh khoản cạn kiệt/thấp ({rvol:.2f}x)")
 
+    confidence_score = min(max(score, 10), 98) # Khống chế khoảng độ tin cậy từ 10% đến 98%
+
+    # --- ĐA DẠNG HÓA KẾT LUẬN THEO ĐIỂM TIN CẬY & VỊ THẾ ---
     entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
     entry_2 = round(close, 2)
     entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
     stop_loss = round(entry_avg * 0.935, 2)
     sl_pct = ((stop_loss - entry_avg) / entry_avg) * 100
 
-    # --- LOGIC ĐÁNH GIÁ CHUẨN XÁC ĐỒNG BỘ ---
-    if close < cloud_bottom or market_structure == "DOWNTREND" or cmf < -0.15:
-        system_status = "ĐỨNG NGOÀI (CẢNH BÁO RỦI RO)"
-        nav_rec = "0% (Bảo toàn vốn)"
-        is_standing_aside = True
-    elif close >= cloud_top and cmf >= -0.05:
-        system_status = "MỞ MUA (TÍCH SẢN / LƯỚT T+)"
-        nav_rec = "20 - 30% NAV"
+    if confidence_score >= 70 and close > cloud_bottom:
+        system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
+        nav_rec = "25 - 35% NAV"
         is_standing_aside = False
-    else:
-        system_status = "QUAN SÁT / CHỜ CHIẾT KHẤU"
+        final_icon = f"🟢 **MỞ MUA TÍCH CỰC (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Chỉ số kỹ thuật hội tụ mạnh mẽ. Dòng tiền và mây Kumo ủng hộ đà tăng, ưu tiên gom quanh `{fmt(val)} - {fmt(poc)}`."
+    elif confidence_score >= 45 and close >= cloud_bottom:
+        system_status = "QUAN SÁT / MUA THĂM DÒ NỀN"
         nav_rec = "10 - 15% NAV"
         is_standing_aside = False
+        final_icon = f"🟡 **GIAO DỊCH THĂM DÒ (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Tín hiệu đang trong giai đoạn tích lũy/phân hóa. Chỉ nên mua thăm dò tỷ trọng nhỏ và kiên nhẫn chờ điểm bứt phá khỏi `{fmt(cloud_top)}`."
+    else:
+        system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
+        nav_rec = "0% (Giữ tiền mặt)"
+        is_standing_aside = True
+        final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
     def fmt(p):
         return f"{p:.1f}k"
@@ -326,10 +365,10 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
     text += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
     text += f"👉 **Kết luận & Hành động:** "
-    if cmf > -0.05 and mfi >= 40 and lr_slope >= -0.05:
-        text += f"Dòng tiền và động lượng tăng trưởng tốt, ưu tiên nắm giữ hoặc canh gia tăng tỷ trọng khi rung lắc.\n\n"
+    if cmf > 0 and mfi >= 45:
+        text += f"Dòng tiền lớn đang nâng đỡ giá tốt, động lượng tăng trưởng ổn định. Ưu tiên nắm giữ vị thế.\n\n"
     else:
-        text += f"Dòng tiền và độ dốc xu hướng đang suy yếu, hạn chế mua đuổi, ưu tiên quản trị rủi ro.\n\n"
+        text += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
 
     # MỤC 2
     text += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
@@ -338,50 +377,40 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
     text += f"👉 **Kết luận & Hành động:** "
     if close > cloud_top:
-        text += f"Trạng thái kỹ thuật mạnh mẽ trên mây Kumo, canh mua chủ động khi giá test đường Kijun-sen (`{fmt(kijun)}`).\n\n"
+        text += f"Thế nến bùng nổ trên mây Kumo rất tích cực, canh giải ngân khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`).\n\n"
     elif close < cloud_bottom:
-        text += f"Giá nằm hoàn toàn dưới mây Kumo, cấu trúc xu hướng giảm dài hạn, tuyệt đối không bắt đáy.\n\n"
+        text += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n"
     else:
-        text += f"Giá đi ngang trong mây, tín hiệu nhiễu cao, kiên nhẫn chờ giá bứt phá hẳn khỏi mây (`{fmt(cloud_top)}`).\n\n"
+        text += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
     # MỤC 3
     text += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text += f"👉 **Kết luận & Hành động:** Xây dựng vị thế gom hàng quanh vùng hỗ trợ **{fmt(val)} - {fmt(poc)}** và hiện thực hóa lợi nhuận khi tiệm cận kháng cự **{fmt(vah)}**.\n\n"
+    text += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n"
 
     # MỤC 4
     text += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
-    text += f"• Thông số hệ thống: {system_status}\n"
-    text += f"• Khuyến nghị NAV: {nav_rec}\n"
+    text += f"• Trạng thái khuyến nghị: {system_status}\n"
+    text += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
     text += f"👉 **Kết luận & Hành động:** "
     if is_standing_aside:
-        text += f"Đứng ngoài quan sát, bảo toàn 100% tiền mặt cho đến khi cấu trúc giá chuyển biến tích cực.\n\n"
+        text += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát cho đến khi độ tin cậy kỹ thuật cải thiện.\n\n"
     else:
-        text += f"Giải ngân vùng `{fmt(entry_1)} - {fmt(entry_2)}` và tuân thủ kỷ luật cắt lỗ tại mốc `{fmt(stop_loss)}`.\n\n"
+        text += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
     # MỤC 5
     text += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
-    conf_str = "; ".join(confluence_points) if confluence_points else "Không có tín hiệu hội tụ mạnh"
-    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo nghiêm trọng"
+    conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
+    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
     text += f"• Điểm cộng kỹ thuật: {conf_str}\n"
     text += f"• Cảnh báo rủi ro: {warn_str}\n"
-    text += f"👉 **Kết luận & Hành động:** Cân đối kỹ lưỡng các yếu tố ủng hộ và rủi ro trước khi thực thi lệnh mua/bán.\n\n"
+    text += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG (ĐÃ ĐỒNG BỘ CHÍNH XÁC VỚI THỰC TẾ)
-    if is_standing_aside:
-        final_icon = "🔴 **ĐỨNG NGOÀI (BẢO TOÀN VỐN)**"
-        final_action = "Tín hiệu kỹ thuật và Ichimoku tiêu cực, rủi ro cao, không nên giải ngân mới."
-    elif close >= cloud_top and cmf >= -0.05:
-        final_icon = "🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG**"
-        final_action = f"Dòng tiền lớn và mây Kumo ủng hộ, ưu tiên gom giá đỏ quanh `{fmt(val)} - {fmt(poc)}`."
-    else:
-        final_icon = "🟡 **QUAN SÁT / CHỜ CHIẾT KHẤU AN TOÀN**"
-        final_action = "Các chỉ báo chưa đồng thuận tuyệt đối, kiên nhẫn đứng ngoài chờ điểm đến chiết khấu tốt hơn."
-
-    text += f"🏁 **6. TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG:**\n"
-    text += f"• Nhận định chung: {final_icon}\n"
-    text += f"• Quyết định hành động: {final_action}"
+    # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CÓ % ĐỘ TIN CẬY & LINH HOẠT CAO
+    text += f"🏁 **6. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
+    text += f"• Khuyến nghị: {final_icon}\n"
+    text += f"• Định hướng quyết định: {final_action}"
 
     keyboard = [
         [
@@ -582,7 +611,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
         "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
-        "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, VIC)*\n\n"
+        "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, TPB)*\n\n"
         "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
         "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
         "3️⃣ **Xem danh mục đầu tư & Mức giá cụ thể Chốt lời / Cắt lỗ:**\n"
@@ -774,7 +803,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, VIC), hoặc dùng /scan, /portfolio, /backtest!")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, TPB), hoặc dùng /scan, /portfolio, /backtest!")
         return
 
     symbol = text
@@ -804,63 +833,4 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("help_"):
         explanations = {
             "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá (0-100).",
-            "help_rsi": "💡 **Giải thích Ichimoku:**\n• Gồm mây Kumo, Tenkan, Kijun giúp xác định xu hướng và hỗ trợ/kháng cự cực mạnh.",
-            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá giao dịch nhiều nhất.\n• **VAL - VAH:** Vùng giá hỗ trợ & kháng cự tổ chức.",
-            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng."
-        }
-        await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
-        return
-
-    parts = data.split("|")
-    if len(parts) == 3:
-        symbol, resolution, count = parts[0], parts[1], int(parts[2])
-
-        await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
-
-        def background_task():
-            return analyze_stock(symbol, resolution=resolution, count=count)
-
-        future = executor.submit(background_task)
-        try:
-            text, img_buf, reply_markup, err = future.result(timeout=12)
-            if err:
-                await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
-            else:
-                await query.message.reply_photo(photo=img_buf)
-                await query.message.reply_text(text, reply_markup=reply_markup)
-        except Exception as e:
-            await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
-
-
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot Expert Edition is running live!")
-
-
-def run_http_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    server.serve_forever()
-
-
-if __name__ == "__main__":
-    threading.Thread(target=run_http_server, daemon=True).start()
-
-    print("🤖 Đang khởi tạo kết nối Telegram Bot...")
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("scan", scan_command))
-    app.add_handler(CommandHandler("backtest", backtest_command))
-    app.add_handler(CommandHandler("setbuy", setbuy_command))
-    app.add_handler(CommandHandler("portfolio", portfolio_command))
-    app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    print("🚀 Bot Quant Trading System (Phiên bản Đồng Bộ Logic Phần 6) đang hoạt động mượt mà...")
-    app.run_polling(drop_pending_updates=True)
+            "help_rsi": "💡 **Giải thích Ich
