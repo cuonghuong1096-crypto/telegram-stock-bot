@@ -780,6 +780,21 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
+    # Đăng ký danh sách Menu lệnh sẵn cho Telegram
+    async def post_init(application):
+        from telegram import BotCommand
+        commands = [
+            BotCommand("start", "Khởi động & Hướng dẫn sử dụng"),
+            BotCommand("portfolio", "Xem danh mục & Lãi/Lỗ cá nhân"),
+            BotCommand("scan", "Quét cổ phiếu bùng nổ dòng tiền"),
+            BotCommand("backtest", "Backtest hiệu suất mã cổ phiếu"),
+            BotCommand("setbuy", "Lưu giá mua & cắt lỗ (Ví dụ: /setbuy VHM 64.3 60.1)"),
+            BotCommand("reset", "Xóa mã khỏi danh mục theo dõi"),
+        ]
+        await application.bot.set_my_commands(commands)
+
+    app.post_init = post_init
+
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
