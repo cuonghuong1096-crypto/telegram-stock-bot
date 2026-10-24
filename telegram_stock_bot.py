@@ -537,14 +537,28 @@ def background_scheduler_thread(application):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
+    
+    welcome_text = (
+        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
+        "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
+        "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
+        "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, VPB)*\n\n"
+        "2️⃣ **Lưu giá mua & điểm cắt lỗ (Stop Loss):**\n"
+        "`/setbuy VHM 64.3 60.1`  *(Thay Mã, Giá mua, Giá SL của bạn)*\n\n"
+        "3️⃣ **Xem danh mục đầu tư & kiểm tra vi phạm SL:**\n"
+        "`/portfolio` \n\n"
+        "4️⃣ **Quét dòng tiền bùng nổ toàn thị trường:**\n"
+        "`/scan` \n\n"
+        "5️⃣ **Backtest hiệu suất chiến lược 200 phiên:**\n"
+        "`/backtest VHM` \n\n"
+        "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
+        "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
+        "------------------------------------\n"
+        "💡 *Lưu ý:* Hệ thống sẽ tự động gửi cảnh báo khẩn cấp ngay khi giá thị trường thủng mức Cắt Lỗ (SL) bạn cài đặt!"
+    )
+    
     await update.message.reply_text(
-        "👋 Chào mừng bạn đến với Bot Quant Trading System!\n\n"
-        "• Gõ mã cổ phiếu (VD: VHM, HPG) để xem phân tích.\n"
-        "• Gõ `/setbuy VHM 64.3 60.1` để lưu giá mua và cắt lỗ.\n"
-        "• Gõ `/portfolio` để xem danh mục và trạng thái lãi/lỗ.\n"
-        "• Gõ `/reset VHM` để xóa mã khỏi danh mục theo dõi.\n"
-        "• Gõ `/scan` để quét toàn thị trường.\n"
-        "• Gõ `/backtest VHM` để đo lường hiệu suất chiến lược.",
+        welcome_text,
         parse_mode="Markdown"
     )
 
