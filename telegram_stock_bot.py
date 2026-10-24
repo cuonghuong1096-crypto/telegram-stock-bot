@@ -123,19 +123,12 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
 def fetch_market_tape_data(symbol):
     symbol = symbol.upper().strip()
-    # Bổ sung tích hợp bóc tách dữ liệu dòng tiền lớn (Thỏa thuận, Room ngoại, Tổ chức)
-    # Có thể kết nối trực tiếp endpoint TCBS hoặc giả lập thông minh theo mã thực tế
-    
-    # Dữ liệu mẫu mở rộng chuyên sâu cho Tape Reading
     tape_data = {
         "buy_active_pct": np.random.randint(48, 68),
         "foreign_net": np.random.randint(-30, 60),
         "prop_net": np.random.randint(-15, 25),
-        # 1. Giao dịch thỏa thuận (Put-through Value tính bằng tỷ VNĐ)
         "put_through_val": round(np.random.uniform(0.0, 180.5), 1),
-        # 2. Room khối ngoại còn lại (%)
         "foreign_room_pct": round(np.random.uniform(15.0, 48.5), 1),
-        # 3. Giao dịch ròng khối tổ chức trong nước (tỷ VNĐ)
         "domestic_ instytuc_net": np.random.randint(-50, 80),
         "basis": round(np.random.uniform(-3.0, 4.0), 1),
         "oi_change": np.random.choice(["Tăng mạnh", "Giảm", "Đi ngang"]),
@@ -348,7 +341,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• CMF: {cmf:.2f} | RVOL: {rvol:.2f}\n"
     text += f"• RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n\n"
 
-    # Hiển thị tích hợp chi tiết 3 chỉ số dòng tiền lớn bổ sung
     text += f"⚡ 2. BẢNG ĐIỆN & PHÁI SINH (TAPE READING):\n"
     text += f"• Mua/Bán chủ động: {tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%\n"
     text += f"• Khối ngoại (Khớp lệnh): {tape['foreign_net']} tỷ\n"
@@ -507,7 +499,6 @@ def background_scheduler_thread(application):
     while True:
         now = datetime.datetime.now()
         
-        # 1. Kiểm tra giám sát Stoploss định kỳ trong danh mục người dùng
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -529,7 +520,6 @@ def background_scheduler_thread(application):
                             except Exception:
                                 pass
 
-        # 2. Bản tin tự động lúc 14:15
         if now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -548,7 +538,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 5. TELEGRAM HANDLERS (TÍCH HỢP HOÀN CHỈNH)
+# 5. TELEGRAM HANDLERS (ĐÃ FIX LỖI MARKDOWN)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -583,12 +573,15 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
     if len(args) < 3:
-        await update.message.reply_text(
-            "⚠️ **Sai cú pháp!**\n\n"
-            "👉 Vui lòng nhập: `/setbuy <MÃ> <giá_mua> <giá_cắt_lỗ> [khối_lượng]`\n"
-            "📌 *Ví dụ:* `/setbuy VHM 63.0 62.0 1500`",
-            parse_mode="Markdown"
-        )
+        try:
+            await update.message.reply_text(
+                "Sai cu phap!\n\n"
+                "Vui long nhap dung dinh dang:\n"
+                "/setbuy <MA> <gia_mua> <gia_cat_lo> [khoi_luong]\n"
+                "Vi du: /setbuy VHM 63.0 62.0 1500"
+            )
+        except Exception as e:
+            print(f"Loi gui tin nhan: {e}")
         return
 
     symbol = args[0].upper().strip()
@@ -597,7 +590,7 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sl_price = float(args[2])
         qty = int(args[3]) if len(args) >= 4 else 1000
     except ValueError:
-        await update.message.reply_text("❌ Giá mua, giá cắt lỗ và khối lượng phải là số hợp lệ!")
+        await update.message.reply_text("Gia mua, gia cat lo va khoi luong phai la so hop le!")
         return
 
     if chat_id not in USER_PORTFOLIOS:
@@ -610,13 +603,12 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     await update.message.reply_text(
-        f"✅ Đã lưu thành công vào danh mục:\n"
-        f"• Mã: **{symbol}**\n"
-        f"• Khối lượng: `{qty}` cổ phiếu\n"
-        f"• Giá mua: `{entry_price}`\n"
-        f"• Cắt lỗ (SL): `{sl_price}`\n\n"
-        f"🤖 Bot sẽ tự động giám sát và đưa ra chiến lược chốt lời/cắt lỗ theo thời gian thực!",
-        parse_mode="Markdown"
+        f"Da luu thanh cong vao danh muc:\n"
+        f"- Ma: {symbol}\n"
+        f"- Khoi luong: {qty} co phieu\n"
+        f"- Gia mua: {entry_price}\n"
+        f"- Cat lo (SL): {sl_price}\n\n"
+        f"Bot se tu dong giam sat va canh bao ngay lap tuc neu gia thi truong thung muc SL nay!"
     )
 
 
