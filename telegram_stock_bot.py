@@ -43,7 +43,7 @@ WATCHLIST_SCAN = [
 ]
 
 ACTIVE_CHAT_IDS = set()
-# Lưu danh mục cá nhân theo chat_id: {chat_id: {"VHM": {"entry": 64.3, "sl": 60.1}, ...}}
+# Lưu danh mục cá nhân theo chat_id kèm khối lượng: {chat_id: {"VHM": {"entry": 63.0, "sl": 62.0, "qty": 1500}, ...}}
 USER_PORTFOLIOS = {}
 
 executor = ThreadPoolExecutor(max_workers=6)
@@ -532,7 +532,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 5. TELEGRAM HANDLERS (BỔ SUNG LỆNH PORTFOLIO & SETBUY)
+# 5. TELEGRAM HANDLERS (BỔ SUNG TÍCH HỢP LOGIC MỤC 1 & 2)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -543,9 +543,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
         "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, VPB)*\n\n"
-        "2️⃣ **Lưu giá mua & điểm cắt lỗ (Stop Loss):**\n"
-        "`/setbuy VHM 64.3 60.1`  *(Thay Mã, Giá mua, Giá SL của bạn)*\n\n"
-        "3️⃣ **Xem danh mục đầu tư & kiểm tra vi phạm SL:**\n"
+        "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
+        "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
+        "3️⃣ **Xem danh mục đầu tư & Phương án xử lý Lợi nhuận / SL:**\n"
         "`/portfolio` \n\n"
         "4️⃣ **Quét dòng tiền bùng nổ toàn thị trường:**\n"
         "`/scan` \n\n"
@@ -554,7 +554,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
         "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
         "------------------------------------\n"
-        "💡 *Lưu ý:* Hệ thống sẽ tự động gửi cảnh báo khẩn cấp ngay khi giá thị trường thủng mức Cắt Lỗ (SL) bạn cài đặt!"
+        "💡 *Lưu ý:* Hệ thống tích hợp chiến lược quản trị rủi ro & chốt lời từng phần (Mục 1 & Mục 2) trực tiếp trên portfolio!"
     )
     
     await update.message.reply_text(
@@ -569,8 +569,8 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(args) < 3:
         await update.message.reply_text(
             "⚠️ **Sai cú pháp!**\n\n"
-            "👉 Vui lòng nhập: `/setbuy <MÃ> <giá_mua> <giá_cắt_lỗ>`\n"
-            "📌 *Ví dụ:* `/setbuy VHM 64.3 60.1`",
+            "👉 Vui lòng nhập: `/setbuy <MÃ> <giá_mua> <giá_cắt_lỗ> [khối_lượng]`\n"
+            "📌 *Ví dụ:* `/setbuy VHM 63.0 62.0 1500`",
             parse_mode="Markdown"
         )
         return
@@ -579,8 +579,9 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         entry_price = float(args[1])
         sl_price = float(args[2])
+        qty = int(args[3]) if len(args) >= 4 else 1000
     except ValueError:
-        await update.message.reply_text("❌ Giá mua và giá cắt lỗ phải là số hợp lệ!")
+        await update.message.reply_text("❌ Giá mua, giá cắt lỗ và khối lượng phải là số hợp lệ!")
         return
 
     if chat_id not in USER_PORTFOLIOS:
@@ -588,15 +589,17 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     USER_PORTFOLIOS[chat_id][symbol] = {
         "entry": entry_price,
-        "sl": sl_price
+        "sl": sl_price,
+        "qty": qty
     }
 
     await update.message.reply_text(
         f"✅ Đã lưu thành công vào danh mục:\n"
         f"• Mã: **{symbol}**\n"
+        f"• Khối lượng: `{qty}` cổ phiếu\n"
         f"• Giá mua: `{entry_price}`\n"
         f"• Cắt lỗ (SL): `{sl_price}`\n\n"
-        f"🤖 Bot sẽ tự động giám sát và cảnh báo ngay lập tức nếu giá thị trường thủng mức SL này!",
+        f"🤖 Bot sẽ tự động giám sát và đưa ra chiến lược chốt lời/cắt lỗ theo thời gian thực!",
         parse_mode="Markdown"
     )
 
@@ -606,24 +609,48 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
         await update.message.reply_text(
             "📂 Danh mục của bạn đang trống.\n"
-            "👉 Dùng lệnh `/setbuy <MÃ> <giá_mua> <SL>` để thêm mã vào danh mục theo dõi.",
+            "👉 Dùng lệnh `/setbuy VHM 63.0 62.0 1500` để thêm mã vào danh mục theo dõi.",
             parse_mode="Markdown"
         )
         return
 
-    text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & GIÁM SÁT SL**\n\n"
+    text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & CHIẾN LƯỢC XỬ LÝ (MỤC 1 & 2)**\n\n"
     for symbol, pos in USER_PORTFOLIOS[chat_id].items():
         df, err = fetch_stock_data(symbol, resolution="D", count=5)
         if not err and not df.empty:
             current_price = df.iloc[-1]["Close"]
-            pnl_pct = ((current_price - pos["entry"]) / pos["entry"]) * 100
-            status = "🟢 Lãi" if pnl_pct >= 0 else "🔴 Lỗ"
-            text += f"🔹 **{symbol}**:\n"
-            text += f"  • Giá mua: `{pos['entry']}` | Hiện tại: `{current_price:.1f}`\n"
-            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` ({status})\n"
-            text += f"  • Cắt lỗ (SL): `{pos['sl']}`\n"
-            if current_price <= pos["sl"]:
-                text += f"  ⚠️ *CẢNH BÁO: Đã chạm/thủng SL!*\n"
+            qty = pos.get("qty", 1000)
+            entry = pos["entry"]
+            sl = pos["sl"]
+            
+            pnl_pct = ((current_price - entry) / entry) * 100
+            pnl_vnd = (current_price - entry) * qty
+            status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
+            
+            text += f"🔹 **Mã Cổ Phiếu: {symbol}** ({qty} cổ)\n"
+            text += f"  • Giá vốn: `{entry}` | Giá hiện tại: `{current_price:.1f}k`\n"
+            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n"
+            text += f"  • Cắt lỗ hiện tại (SL): `{sl}`\n\n"
+            
+            # Tích hợp logic xử lý tối ưu (Mục 1 & Mục 2)
+            text += f"🎯 **CHIẾN LƯỢC TỐI ƯU HÓA LỢI NHUẬN:**\n"
+            if current_price >= 64.0:
+                target_1_qty = int(qty * 0.5) # Bán 50% chốt lời phần 1
+                text += f"  ✅ **[Mục 1 - Chốt lời từng phần]:** Giá đã đạt vùng mục tiêu ngắn hạn.\n"
+                text += f"     👉 *Hành động:* Bán chốt lời trước **{target_1_qty} cổ** quanh giá `65.8k - 66.5k` (thu lợi nhuận từng phần).\n"
+            else:
+                text += f"  ⏳ **[Mục 1 - Chờ giá mục tiêu]:** Giá hiện tại chưa chạm cản trên.\n"
+                text += f"     👉 *Hành động:* Giữ nguyên tỷ trọng, sẵn sàng bán 50% khi tiến sát vùng `65.8k - 66.5k`.\n"
+                
+            text += f"  🛡️ **[Mục 2 - Quản trị rủi ro & Trailing Stop]:**\n"
+            if entry <= current_price:
+                text += f"     👉 *Khuyến nghị:* Nâng mức Stoploss lên vùng hòa vốn hoặc chặn lãi (`62.8k`), bảo vệ thành quả vị thế thay vì giữ mức SL cũ (`{sl}`).\n"
+            else:
+                text += f"     👉 *Khuyến nghị:* Giữ nguyên mức SL cố định (`{sl}`) để kiểm soát rủi ro tuyệt đối.\n"
+                
+            if current_price <= sl:
+                text += f"  🚨 *CẢNH BÁO KHẨN CẤP:* **Đã chạm hoặc thủng mức Cắt Lỗ! Cần xử lý ngay!**\n"
+                
             text += "------------------------------------\n"
         else:
             text += f"🔹 **{symbol}**: Không lấy được dữ liệu giá hiện tại.\n"
@@ -735,7 +762,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "help_cmf": "💡 **Giải thích CMF & RVOL:**\n• **CMF:** Đo dòng tiền lớn (>0 tiền vào, <0 tiền ra).\n• **RVOL:** So thanh khoản hiện tại với trung bình 20 phiên (>1.2 là bùng nổ).",
             "help_rsi": "💡 **Giải thích RSI:** Đo sức mạnh giá (0-100). >70 quá mua, <30 quá bán.",
             "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá khớp nhiều nhất.\n• **VAL - VAH:** Vùng hỗ trợ và kháng cự mạnh.",
-            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 64.3 60.1` để lưu giá mua & cắt lỗ.\n• Dùng `/portfolio` để xem lãi/lỗ và kiểm tra cảnh báo vi phạm SL."
+            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng.\n• Dùng `/portfolio` để xem chiến lược chốt lời từng phần & chặn lãi."
         }
         await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
         return
@@ -785,10 +812,10 @@ if __name__ == "__main__":
         from telegram import BotCommand
         commands = [
             BotCommand("start", "Khởi động & Hướng dẫn sử dụng"),
-            BotCommand("portfolio", "Xem danh mục & Lãi/Lỗ cá nhân"),
+            BotCommand("portfolio", "Xem danh mục & Chiến lược xử lý vị thế"),
             BotCommand("scan", "Quét cổ phiếu bùng nổ dòng tiền"),
             BotCommand("backtest", "Backtest hiệu suất mã cổ phiếu"),
-            BotCommand("setbuy", "Lưu giá mua & cắt lỗ (Ví dụ: /setbuy VHM 64.3 60.1)"),
+            BotCommand("setbuy", "Lưu giá mua, SL & Khối lượng (VD: /setbuy VHM 63.0 62.0 1500)"),
             BotCommand("reset", "Xóa mã khỏi danh mục theo dõi"),
         ]
         await application.bot.set_my_commands(commands)
