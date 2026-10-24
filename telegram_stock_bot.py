@@ -242,7 +242,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (TỐI ƯU CẮT LỖ & CHỐT LỜI SÁT THỰC TẾ)
+# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (TÍCH HỢP RSI, SQUEEZE VÀ XỬ LÝ MÂU THUẪN TRẠNG THÁI)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
@@ -257,10 +257,12 @@ def analyze_stock(symbol, resolution="D", count=250):
     atr = last["ATR"] if not np.isnan(last["ATR"]) else close * 0.02
     cmf = last["CMF"]
     rvol = last["RVOL"]
-    stoch_rsi = last["Stoch_RSI"]
+    stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
+    rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
     macdh = last["MACD_Hist"]
     ema50 = last["EMA50"]
     ema200 = last["EMA200"]
+    squeeze_on = last["Squeeze_On"]
 
     poc, vah, val = calculate_volume_profile(df)
 
@@ -290,15 +292,17 @@ def analyze_stock(symbol, resolution="D", count=250):
     elif rvol < 0.8:
         risk_warnings.append(f"Thanh khoản cạn kiệt ({rvol:.2f})")
 
+    if squeeze_on:
+        risk_warnings.append("Đang tích nén chặt (Squeeze On)")
+    else:
+        confluence_points.append("Biến động bình thường")
+
     entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
     entry_2 = round(close, 2)
     entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
-
-    # ĐIỀU CHỈNH: Cắt lỗ chặt chẽ hơn (giới hạn trong khoảng 6% - 7% từ giá entry thay vì thả trôi theo ATR lớn)
     stop_loss = round(entry_avg * 0.935, 2)
 
     risk_distance = entry_avg - stop_loss
-    # Thiết lập R:R chuẩn cho lướt sóng: Target 1 (R:R 1:1.5), Target 2 (R:R 1:2.5)
     target_1 = round(entry_avg + (risk_distance * 1.5), 2)
     target_2 = round(entry_avg + (risk_distance * 2.5), 2)
 
@@ -306,15 +310,19 @@ def analyze_stock(symbol, resolution="D", count=250):
     t2_pct = ((target_2 - entry_avg) / entry_avg) * 100
     sl_pct = ((stop_loss - entry_avg) / entry_avg) * 100
 
+    # Logic Trạng thái hệ thống
     if market_structure == "DOWNTREND" or stoch_rsi > 85 or cmf < -0.15:
         system_status = "ĐỨNG NGOÀI (CẢNH BÁO RỦI RO)"
         nav_rec = "0% (Bảo toàn vốn)"
+        is_standing_aside = True
     elif stoch_rsi > 80 and macdh < 0:
         system_status = "CHỜ ĐIỀU CHỈNH (QUAN SÁT)"
         nav_rec = "10 - 15% NAV"
+        is_standing_aside = False
     else:
         system_status = "MỞ MUA (TÍCH SẢN / LƯỚT T+)"
         nav_rec = "20 - 30% NAV"
+        is_standing_aside = False
 
     def fmt(p):
         return f"{p:.1f}k"
@@ -325,7 +333,9 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
     text += f"• VN-Index: {vn_index_status}\n"
     text += f"• Cấu trúc giá: {market_structure}\n"
-    text += f"• CMF: {cmf:.2f} | RVOL: {rvol:.2f}\n\n"
+    text += f"• CMF: {cmf:.2f} | RVOL: {rvol:.2f}\n"
+    text += f"• RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
+    text += f"• Trạng thái nén (Squeeze): {'Đang tích nén chặt' if squeeze_on else 'Bình thường'}\n\n"
 
     text += f"⚡ 2. BẢNG ĐIỆN & PHÁI SINH (TAPE READING):\n"
     text += f"• Mua/Bán chủ động: {tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%\n"
@@ -335,19 +345,36 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"📊 3. VOLUME PROFILE:\n"
     text += f"• POC: {fmt(poc)}\n• VAH: {fmt(vah)}\n• VAL: {fmt(val)}\n\n"
 
+    # Tinh chỉnh logic hiển thị Mục 4: Khắc phục mâu thuẫn khi đứng ngoài
     text += f"🎯 4. QUẢN TRỊ RỦI RO (RISK MANAGEMENT):\n"
-    text += f"• Trạng thái: {system_status}\n"
-    text += f"• Vùng mua: {fmt(entry_1)} - {fmt(entry_2)} (TB: {fmt(entry_avg)})\n"
-    text += f"• Cắt lỗ (SL): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
-    text += f"• Target 1: {fmt(target_1)} (+{t1_pct:.2f}%)\n"
-    text += f"• Target 2: {fmt(target_2)} (+{t2_pct:.2f}%)\n"
-    text += f"• Tỷ trọng NAV: {nav_rec}\n\n"
+    text += f"• Trạng thái hệ thống: {system_status}\n"
+    text += f"• Khuyến nghị phân bổ NAV: {nav_rec}\n"
+    if is_standing_aside:
+        text += f"• 🛡️ *Vùng quan sát gom hàng (Watchzone):* {fmt(entry_1)} - {fmt(entry_2)} (Chưa vội giải ngân cho đến khi dòng tiền cải thiện)\n\n"
+    else:
+        text += f"• Vùng mua (Entry): {fmt(entry_1)} - {fmt(entry_2)} (TB: {fmt(entry_avg)})\n"
+        text += f"• Cắt lỗ (SL): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
+        text += f"• Target 1: {fmt(target_1)} (+{t1_pct:.2f}%)\n"
+        text += f"• Target 2: {fmt(target_2)} (+{t2_pct:.2f}%)\n\n"
 
     text += f"⚡ 5. ĐIỂM CỘNG & CẢNH BÁO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Không có"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có"
     text += f"• Điểm cộng: {conf_str}\n"
     text += f"• Cảnh báo: {warn_str}"
+
+    # Bổ sung bàn phím Inline chứa các nút giải thích chỉ số đơn giản
+    keyboard = [
+        [
+            InlineKeyboardButton("💡 Giải thích CMF/RVOL", callback_data="help_cmf"),
+            InlineKeyboardButton("💡 Giải thích RSI/Stoch", callback_data="help_rsi"),
+        ],
+        [
+            InlineKeyboardButton("💡 Giải thích Volume Profile", callback_data="help_vp"),
+            InlineKeyboardButton("💡 Giải thích Squeeze", callback_data="help_squeeze"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
@@ -364,7 +391,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     buf.seek(0)
     plt.close(fig)
 
-    return text, buf, None
+    return text, buf, reply_markup, None
 
 
 # ==========================================
@@ -562,6 +589,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{symbol}|D|250"),
+            InlineKeyboardButton("📅 1W (100 nến)", callback_data=f"{symbol}|W|100"),
         ],
         [
             InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{symbol}|15|200"),
@@ -581,6 +609,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     data = query.data
+
+    # Xử lý các nút bấm giải thích chỉ số
+    if data.startswith("help_"):
+        explanations = {
+            "help_cmf": "💡 **Giải thích CMF & RVOL:**\n• **CMF (Dòng tiền Chaikin):** Đo dòng tiền lớn. >0 là tiền vào, <0 là tiền rút ra.\n• **RVOL (Khối lượng tương đối):** So thanh khoản hôm nay với trung bình 20 phiên. >1.2 là thanh khoản bùng nổ.",
+            "help_rsi": "💡 **Giải thích RSI & Stoch RSI:**\n• **RSI:** Đo sức mạnh giá (0-100). >70 là quá mua, <30 là quá bán.\n• **Stoch RSI:** Phiên bản nhạy hơn của RSI, giúp bắt các bước ngoặt ngắn hạn cực nhanh.",
+            "help_vp": "💡 **Giải thích Volume Profile (POC, VAH, VAL):**\n• **POC:** Mức giá khớp lệnh nhiều nhất (tâm dòng tiền).\n• **VAL - VAH:** Vùng chứa 70% khối lượng giao dịch (Hỗ trợ và Kháng cự mạnh).",
+            "help_squeeze": "💡 **Giải thích Trạng thái nén (Squeeze):**\n• Khi dải Bollinger Band co thắt chặt vào trong Keltner Channel (Squeeze On), cổ phiếu đang tích nén cực mạnh, chuẩn bị 'nổ vol' bùng nổ xu hướng mới."
+        }
+        await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
+        return
+
+    # Xử lý khung thời gian phân tích cổ phiếu
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
@@ -592,12 +633,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         future = executor.submit(background_task)
         try:
-            text, img_buf, err = future.result(timeout=12)
+            text, img_buf, reply_markup, err = future.result(timeout=12)
             if err:
                 await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
             else:
                 await query.message.reply_photo(photo=img_buf)
-                await query.message.reply_text(text)
+                await query.message.reply_text(text, reply_markup=reply_markup)
         except Exception as e:
             await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
 
