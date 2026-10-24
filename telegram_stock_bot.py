@@ -145,32 +145,7 @@ def fetch_financial_metrics(symbol):
                 }
     except Exception:
         pass
-    
-    # Dự phòng giả lập chỉ sốFA nếu API thiếu field
     return {"pe": 12.5, "pb": 1.6, "roe": 18.2, "eps_growth": 15.4}
-
-
-def fetch_order_flow(symbol):
-    """Tính toán Tỷ lệ Mua/Bán chủ động (Active Buy/Sell Ratio) trong phiên"""
-    symbol = symbol.upper().strip()
-    url = f"https://apifull.tcbs.com.vn/stock-insight/v1/intraday/{symbol}/his/paging?page=0&size=100"
-    try:
-        headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json().get("data", [])
-            if data:
-                buy_vol = sum([item.get("volume", 0) for item in data if item.get("matchType") == "BU"])
-                sell_vol = sum([item.get("volume", 0) for item in data if item.get("matchType") == "SD"])
-                total_vol = buy_vol + sell_vol + 1e-9
-                buy_ratio = (buy_vol / total_vol) * 100
-                sell_ratio = (sell_vol / total_vol) * 100
-                return round(buy_ratio, 1), round(sell_ratio, 1), round(buy_vol / (sell_vol + 1e-9), 2)
-    except Exception:
-        pass
-    
-    # Mặc định nếu không gọi được chi tiết lệnh trong phiên
-    return 55.0, 45.0, 1.22
 
 
 def calculate_indicators(df):
@@ -286,7 +261,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP MỤC 8, 9, 10 - TÁCH 3 TIN NHẮN)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (9 MỤC - TÁCH 2 TIN NHẮN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -294,7 +269,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
     if err or df.empty:
-        return None, None, None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
+        return None, None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
 
     df = calculate_indicators(df)
     last = df.iloc[-1]
@@ -414,11 +389,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
-    # LẤY DỮ LIỆU BỔ SUNG CHO MỤC 8 VÀ MỤC 9
     fa_data = fetch_financial_metrics(symbol)
-    buy_ratio, sell_ratio, buy_sell_factor = fetch_order_flow(symbol)
 
-    # --- PHẦN 1: TỪ TIÊU ĐỀ ĐẾN MỤC 4 ---
+    # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -462,7 +435,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 7 ---
+    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 9 ---
     text_part2 = ""
     # MỤC 5
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
@@ -472,7 +445,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG (MACD & BOLLINGER BANDS)
+    # MỤC 6: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG
     text_part2 += f"📈 6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:\n"
     text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
@@ -483,40 +456,26 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (MARKET BREADTH & SECTOR)
+    # MỤC 7: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN
     text_part2 += f"🌐 7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:\n"
     text_part2 += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
     text_part2 += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
 
-    # --- PHẦN 3: MỤC 8 ĐẾN MỤC 10 ---
-    text_part3 = ""
-    # MỤC 8: ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN (FA METRICS)
-    text_part3 += f"🏢 8. ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN (FA):\n"
-    text_part3 += f"• Định giá: P/E = `{fa_data['pe']:.1f}x` | P/B = `{fa_data['pb']:.1f}x` (So sánh trung bình ngành)\n"
-    text_part3 += f"• Hiệu quả & Tăng trưởng: ROE = `{fa_data['roe']:.1f}%` | Tăng trưởng EPS năm = `{fa_data['eps_growth']:+.1f}%`\n"
-    text_part3 += f"👉 **Kết luận & Hành động:** "
+    # MỤC 8: ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN
+    text_part2 += f"🏢 8. ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN (FA):\n"
+    text_part2 += f"• Định giá: P/E = `{fa_data['pe']:.1f}x` | P/B = `{fa_data['pb']:.1f}x` (So sánh trung bình ngành)\n"
+    text_part2 += f"• Hiệu quả & Tăng trưởng: ROE = `{fa_data['roe']:.1f}%` | Tăng trưởng EPS năm = `{fa_data['eps_growth']:+.1f}%`\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** "
     if fa_data['roe'] > 15 and fa_data['eps_growth'] > 10:
-        text_part3 += f"Nền tảng tài chính vững chắc, loại trừ rủi ro bẫy giá (Bulltrap) từ doanh nghiệp yếu kém.\n\n"
+        text_part2 += f"Nền tảng tài chính vững chắc, loại trừ rủi ro bẫy giá (Bulltrap) từ doanh nghiệp yếu kém.\n\n"
     else:
-        text_part3 += f"Định giá ở mức trung bình, cẩn trọng kiểm soát tỷ trọng ngắn hạn.\n\n"
+        text_part2 += f"Định giá ở mức trung bình, cẩn trọng kiểm soát tỷ trọng ngắn hạn.\n\n"
 
-    # MỤC 9: TỶ LỆ CUNG/CẦU KHỐI LƯỢNG KHỚP LỆNH CHỦ ĐỘNG (ORDER FLOW)
-    text_part3 += f"⚖️ 9. TỶ LỆ CUNG/CẦU KHỚP LỆNH CHỦ ĐỘNG (ORDER FLOW):\n"
-    text_part3 += f"• Áp lực khớp lệnh: Mua chủ động `{buy_ratio}%` vs Bán chủ động `{sell_ratio}%`\n"
-    text_part3 += f"• Tỷ lệ Lực cầu/Cung (Active Buy/Sell Ratio): `{buy_sell_factor}x`\n"
-    text_part3 += f"👉 **Kết luận & Hành động:** "
-    if buy_sell_factor >= 1.2:
-        text_part3 += f"Phe Mua đang hoàn toàn áp đảo và khớp thẳng vào giá Ask. Lực cầu quyết liệt!\n\n"
-    elif buy_sell_factor <= 0.8:
-        text_part3 += f"Phe Bán chủ động xả thẳng vào giá Bid. Cần chú ý áp lực chốt lời ngắn hạn.\n\n"
-    else:
-        text_part3 += f"Cung - Cầu khớp lệnh giằng co cân bằng quanh mức tham chiếu.\n\n"
-
-    # MỤC 10: TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP (THAY THẾ MỤC 8 CŨ)
-    text_part3 += f"🏁 10. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
-    text_part3 += f"• Khuyến nghị: {final_icon}\n"
-    text_part3 += f"• Định hướng quyết định: {final_action}"
+    # MỤC 9: TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP
+    text_part2 += f"🏁 9. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
+    text_part2 += f"• Khuyến nghị: {final_icon}\n"
+    text_part2 += f"• Định hướng quyết định: {final_action}"
 
     keyboard = [
         [
@@ -545,7 +504,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     buf.seek(0)
     plt.close(fig)
 
-    return text_part1, text_part2, text_part3, buf, reply_markup, None
+    return text_part1, text_part2, buf, reply_markup, None
 
 
 # ==========================================
@@ -766,7 +725,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 4. TELEGRAM HANDLERS (BẮT LỖI HIỂN THỊ MÀN HÌNH & GỬI 3 TIN NHẮN)
+# 4. TELEGRAM HANDLERS (BẮT LỖI HIỂN THỊ MÀN HÌNH & TÁCH 2 TIN NHẮN)
 # ==========================================
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     err_msg = f"❌ **HỆ THỐNG PHÁT HIỆN LỖI RUNTIME:**\n\n`{context.error}`"
@@ -1007,18 +966,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             future = executor.submit(background_task)
             try:
-                text_part1, text_part2, text_part3, img_buf, reply_markup, err = future.result(timeout=15)
+                text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=15)
                 if err:
                     await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
                 else:
-                    # Gửi Ảnh Biểu đồ trước
+                    # Gửi Biểu đồ
                     await query.message.reply_photo(photo=img_buf)
-                    # Gửi Tin nhắn 1: Mục 1 -> 4
+                    # Gửi Tin nhắn 1: Mục 1 -> Mục 4
                     await query.message.reply_text(text_part1, parse_mode="Markdown")
-                    # Gửi Tin nhắn 2: Mục 5 -> 7
-                    await query.message.reply_text(text_part2, parse_mode="Markdown")
-                    # Gửi Tin nhắn 3: Mục 8 -> 10 kèm Các nút bấm trợ giúp
-                    await query.message.reply_text(text_part3, reply_markup=reply_markup, parse_mode="Markdown")
+                    # Gửi Tin nhắn 2: Mục 5 -> Mục 9 kèm các Nút trợ giúp
+                    await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
             except Exception as e:
                 await query.message.reply_text(f"❌ Lỗi hệ thống trong quá trình xử lý mã {symbol}:\n{str(e)}")
     except Exception as e:
@@ -1029,7 +986,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot Complete 10-Section Edition is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot Complete 9-Section Edition is running live!")
 
 
 def run_http_server():
@@ -1057,6 +1014,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System 10 Mục hoàn chỉnh đang hoạt động...")
+    print("🚀 Bot Quant Trading System 9 Mục hoàn chỉnh đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
-
