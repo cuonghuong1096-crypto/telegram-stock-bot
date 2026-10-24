@@ -230,9 +230,6 @@ def calculate_volume_profile(df, bins=20):
 # 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍNH ĐIỂM TIN CẬY & LINH HOẠT KẾT LUẬN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
-    def fmt(p):
-        return f"{p:.1f}k"
-
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
     if err or df.empty:
         return None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
@@ -356,6 +353,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
+    def fmt(p):
+        return f"{p:.1f}k"
+
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -424,7 +424,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=100) # Tối ưu DPI xuống 100 để vẽ ảnh siêu tốc mà vẫn sắc nét
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
     ax.plot(df["time"], df["Kijun_sen"], label="Kijun", color="orange", linestyle="--", alpha=0.6)
@@ -891,5 +891,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System (Phiên bản Độ Tin Cậy & Kết Luận Linh Hoạt) đang hoạt động...")
+    print("🚀 Bot Quant Trading System (Phiên bản Hoàn Chỉnh & Tốc Độ) đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
