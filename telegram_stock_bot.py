@@ -109,24 +109,28 @@ def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
 
+    # 1. RSI (14)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df["RSI"] = 100 - (100 / (1 + rs))
 
+    # 1.1 Stochastic RSI (14)
     rsi_min = df["RSI"].rolling(14).min()
     rsi_max = df["RSI"].rolling(14).max()
     df["Stoch_RSI"] = (
         (df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)
     ) * 100
 
+    # 2. MACD (12, 26, 9)
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
+    # 3. MFI (Money Flow Index 14)
     typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
     raw_mf = typical_price * df["Volume"]
     pos_mf = (
@@ -142,6 +146,7 @@ def calculate_indicators(df):
     mfr = pos_mf / neg_mf
     df["MFI"] = 100 - (100 / (1 + mfr))
 
+    # 3.1 CMF (Chaikin Money Flow - 20 phiên)
     mf_multiplier = (
         (df["Close"] - df["Low"]) - (df["High"] - df["Close"])
     ) / (df["High"] - df["Low"] + 1e-9)
@@ -150,9 +155,11 @@ def calculate_indicators(df):
         df["Volume"].rolling(20).sum() + 1e-9
     )
 
+    # 4. VWAP (Volume Weighted Average Price)
     tp_vol = typical_price * df["Volume"]
     df["VWAP"] = tp_vol.cumsum() / (df["Volume"].cumsum() + 1e-9)
 
+    # 5. OBV & OBV EMA
     obv = [0]
     for i in range(1, len(df)):
         if df["Close"].iloc[i] > df["Close"].iloc[i - 1]:
@@ -164,11 +171,13 @@ def calculate_indicators(df):
     df["OBV"] = obv
     df["OBV_EMA"] = df["OBV"].ewm(span=20, adjust=False).mean()
 
+    # 6. Bollinger Bands (20, 2)
     df["BB_Middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
 
+    # 7. ATR (Average True Range - 14)
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -177,6 +186,7 @@ def calculate_indicators(df):
     )
     df["ATR"] = true_range.rolling(14).mean()
 
+    # 7.1 Keltner Channels (20, ATR multiplier 1.5)
     df["KC_Middle"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["KC_Upper"] = df["KC_Middle"] + (df["ATR"] * 1.5)
     df["KC_Lower"] = df["KC_Middle"] - (df["ATR"] * 1.5)
@@ -184,6 +194,7 @@ def calculate_indicators(df):
         df["BB_Lower"] > df["KC_Lower"]
     )
 
+    # 8. ADX (Average Directional Index - 14)
     plus_dm = df["High"].diff()
     minus_dm = df["Low"].diff()
     plus_dm = np.where(
@@ -202,6 +213,7 @@ def calculate_indicators(df):
     dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)
     df["ADX"] = dx.rolling(14).mean()
 
+    # 9. Linear Regression Slope (20 phiên)
     slopes = [np.nan] * 19
     for i in range(19, len(df)):
         y = df["Close"].iloc[i - 19 : i + 1].values
@@ -210,6 +222,7 @@ def calculate_indicators(df):
         slopes.append(slope)
     df["Slope"] = slopes
 
+    # 10. Ichimoku Kinko Hyo (9, 26, 52) & Chikou Span
     df["Tenkan_sen"] = (
         df["High"].rolling(9).max() + df["Low"].rolling(9).min()
     ) / 2
@@ -276,6 +289,8 @@ def analyze_stock(symbol, resolution="D", count=250):
     close = last_row["Close"]
     rsi = last_row["RSI"]
     stoch_rsi = last_row["Stoch_RSI"]
+    macd_hist = last_row["MACD_Hist"]
+    mfi = last_row["MFI"]
     cmf = last_row["CMF"]
     vwap = last_row["VWAP"]
     obv = last_row["OBV"]
@@ -302,12 +317,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     stop_loss = max(support - (atr * 1.5), close * 0.93)
     target_price = close + ((close - stop_loss) * 2.0)
 
+    # 1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN NÂNG CAO
     macro = (
         "🟢 TÍCH CỰC (UpTrend dài hạn)" if close > ma200 else "🔴 THẬN TRỌNG"
     )
     if close > ma200 and cmf > 0.05 and obv > obv_ema:
-        macro += "\n   ⭐ [CHÉN THÁNH A+]: Dòng tiền lớn gom mạnh!"
+        macro += "\n   ⭐ [CHÉN THÁNH A+]: Dòng tiền lớn kê lệnh gom mạnh!"
 
+    # 2. CHIẾN LƯỢC NGẮN HẠN (T+)
     st_reasons = []
     st_score = 0
     if adx > 25:
@@ -319,29 +336,43 @@ def analyze_stock(symbol, resolution="D", count=250):
     if stoch_rsi < 20:
         st_score += 2
         st_reasons.append(
-            f"Stoch RSI Quá bán ({stoch_rsi:.1f}) -> Sắp có nhịp hồi T+"
+            f"Stoch RSI Quá bán ({stoch_rsi:.1f}) -> Vùng đảo chiều T+ rất cao"
         )
     elif stoch_rsi > 80:
         st_score -= 2
-        st_reasons.append(f"Stoch RSI Quá mua ({stoch_rsi:.1f}) -> Rủi ro")
+        st_reasons.append(
+            f"Stoch RSI Quá mua ({stoch_rsi:.1f}) -> Rủi ro điều chỉnh ngắn hạn"
+        )
+
+    if mfi > 50:
+        st_score += 1
+        st_reasons.append(f"Dòng tiền nội tại MFI khỏe ({mfi:.1f} > 50)")
+    else:
+        st_score -= 1
+        st_reasons.append(f"Dòng tiền nội tại MFI yếu ({mfi:.1f} < 50)")
+
+    if macd_hist > 0:
+        st_score += 1
+        st_reasons.append("Động lượng MACD Histogram dương (Lực mua áp đảo)")
+    else:
+        st_score -= 1
+        st_reasons.append("Động lượng MACD Histogram âm (Lực bán chiếm ưu thế)")
 
     if close >= vwap:
         st_score += 1.5
         st_reasons.append(f"Giá nằm trên VWAP ({vwap:,.0f}): Phe mua kiểm soát")
     else:
         st_score -= 1.5
-        st_reasons.append(f"Giá dưới VWAP ({vwap:,.0f}): Lực bán ngắn hạn")
+        st_reasons.append(f"Giá dưới VWAP ({vwap:,.0f}): Áp lực bán ngắn hạn")
 
-    st_action = (
-        "🟢 MUA GOM / LƯỚT T+ TÍCH CỰC"
-        if st_score >= 2.5
-        else (
-            "🔴 CANH BÁN / HẠ TỶ TRỌNG"
-            if st_score <= -1.5
-            else "🟡 QUAN SÁT THÊM"
-        )
-    )
+    if st_score >= 3:
+        st_action = "🟢 MUA GOM / LƯỚT T+ TÍCH CỰC (Xác suất cao)"
+    elif st_score <= -2:
+        st_action = "🔴 CANH BÁN / HẠ TỶ TRỌNG (Rủi ro cao)"
+    else:
+        st_action = "🟡 QUAN SÁT / CHỜ CHIẾT KHẤU THÊM"
 
+    # 3. CHIẾN LƯỢC TRUNG HẠN (1 - 3 THÁNG)
     mt_score = 0
     mt_reasons = []
     if close > kijun and (not np.isnan(chikou) and close > chikou):
@@ -351,25 +382,23 @@ def analyze_stock(symbol, resolution="D", count=250):
         )
     else:
         mt_score += 1
-        mt_reasons.append("Đang dao động tích lũy trung hạn")
+        mt_reasons.append("Đang dao động tích lũy trong biên độ trung hạn")
 
     if slope > 0:
-        mt_score += 1
+        mt_score += 1.5
         mt_reasons.append(f"Độ dốc hồi quy tuyến tính Dương (+{slope:.2f})")
     else:
-        mt_score -= 1
+        mt_score -= 1.5
         mt_reasons.append(f"Độ dốc hồi quy tuyến tính Âm ({slope:.2f})")
 
-    mt_action = (
-        "🟢 NẮM GIỮ / TÍCH SẢN TRUNG HẠN"
-        if mt_score >= 2.5
-        else (
-            "🔴 THOÁT HÀNG / BẢO TOÀN VỐN"
-            if mt_score <= -1.5
-            else "🟡 CHỜ BREAKOUT"
-        )
-    )
+    if mt_score >= 3:
+        mt_action = "🟢 NẮM GIỮ / TÍCH SẢN TRUNG HẠN"
+    elif mt_score <= -1:
+        mt_action = "🔴 THOÁT HÀNG / BẢO TOÀN VỐN"
+    else:
+        mt_action = "🟡 CHỜ XÁC NHẬN PHÁ VỠ (BREAKOUT)"
 
+    # 4. DÀI HẠN
     lt_action = (
         "🟢 ĐẦU TƯ GIÁ TRỊ / MUA TÍCH SẢN LỚN"
         if ma50 > ma200 and close > ma200
@@ -385,27 +414,32 @@ def analyze_stock(symbol, resolution="D", count=250):
     }
     res_display = resolution_labels.get(resolution, resolution)
 
+    # --- SOẠN BÁO CÁO TELEGRAM CHI TIẾT ---
     text = f"📊 **BÁO CÁO PHÂN TÍCH CHUYÊN SÂU: {symbol}**\n"
     text += f"🗓️ Ngày: {last_row['time'].strftime('%Y-%m-%d')} | Khung: {res_display} | Số nến: {count}\n"
     text += f"💵 Giá đóng cửa: `{close:,.0f} VNĐ`\n\n"
 
-    text += f"🌐 **1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN:**\n"
+    text += f"🌐 **1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN LỚN:**\n"
     text += f"• Trạng thái: {macro}\n"
     text += (
         f"• Dòng tiền Chaikin (CMF): `{cmf:.2f}`"
         f" ({'Tiền vào' if cmf > 0 else 'Tiền ra'})\n"
     )
     text += (
+        f"• Chỉ số dòng tiền nội tại (MFI): `{mfi:.1f}`"
+        f" ({'Quá mua' if mfi > 80 else ('Quá bán' if mfi < 20 else 'Trung lập')})\n"
+    )
+    text += (
         f"• Dòng tiền thông minh (OBV):"
-        f" `{'Tích cực' if obv > obv_ema else 'Thận trọng'}`\n"
+        f" `{'Tích cực (Tích lũy)' if obv > obv_ema else 'Thận trọng (Phân phối)'}`\n"
     )
     if squeeze_on:
-        text += f"⚡ **[CẢNH BÁO SQUEEZE]:** Biến động nén, sắp bứt phá mạnh!\n"
+        text += f"⚡ **[CẢNH BÁO SQUEEZE]:** Biến động nén Bollinger trong Keltner, chuẩn bị bứt phá mạnh!\n"
 
     text += f"\n📊 **2. HỒ SƠ KHỐI LƯỢNG (VOLUME PROFILE):**\n"
     text += f"• POC (Tâm dòng tiền hút giá): `{poc:,.0f} VNĐ`\n"
-    text += f"• VAH (Kháng cự Volume): `{vah:,.0f} VNĐ`\n"
-    text += f"• VAL (Hỗ trợ Volume): `{val:,.0f} VNĐ`\n"
+    text += f"• VAH (Kháng cự Volume mạnh): `{vah:,.0f} VNĐ`\n"
+    text += f"• VAL (Hỗ trợ Volume mạnh): `{val:,.0f} VNĐ`\n"
 
     text += f"\n🎯 **3. QUẢN TRỊ RỦI RO & CHIẾN LƯỢC GIAO DỊCH:**\n"
     text += (
@@ -418,15 +452,16 @@ def analyze_stock(symbol, resolution="D", count=250):
         f" `{target_price:,.0f} VNĐ`\n"
     )
 
-    text += f"\n⚡ **4. KHUYẾN NGHỊ CHI TIẾT ĐA KHUNG:**\n"
-    text += f"• **Ngắn hạn (T+):** *{st_action}*\n"
+    text += f"\n⚡ **4. KHUYẾN NGHỊ RA QUYẾT ĐỊNH ĐA KHUNG:**\n"
+    text += f"• **Ngắn hạn (T+):** *{st_action}* (Điểm: {st_score})\n"
     for r in st_reasons:
         text += f"   - {r}\n"
-    text += f"• **Trung hạn (1-3 tháng):** *{mt_action}*\n"
+    text += f"• **Trung hạn (1-3 tháng):** *{mt_action}* (Điểm: {mt_score})\n"
     for r in mt_reasons:
         text += f"   - {r}\n"
     text += f"• **Dài hạn (Tích sản):** *{lt_action}*\n"
 
+    # --- VẼ BIỂU ĐỒ NÂNG CAO ---
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(
         df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2
@@ -477,7 +512,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         alpha=0.15,
     )
     ax.set_title(
-        f"Phân Tích Kỹ Thuật - {symbol} ({res_display} - {count} nến)",
+        f"Phân Tích Kỹ Thuật Chuyên Sâu - {symbol} ({res_display} - {count} nến)",
         fontsize=11,
         fontweight="bold",
     )
@@ -499,7 +534,7 @@ async def start_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     await update.message.reply_text(
-        "👋 Chào mừng bạn đến với Bot Phân Tích Chứng Khoán!\n\n"
+        "👋 Chào mừng bạn đến với Bot Phân Tích Chứng Khoán Chuyên Sâu!\n\n"
         "Hãy gõ mã cổ phiếu bạn muốn kiểm tra (Ví dụ: `HPG`, `VHM`, `SSI`...)"
     )
 
@@ -510,12 +545,11 @@ async def handle_message(
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
         await update.message.reply_text(
-            "⚠️ Vui lòng nhập mã cổ phiếu hợp lệ (VD: HPG, VHM, SSI)!"
+            "⚠️ Vui lòng nhập mã cổ phiếu hợp lệ (VD: HPG, VNM, SSI)!"
         )
         return
 
     symbol = text
-    # Tạo bảng nút bấm chọn Khung thời gian & Số nến giống PC
     keyboard = [
         [
             InlineKeyboardButton(
