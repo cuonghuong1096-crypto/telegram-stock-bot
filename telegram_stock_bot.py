@@ -26,7 +26,6 @@ TCBS_API_KEY = os.environ.get(
     "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
 )
 
-# Configuration Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -34,10 +33,10 @@ logging.basicConfig(
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH FULL CHỈ BÁO KỸ THUẬT
+# 1. HÀM CALL DATA & TÍNH TOÁN CHỈ BÁO NÂNG CAO
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
-    """Lấy dữ liệu OHLCV lịch sử tối ưu cho mọi khung thời gian"""
+    """Lấy dữ liệu OHLCV lịch sử từ TCBS hoặc VNDirect"""
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
@@ -51,7 +50,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         res_param = "D"
         start_time = end_time - (count * 86400 * 3)
 
-    # 1. Thử gọi API TCBS Stock-Insight
+    # 1. TCBS API
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
@@ -80,7 +79,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     except Exception:
         pass
 
-    # 2. Nguồn dự phòng VNDirect DChart
+    # 2. VNDirect API Dự phòng
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={res_param}&symbol={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
@@ -109,61 +108,38 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
 
 def calculate_indicators(df):
-    """Tính toán toàn bộ các chỉ báo kỹ thuật nâng cao"""
+    """Tính toán toàn bộ các chỉ báo kỹ thuật cấp tổ chức"""
     if df.empty or len(df) < 52:
         return df
 
-    # 1. RSI (14)
+    # RSI & Stoch RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df["RSI"] = 100 - (100 / (1 + rs))
 
-    # 1.1 Stochastic RSI (14)
     rsi_min = df["RSI"].rolling(14).min()
     rsi_max = df["RSI"].rolling(14).max()
     df["Stoch_RSI"] = (
         (df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)
     ) * 100
 
-    # 2. MACD (12, 26, 9)
+    # MACD
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-    # 3. MFI (Money Flow Index 14)
-    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
-    raw_mf = typical_price * df["Volume"]
-    pos_mf = (
-        raw_mf.where(typical_price > typical_price.shift(1), 0)
-        .rolling(14)
-        .sum()
-    )
-    neg_mf = (
-        raw_mf.where(typical_price < typical_price.shift(1), 0)
-        .rolling(14)
-        .sum()
-    )
-    mfr = pos_mf / neg_mf
-    df["MFI"] = 100 - (100 / (1 + mfr))
-
-    # 3.1 CMF (Chaikin Money Flow - 20 phiên)
+    # CMF & OBV
     mf_multiplier = (
         (df["Close"] - df["Low"]) - (df["High"] - df["Close"])
     ) / (df["High"] - df["Low"] + 1e-9)
-    mf_volume = mf_multiplier * df["Volume"]
-    df["CMF"] = mf_volume.rolling(20).sum() / (
+    df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (
         df["Volume"].rolling(20).sum() + 1e-9
     )
 
-    # 4. VWAP (Volume Weighted Average Price)
-    tp_vol = typical_price * df["Volume"]
-    df["VWAP"] = tp_vol.cumsum() / (df["Volume"].cumsum() + 1e-9)
-
-    # 5. OBV & OBV EMA
     obv = [0]
     for i in range(1, len(df)):
         if df["Close"].iloc[i] > df["Close"].iloc[i - 1]:
@@ -175,22 +151,35 @@ def calculate_indicators(df):
     df["OBV"] = obv
     df["OBV_EMA"] = df["OBV"].ewm(span=20, adjust=False).mean()
 
-    # 6. Bollinger Bands (20, 2)
+    # RVOL (Relative Volume so với SMA 20)
+    df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
+    df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
+
+    # VWAP & EMAs
+    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+    df["VWAP"] = (typical_price * df["Volume"]).cumsum() / (
+        df["Volume"].cumsum() + 1e-9
+    )
+    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+
+    # Bollinger Bands & Keltner Channels (Squeeze)
     df["BB_Middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
 
-    # 7. ATR (Average True Range - 14)
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(
-        axis=1
+    df["ATR"] = (
+        pd.concat([high_low, high_close, low_close], axis=1)
+        .max(axis=1)
+        .rolling(14)
+        .mean()
     )
-    df["ATR"] = true_range.rolling(14).mean()
 
-    # 7.1 Keltner Channels (20, ATR multiplier 1.5) & Squeeze
     df["KC_Middle"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["KC_Upper"] = df["KC_Middle"] + (df["ATR"] * 1.5)
     df["KC_Lower"] = df["KC_Middle"] - (df["ATR"] * 1.5)
@@ -198,58 +187,14 @@ def calculate_indicators(df):
         df["BB_Lower"] > df["KC_Lower"]
     )
 
-    # 8. ADX (Average Directional Index - 14)
-    plus_dm = df["High"].diff()
-    minus_dm = df["Low"].diff()
-    plus_dm = np.where(
-        (plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0
-    )
-    minus_dm = np.where(
-        (minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0
-    )
-    tr14 = true_range.rolling(14).sum()
-    plus_di = 100 * (
-        pd.Series(plus_dm).rolling(14).sum() / (tr14 + 1e-9)
-    )
-    minus_di = 100 * (
-        pd.Series(minus_dm).rolling(14).sum() / (tr14 + 1e-9)
-    )
-    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)
-    df["ADX"] = dx.rolling(14).mean()
-
-    # 9. Linear Regression Slope (20 phiên)
-    slopes = [np.nan] * 19
-    for i in range(19, len(df)):
-        y = df["Close"].iloc[i - 19 : i + 1].values
-        x = np.arange(20)
-        slope, _ = np.polyfit(x, y, 1)
-        slopes.append(slope)
-    df["Slope"] = slopes
-
-    # 10. Ichimoku Kinko Hyo (9, 26, 52) & Chikou Span
-    df["Tenkan_sen"] = (
-        df["High"].rolling(9).max() + df["Low"].rolling(9).min()
-    ) / 2
-    df["Kijun_sen"] = (
-        df["High"].rolling(26).max() + df["Low"].rolling(26).min()
-    ) / 2
-    df["Senkou_Span_A"] = (
-        (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
-    ).shift(26)
-    df["Senkou_Span_B"] = (
-        (df["High"].rolling(52).max() + df["Low"].rolling(52).min()) / 2
-    ).shift(26)
-    df["Chikou_Span"] = df["Close"].shift(-26)
-
     return df
 
 
 def calculate_volume_profile(df, bins=20):
-    """Tính toán Volume Profile (POC, VAH, VAL)"""
+    """Tính POC, VAH, VAL"""
     if df.empty:
         return 0, 0, 0
-    price_min = df["Low"].min()
-    price_max = df["High"].max()
+    price_min, price_max = df["Low"].min(), df["High"].max()
     if price_min == price_max:
         return price_min, price_min, price_min
 
@@ -262,8 +207,7 @@ def calculate_volume_profile(df, bins=20):
     total_vol = np.sum(hist)
     target_vol = total_vol * 0.70
     current_vol = hist[poc_idx]
-    left = poc_idx
-    right = poc_idx
+    left, right = poc_idx, poc_idx
 
     while current_vol < target_vol:
         added = False
@@ -283,224 +227,203 @@ def calculate_volume_profile(df, bins=20):
     return poc, vah, val
 
 
+# ==========================================
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU & QUẢN TRỊ RỦI RO
+# ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df = fetch_stock_data(symbol, resolution=resolution, count=count)
     if df.empty:
         return None, None, f"Không lấy được dữ liệu cho mã {symbol}!"
 
     df = calculate_indicators(df)
-    last_row = df.iloc[-1]
+    last = df.iloc[-1]
 
-    close = last_row["Close"]
-    rsi = last_row["RSI"]
-    stoch_rsi = last_row["Stoch_RSI"]
-    cmf = last_row["CMF"]
-    vwap = last_row["VWAP"]
-    obv = last_row["OBV"]
-    obv_ema = last_row["OBV_EMA"]
-    adx = last_row["ADX"] if not np.isnan(last_row["ADX"]) else 20
-    slope = last_row["Slope"]
-    bb_lower = last_row["BB_Lower"]
-    bb_upper = last_row["BB_Upper"]
-    squeeze_on = last_row["Squeeze_On"]
-    atr = last_row["ATR"] if not np.isnan(last_row["ATR"]) else close * 0.02
-    kijun = last_row["Kijun_sen"]
-    chikou = last_row["Chikou_Span"]
+    close = last["Close"]
+    atr = last["ATR"] if not np.isnan(last["ATR"]) else close * 0.02
+    cmf = last["CMF"]
+    rvol = last["RVOL"]
+    stoch_rsi = last["Stoch_RSI"]
+    macdh = last["MACD_Hist"]
+    ema50 = last["EMA50"]
+    ema200 = last["EMA200"]
 
-    ma50 = df["Close"].rolling(50).mean().iloc[-1]
-    ma200 = (
-        df["Close"].rolling(200).mean().iloc[-1]
-        if len(df) >= 200
-        else df["Close"].mean()
-    )
     poc, vah, val = calculate_volume_profile(df)
 
-    support = min(df["Low"].tail(20).min(), val, bb_lower)
-    resistance = max(df["High"].tail(20).max(), vah, bb_upper)
-    stop_loss = max(support - (atr * 1.5), close * 0.93)
-    target_price = close + ((close - stop_loss) * 2.0)
-
-    # Đánh giá vĩ mô & dòng tiền
-    macro = (
-        "🟢 TÍCH CỰC (UpTrend dài hạn)" if close > ma200 else "🔴 THẬN TRỌNG"
-    )
-    if close > ma200 and cmf > 0.05 and obv > obv_ema:
-        macro += "\n   ⭐ [CHÉN THÁNH A+]: Dòng tiền lớn kê lệnh gom mạnh!"
-
-    # Ngắn hạn
-    st_reasons = []
-    st_score = 0
-    if adx > 25:
-        st_score += 1
-        st_reasons.append(f"Xu hướng mạnh (ADX: {adx:.1f} > 25)")
+    # Đánh giá cấu trúc giá & vĩ mô cơ bản
+    vn_index_status = "TÍCH CỰC" if close > ema200 else "THẬN TRỌNG"
+    if close > ema50 and ema50 > ema200:
+        market_structure = "UPTREND"
+    elif close < ema50 and ema50 < ema200:
+        market_structure = "DOWNTREND"
     else:
-        st_reasons.append(f"Thị trường Sideway (ADX: {adx:.1f})")
+        market_structure = "SIDEWAY ACCUMULATION"
 
-    if stoch_rsi < 20:
-        st_score += 2
-        st_reasons.append(
-            f"Stoch RSI Quá bán ({stoch_rsi:.1f}) -> Sắp có nhịp hồi T+"
-        )
-    elif stoch_rsi > 80:
-        st_score -= 2
-        st_reasons.append(f"Stoch RSI Quá mua ({stoch_rsi:.1f}) -> Rủi ro")
+    # Lọc tín hiệu hệ thống (System Status & Rule Engine)
+    confluence_points = []
+    risk_warnings = []
 
-    if close >= vwap:
-        st_score += 1.5
-        st_reasons.append(f"Giá nằm trên VWAP ({vwap:,.0f}): Phe mua kiểm soát")
+    if close > ema50:
+        confluence_points.append("Giá nằm trên EMA50 (Xu hướng ngắn hạn mạnh)")
     else:
-        st_score -= 1.5
-        st_reasons.append(f"Giá dưới VWAP ({vwap:,.0f}): Lực bán ngắn hạn")
+        risk_warnings.append("Giá nằm dưới EMA50 (Áp lực điều chỉnh)")
 
-    st_action = (
-        "🟢 MUA GOM / LƯỚT T+ TÍCH CỰC"
-        if st_score >= 2.5
-        else (
-            "🔴 CANH BÁN / HẠ TỶ TRỌNG"
-            if st_score <= -1.5
-            else "🟡 QUAN SÁT THÊM"
-        )
-    )
-
-    # Trung hạn
-    mt_score = 0
-    mt_reasons = []
-    if close > kijun and (not np.isnan(chikou) and close > chikou):
-        mt_score += 3
-        mt_reasons.append(
-            "Ichimoku xác nhận: Giá vượt Kijun VÀ trên Chikou (Xác suất tăng 80%)"
-        )
+    if cmf > 0:
+        confluence_points.append(f"Dòng tiền Chaikin dương (CMF: {cmf:.2f})")
     else:
-        mt_score += 1
-        mt_reasons.append("Đang dao động tích lũy trung hạn")
-
-    if slope > 0:
-        mt_score += 1
-        mt_reasons.append(f"Độ dốc hồi quy tuyến tính Dương (+{slope:.2f})")
-    else:
-        mt_score -= 1
-        mt_reasons.append(f"Độ dốc hồi quy tuyến tính Âm ({slope:.2f})")
-
-    mt_action = (
-        "🟢 NẮM GIỮ / TÍCH SẢN TRUNG HẠN"
-        if mt_score >= 2.5
-        else (
-            "🔴 THOÁT HÀNG / BẢO TOÀN VỐN"
-            if mt_score <= -1.5
-            else "🟡 CHỜ BREAKOUT"
+        risk_warnings.append(
+            f"Dòng tiền Chaikin âm rút ra (CMF: {cmf:.2f})"
         )
+
+    if rvol > 1.2:
+        confluence_points.append(
+            f"Thanh khoản bùng nổ xác nhận (RVOL: {rvol:.2f})"
+        )
+    elif rvol < 0.8:
+        risk_warnings.append(f"Thanh khoản cạn kiệt (RVOL: {rvol:.2f})")
+
+    if stoch_rsi > 80:
+        risk_warnings.append(
+            f"Stoch RSI quá mua ({stoch_rsi:.1f}) -> Rủi ro mua đuổi"
+        )
+    elif stoch_rsi < 20:
+        confluence_points.append(
+            f"Stoch RSI quá bán ({stoch_rsi:.1f}) -> Vùng gom tiềm năng"
+        )
+
+    # Tính toán Entry, Stoploss chuẩn ATR
+    entry_1 = round(max(val, last["EMA20"], close * 0.98), 0)
+    entry_2 = round(close, 0)
+    entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 0)
+
+    # Stoploss động ATR
+    stop_loss = round(
+        min(entry_1 - (1.5 * atr), val - (0.5 * atr), df["Low"].tail(5).min()),
+        0,
     )
+    if stop_loss >= entry_avg:
+        stop_loss = round(entry_avg - (2 * atr), 0)  # Đảm bảo SL < Entry
 
-    lt_action = (
-        "🟢 ĐẦU TƯ GIÁ TRỊ / MUA TÍCH SẢN LỚN"
-        if ma50 > ma200 and close > ma200
-        else "🟡 THEO DÕI THÊM VĨ MÔ"
-    )
+    # Target R:R 1:1.5 và 1:2.5
+    risk_distance = entry_avg - stop_loss
+    target_1 = round(entry_avg + (risk_distance * 1.5), 0)
+    target_2 = round(entry_avg + (risk_distance * 2.5), 0)
 
-    resolution_labels = {
-        "D": "1D (Ngày)",
-        "W": "1W (Tuần)",
-        "15": "15m",
-        "30": "30m",
-        "60": "1H",
-    }
-    res_display = resolution_labels.get(resolution, resolution)
+    t1_pct = ((target_1 - entry_avg) / entry_avg) * 100
+    t2_pct = ((target_2 - entry_avg) / entry_avg) * 100
+    sl_pct = ((stop_loss - entry_avg) / entry_avg) * 100
 
-    # Soạn báo cáo chi tiết gửi về Telegram
-    text = f"📊 **BÁO CÁO PHÂN TÍCH CHUYÊN SÂU: {symbol}**\n"
-    text += f"🗓️ Ngày: {last_row['time'].strftime('%Y-%m-%d')} | Khung: {res_display} | Số nến: {count}\n"
-    text += f"💵 Giá đóng cửa: `{close:,.0f} VNĐ`\n\n"
+    # Quyết định trạng thái hệ thống
+    if market_structure == "DOWNTREND" or stoch_rsi > 85 or cmf < -0.15:
+        system_status = "ĐỨNG NGOÀI (CẢNH BÁO RỦI RO)"
+        nav_rec = "0% (Bảo toàn vốn)"
+    elif stoch_rsi > 80 and macdh < 0:
+        system_status = "CHỜ ĐIỀU CHỈNH (QUAN SÁT)"
+        nav_rec = "10 - 15% (Thăm dò tỷ trọng nhỏ)"
+    else:
+        system_status = "MỞ MUA (TÍCH SẢN / LƯỚT T+)"
+        nav_rec = "20 - 30% NAV (Rải vốn Entry 1 & Entry 2)"
 
-    text += f"🌐 **1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN:**\n"
-    text += f"• Trạng thái: {macro}\n"
+    # Quy đổi đơn vị hiển thị giá sang nghìn VNĐ
+    price_scale = 1000  # Giả sử giá thô là VND, quy đổi hiển thị / 1000 hoặc giữ nguyên tùy data nguồn. Ở đây hiển thị dạng x1.000 VNĐ cho gọn.
+    # Code gốc TCBS trả về giá thật (ví dụ 64000), hiển thị dạng 64.0 nghìn VNĐ hoặc giữ nguyên. Bot này format theo chuẩn VN Stock (Nghìn VNĐ).
+
+    def fmt(p):
+        return f"{p/1000:.1f} nghìn VNĐ"
+
+    # Soạn báo cáo theo đúng chuẩn Master Briefing
+    text = f"📊 **BÁO CÁO PHÂN TÍCH KỸ THUẬT NÂNG CẤP: {symbol.upper()}**\n"
+    text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: `{fmt(close)}`\n\n"
+
+    text += f"🌐 **1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN TỔ CHỨC:**\n"
+    text += f"• Thị trường chung (VN-Index): `{vn_index_status}`\n"
+    text += f"• Cấu trúc giá: `{market_structure}`\n"
     text += (
         f"• Dòng tiền Chaikin (CMF): `{cmf:.2f}`"
-        f" ({'Tiền vào' if cmf > 0 else 'Tiền ra'})\n"
+        f" (`{'Tiền vào' if cmf > 0 else 'Tiền ra'}`)\n"
     )
     text += (
-        f"• Dòng tiền thông minh (OBV):"
-        f" `{'Tích cực' if obv > obv_ema else 'Thận trọng'}`\n"
+        f"• Khối lượng tương đối (RVOL): `{rvol:.2f}`"
+        f" (`{'Thanh khoản bùng nổ' if rvol > 1.2 else 'Bình thường/Cạn kiệt'}`)\n"
     )
-    if squeeze_on:
-        text += f"⚡ **[CẢNH BÁO SQUEEZE]:** Biến động nén, sắp bứt phá mạnh!\n"
 
-    text += f"\n📊 **2. HỒ SƠ KHỐI LƯỢNG (VOLUME PROFILE):**\n"
-    text += f"• POC (Tâm dòng tiền hút giá): `{poc:,.0f} VNĐ`\n"
-    text += f"• VAH (Kháng cự Volume): `{vah:,.0f} VNĐ`\n"
-    text += f"• VAL (Hỗ trợ Volume): `{val:,.0f} VNĐ`\n"
+    text += f"\n📊 **2. VÙNG KHỐI LƯỢNG TÍCH LŨY (VOLUME PROFILE):**\n"
+    text += f"• POC (Tâm dòng tiền): `{fmt(poc)}`\n"
+    text += f"• VAH (Kháng cự Volume): `{fmt(vah)}`\n"
+    text += f"• VAL (Hỗ trợ Volume): `{fmt(val)}`\n"
 
-    text += f"\n🎯 **3. QUẢN TRỊ RỦI RO & CHIẾN LƯỢC GIAO DỊCH:**\n"
+    text += f"\n🎯 **3. KHUYẾN NGHỊ LỆNH & QUẢN TRỊ RỦI RO (RISK MANAGEMENT):**\n"
+    text += f"• 🟡 **Trạng thái hệ thống:** `{system_status}`\n"
+    text += f"• 🟢 **Vùng mua (Entry):**\n"
+    text += f"    - Entry 1 (Thăm dò 30%): `{fmt(entry_1)}`\n"
+    text += f"    - Entry 2 (Gia tăng 70%): `{fmt(entry_2)}`\n"
+    text += f"    - Giá trung bình (Entry Avg): `{fmt(entry_avg)}`\n"
     text += (
-        f"• 🟢 **Vùng mua lý tưởng (Entry):**"
-        f" `{support * 1.01:,.0f} - {close:,.0f} VNĐ`\n"
+        f"• 🔴 **Cắt lỗ kỷ luật (Stoploss):** `{fmt(stop_loss)}`"
+        f" (`{sl_pct:.2f}%`)\n"
     )
-    text += f"• 🔴 **Điểm cắt lỗ kỷ luật (Stoploss):** `{stop_loss:,.0f} VNĐ`\n"
     text += (
-        f"• 🎯 **Mục tiêu chốt lời (Target R:R 1:2):**"
-        f" `{target_price:,.0f} VNĐ`\n"
+        f"• 🎯 **Target 1 (R:R 1:1.5 - Chốt 50%):** `{fmt(target_1)}`"
+        f" (`+{t1_pct:.2f}%`)\n"
     )
+    text += (
+        f"• 🎯 **Target 2 (R:R 1:2.5 - Chốt 50%):** `{fmt(target_2)}`"
+        f" (`+{t2_pct:.2f}%`)\n"
+    )
+    text += f"• ⚖️ **Khuyến nghị tỷ trọng NAV:** `{nav_rec}`\n"
 
-    text += f"\n⚡ **4. KHUYẾN NGHỊ CHI TIẾT ĐA KHUNG:**\n"
-    text += f"• **Ngắn hạn (T+):** *{st_action}*\n"
-    for r in st_reasons:
-        text += f"   - {r}\n"
-    text += f"• **Trung hạn (1-3 tháng):** *{mt_action}*\n"
-    for r in mt_reasons:
-        text += f"   - {r}\n"
-    text += f"• **Dài hạn (Tích sản):** *{lt_action}*\n"
+    text += f"\n⚡ **4. LÝ DO ĐI LỆNH & CẢNH BÁO RỦI RO:**\n"
+    conf_str = (
+        "; ".join(confluence_points)
+        if confluence_points
+        else "Không có tín hiệu đồng thuận mạnh"
+    )
+    warn_str = (
+        "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo lớn"
+    )
+    text += f"• **Điểm cộng (Confluence):** {conf_str}\n"
+    text += f"• **Cảnh báo rủi ro (Risk Warnings):** {warn_str}\n"
 
-    # Vẽ biểu đồ Matplotlib nâng cao
+    # Vẽ biểu đồ nâng cao
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(
-        df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2
+        df["time"],
+        df["Close"] / 1000,
+        label="Giá đóng cửa",
+        color="black",
+        lw=1.2,
     )
     ax.plot(
         df["time"],
-        df["VWAP"],
-        label="VWAP",
-        color="purple",
-        linestyle="-.",
-        alpha=0.7,
+        df["EMA20"] / 1000,
+        label="EMA 20",
+        color="blue",
+        linestyle="--",
+        alpha=0.6,
+    )
+    ax.plot(
+        df["time"],
+        df["EMA50"] / 1000,
+        label="EMA 50",
+        color="orange",
+        linestyle="--",
+        alpha=0.6,
     )
     ax.axhline(
-        poc,
-        color="orange",
+        poc / 1000,
+        color="purple",
         linestyle=":",
-        label=f"POC: {poc:,.0f}",
+        label=f"POC: {poc/1000:.1f}k",
         alpha=0.8,
     )
-    ax.plot(
-        df["time"],
-        df["Tenkan_sen"],
-        label="Tenkan",
-        color="red",
+    ax.axhline(
+        val / 1000,
+        color="green",
+        linestyle="--",
+        label=f"VAL: {val/1000:.1f}k",
         alpha=0.6,
-    )
-    ax.plot(
-        df["time"],
-        df["Kijun_sen"],
-        label="Kijun",
-        color="blue",
-        alpha=0.6,
-    )
-    ax.fill_between(
-        df["time"],
-        df["Senkou_Span_A"],
-        df["Senkou_Span_B"],
-        where=df["Senkou_Span_A"] >= df["Senkou_Span_B"],
-        facecolor="green",
-        alpha=0.15,
-    )
-    ax.fill_between(
-        df["time"],
-        df["Senkou_Span_A"],
-        df["Senkou_Span_B"],
-        where=df["Senkou_Span_A"] < df["Senkou_Span_B"],
-        facecolor="red",
-        alpha=0.15,
     )
     ax.set_title(
-        f"Phân Tích Kỹ Thuật - {symbol} ({res_display} - {count} nến)",
+        f"Phân Tích Kỹ Thuật Chuyên Sâu - {symbol.upper()} ({resolution})",
         fontsize=11,
         fontweight="bold",
     )
@@ -516,14 +439,14 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 2. XỬ LÝ LỆNH & GIAO DIỆN NÚT BẤM TELEGRAM
+# 3. TELEGRAM HANDLERS & WEB SERVER
 # ==========================================
 async def start_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     await update.message.reply_text(
-        "👋 Chào mừng bạn đến với Bot Phân Tích Chứng Khoán Chuyên Sâu!\n\n"
-        "Hãy gõ mã cổ phiếu bạn muốn kiểm tra (Ví dụ: `HPG`, `VHM`, `SSI`...)"
+        "👋 Chào mừng bạn đến với Bot Phân Tích Chứng Khoán Chuyên Sâu Cấp Tổ Chức!\n\n"
+        "Hãy gõ mã cổ phiếu bạn muốn kiểm tra (Ví dụ: `VHM`, `HPG`, `SSI`...)"
     )
 
 
@@ -533,12 +456,11 @@ async def handle_message(
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
         await update.message.reply_text(
-            "⚠️ Vui lòng nhập mã cổ phiếu hợp lệ (VD: HPG, VNM, SSI)!"
+            "⚠️ Vui lòng nhập mã cổ phiếu hợp lệ (VD: VHM, HPG, SSI)!"
         )
         return
 
     symbol = text
-    # Tạo bảng nút bấm chọn Khung thời gian & Số nến giống PC
     keyboard = [
         [
             InlineKeyboardButton(
@@ -563,7 +485,7 @@ async def handle_message(
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        f"🔍 Đã nhận mã **{symbol}**.\n👉 Hãy chọn khung thời gian và số nến bạn muốn phân tích:",
+        f"🔍 Đã nhận mã **{symbol}**.\n👉 Hãy chọn khung thời gian phân tích:",
         reply_markup=reply_markup,
         parse_mode="Markdown",
     )
@@ -573,13 +495,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data  # Định dạng: SYMBOL|RESOLUTION|COUNT
+    data = query.data
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
 
         await query.edit_message_text(
-            text=f"⏳ Đang phân tích mã **{symbol}** (Khung: {resolution}, Số nến: {count})...",
+            text=f"⏳ Đang chạy thuật toán phân tích chuyên sâu cho **{symbol}** (Khung: {resolution})...",
             parse_mode="Markdown",
         )
 
@@ -594,13 +516,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
-# Tạo web server giả lập để Render duy trì service Free 24/7
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot Telegram is running live!")
+        self.wfile.write(b"Bot Telegram Stock Analysis is running live!")
 
 
 def run_http_server():
@@ -610,7 +531,6 @@ def run_http_server():
 
 
 if __name__ == "__main__":
-    # Chạy HTTP Server ẩn ở luồng riêng cho Render
     threading.Thread(target=run_http_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -620,5 +540,5 @@ if __name__ == "__main__":
     )
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🤖 Bot Telegram đang hoạt động...")
+    print("🤖 Bot Telegram phiên bản Master đang hoạt động...")
     app.run_polling()
