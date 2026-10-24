@@ -44,7 +44,7 @@ WATCHLIST_SCAN = [
 
 ACTIVE_CHAT_IDS = set()
 USER_PORTFOLIOS = {}
-ALERTED_TODAY = set()  # Tránh gửi trùng lặp cảnh báo trong phiên
+ALERTED_TODAY = set()
 
 executor = ThreadPoolExecutor(max_workers=8)
 
@@ -135,14 +135,12 @@ def calculate_indicators(df):
     rsi_max = df["RSI"].rolling(14).max()
     df["Stoch_RSI"] = ((df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)) * 100
 
-    # MACD Indicators
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-    # Bollinger Bands Indicators
     df["BB_Middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
@@ -236,7 +234,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (8 PHẦN - CHIA 2 TIN NHẮN)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (CHIA 2 PHẦN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -364,11 +362,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
-    # --- PHẦN 1: TỪ TIÊU ĐỀ ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
-    # MỤC 1
     text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
     text_part1 += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
     text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
@@ -379,7 +375,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
 
-    # MỤC 2
     text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
     text_part1 += f"• Thông số mây: {ichi_status}\n"
     text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
@@ -392,13 +387,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
-    # MỤC 3
     text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text_part1 += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n"
 
-    # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
@@ -408,9 +401,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: TỪ MỤC 5 ĐẾN MỤC 8 ---
     text_part2 = ""
-    # MỤC 5
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
@@ -418,7 +409,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG (MACD & BOLLINGER BANDS)
     text_part2 += f"📈 **6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:**\n"
     text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
@@ -429,13 +419,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (MARKET BREADTH & SECTOR)
     text_part2 += f"🌐 **7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:**\n"
     text_part2 += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
     text_part2 += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
 
-    # MỤC 8: TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP
     text_part2 += f"🏁 **8. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng quyết định: {final_action}"
@@ -502,9 +490,7 @@ def run_market_screener():
 
 
 def check_realtime_alerts(application):
-    """Quét và gửi cảnh báo Real-time Breakout & Phân kỳ RSI/MACD trong giờ giao dịch"""
     now = datetime.datetime.now()
-    # Chỉ quét trong khung giờ giao dịch chứng khoán: 9h00 đến 14h45 các ngày từ Thứ 2 đến Thứ 6
     if now.weekday() >= 5:
         return
     if not (9 <= now.hour < 15 or (now.hour == 14 and now.minute <= 45)):
@@ -523,7 +509,7 @@ def check_realtime_alerts(application):
         
         close = last["Close"]
         rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        high_20 = df["High"].iloc[-20:-1].max() # Đỉnh cũ 20 phiên gần nhất
+        high_20 = df["High"].iloc[-20:-1].max()
         rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
         prev_rsi = prev["RSI"] if not np.isnan(prev["RSI"]) else 50.0
         macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
@@ -532,7 +518,6 @@ def check_realtime_alerts(application):
         alert_key_breakout = f"{symbol}_breakout_{today_str}"
         alert_key_div_bull = f"{symbol}_div_bull_{today_str}"
 
-        # 1. Cảnh báo Breakout theo thời gian thực (Vượt đỉnh 20 phiên + Thanh khoản gấp 2-3 lần)
         if close > high_20 and rvol >= 2.0 and alert_key_breakout not in ALERTED_TODAY:
             ALERTED_TODAY.add(alert_key_breakout)
             msg = (
@@ -548,8 +533,6 @@ def check_realtime_alerts(application):
                 except Exception:
                     pass
 
-        # 2. Cảnh báo Phân kỳ Dương RSI / MACD (Báo hiệu đáy / đảo chiều tăng)
-        # Điều kiện: Giá tạo đáy thấp hơn hoặc đi ngang nhưng RSI/MACD Histogram hướng lên mạnh từ vùng thấp
         if close <= prev["Close"] * 1.005 and rsi > prev_rsi + 3 and macd_hist > prev_macd_hist and alert_key_div_bull not in ALERTED_TODAY:
             ALERTED_TODAY.add(alert_key_div_bull)
             msg = (
@@ -634,7 +617,6 @@ def background_scheduler_thread(application):
     while True:
         now = datetime.datetime.now()
         
-        # Chạy kiểm tra cảnh báo real-time Breakout & Phân kỳ liên tục
         try:
             check_realtime_alerts(application)
         except Exception:
@@ -694,28 +676,31 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 4. TELEGRAM HANDLERS
+# 4. TELEGRAM HANDLERS (ĐÃ TỐI ƯU CẢNH BÁO LỆNH START)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
-    welcome_text = (
-        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
-        "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
-        "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
-        "`VHM`  *(hoặc nhập mã bất kỳ như HPG, PNJ, VRE)*\n\n"
-        "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
-        "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
-        "3️⃣ **Xem danh mục đầu tư & Mức giá cụ thể Chốt lời / Cắt lỗ:**\n"
-        "`/portfolio` \n\n"
-        "4️⃣ **Quét dòng tiền bùng nổ toàn thị trường:**\n"
-        "`/scan` \n\n"
-        "5️⃣ **Backtest hiệu suất chiến lược 200 phiên:**\n"
-        "`/backtest VHM` \n\n"
-        "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
-        "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*"
-    )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    try:
+        chat_id = update.effective_chat.id
+        ACTIVE_CHAT_IDS.add(chat_id)
+        welcome_text = (
+            "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
+            "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
+            "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
+            "`VHM`  *(hoặc nhập mã bất kỳ như HPG, PNJ, VRE)*\n\n"
+            "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
+            "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
+            "3️⃣ **Xem danh mục đầu tư & Mức giá cụ thể Chốt lời / Cắt lỗ:**\n"
+            "`/portfolio` \n\n"
+            "4️⃣ **Quét dòng tiền bùng nổ toàn thị trường:**\n"
+            "`/scan` \n\n"
+            "5️⃣ **Backtest hiệu suất chiến lược 200 phiên:**\n"
+            "`/backtest VHM` \n\n"
+            "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
+            "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*"
+        )
+        await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Lỗi lệnh /start: {e}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -949,5 +934,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System kèm Real-time Breakout Alert đang hoạt động...")
+    print("🚀 Bot Quant Trading System đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
