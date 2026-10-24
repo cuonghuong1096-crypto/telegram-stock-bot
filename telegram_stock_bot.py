@@ -134,11 +134,19 @@ def calculate_indicators(df):
     rsi_max = df["RSI"].rolling(14).max()
     df["Stoch_RSI"] = ((df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)) * 100
 
+    # MACD Indicators
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
+
+    # Bollinger Bands Indicators
+    df["BB_Middle"] = df["Close"].rolling(20).mean()
+    bb_std = df["Close"].rolling(20).std()
+    df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
+    df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
+    df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
 
     mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
     df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
@@ -180,7 +188,7 @@ def calculate_indicators(df):
     df["Tenkan_sen"] = (nine_high + nine_low) / 2
 
     twenty_six_high = df["High"].rolling(window=26).max()
-    twenty_six_low = df["Low"].rolling(window=26).min()
+    twenty_six_low = df["High"].rolling(window=26).min()
     df["Kijun_sen"] = (twenty_six_high + twenty_six_low) / 2
 
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
@@ -227,7 +235,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (6 PHẦN ĐẦY ĐỦ + 4 NÚT BẤM)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (MỞ RỘNG 8 PHẦN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -249,6 +257,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     ema50 = last["EMA50"]
     ema200 = last["EMA200"]
     lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
+
+    # MACD & Bollinger Values
+    macd = last["MACD"] if not np.isnan(last["MACD"]) else 0.0
+    macd_signal = last["MACD_Signal"] if not np.isnan(last["MACD_Signal"]) else 0.0
+    macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+    bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
+    bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
+    bb_width = last["BB_Width"] if not np.isnan(last["BB_Width"]) else 0.1
 
     tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
     kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
@@ -399,8 +415,25 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Cảnh báo rủi ro: {warn_str}\n"
     text += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CÓ % ĐỘ TIN CẬY & 4 NÚT BẤM
-    text += f"🏁 **6. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
+    # MỤC 6 MỚI: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG (MACD & BOLLINGER BANDS)
+    text += f"📈 **6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:**\n"
+    text += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
+    text biên_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
+    text += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạng thái: {biên_bb}\n"
+    text += f"👉 **Kết luận & Hành động:** "
+    if macd_hist > 0 and close > last["BB_Middle"]:
+        text += f"Động lượng MACD Histogram dương, giá duy trì trên đường trung bình Bollinger, xu hướng ngắn hạn tích cực.\n\n"
+    else:
+        text += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
+
+    # MỤC 7 MỚI: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (MARKET BREADTH & SECTOR)
+    text += f"🌐 **7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:**\n"
+    text += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
+    text += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
+    text += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
+
+    # MỤC 8 (CŨ LÀ 6): TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP
+    text += f"🏁 **8. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
     text += f"• Khuyến nghị: {final_icon}\n"
     text += f"• Định hướng quyết định: {final_action}"
 
