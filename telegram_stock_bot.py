@@ -1,14 +1,13 @@
 import datetime
 import io
-import os
 import logging
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -34,7 +33,7 @@ logging.basicConfig(
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH CHỈ BÁO KỸ THUẬT
+# 1. HÀM CALL DATA & TÍNH FULL CHỈ BÁO KỸ THUẬT
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -109,24 +108,44 @@ def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
 
+    # 1. RSI (14)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df["RSI"] = 100 - (100 / (1 + rs))
 
+    # 1.1 Stochastic RSI (14)
     rsi_min = df["RSI"].rolling(14).min()
     rsi_max = df["RSI"].rolling(14).max()
     df["Stoch_RSI"] = (
         (df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)
     ) * 100
 
+    # 2. MACD (12, 26, 9)
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
+    # 3. MFI (Money Flow Index 14)
     typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+    raw_mf = typical_price * df["Volume"]
+    pos_mf = (
+        raw_mf.where(typical_price > typical_price.shift(1), 0)
+        .rolling(14)
+        .sum()
+    )
+    neg_mf = (
+        raw_mf.where(typical_price < typical_price.shift(1), 0)
+        .rolling(14)
+        .sum()
+    )
+    mfr = pos_mf / neg_mf
+    df["MFI"] = 100 - (100 / (1 + mfr))
+
+    # 3.1 CMF (Chaikin Money Flow - 20 phiên)
     mf_multiplier = (
         (df["Close"] - df["Low"]) - (df["High"] - df["Close"])
     ) / (df["High"] - df["Low"] + 1e-9)
@@ -135,9 +154,11 @@ def calculate_indicators(df):
         df["Volume"].rolling(20).sum() + 1e-9
     )
 
+    # 4. VWAP (Volume Weighted Average Price)
     tp_vol = typical_price * df["Volume"]
     df["VWAP"] = tp_vol.cumsum() / (df["Volume"].cumsum() + 1e-9)
 
+    # 5. OBV & OBV EMA
     obv = [0]
     for i in range(1, len(df)):
         if df["Close"].iloc[i] > df["Close"].iloc[i - 1]:
@@ -149,11 +170,13 @@ def calculate_indicators(df):
     df["OBV"] = obv
     df["OBV_EMA"] = df["OBV"].ewm(span=20, adjust=False).mean()
 
+    # 6. Bollinger Bands (20, 2)
     df["BB_Middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
 
+    # 7. ATR (Average True Range - 14)
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -162,6 +185,7 @@ def calculate_indicators(df):
     )
     df["ATR"] = true_range.rolling(14).mean()
 
+    # 7.1 Keltner Channels (20, ATR multiplier 1.5)
     df["KC_Middle"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["KC_Upper"] = df["KC_Middle"] + (df["ATR"] * 1.5)
     df["KC_Lower"] = df["KC_Middle"] - (df["ATR"] * 1.5)
@@ -169,6 +193,26 @@ def calculate_indicators(df):
         df["BB_Lower"] > df["KC_Lower"]
     )
 
+    # 8. ADX (Average Directional Index - 14)
+    plus_dm = df["High"].diff()
+    minus_dm = df["Low"].diff()
+    plus_dm = np.where(
+        (plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0
+    )
+    minus_dm = np.where(
+        (minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0
+    )
+    tr14 = true_range.rolling(14).sum()
+    plus_di = 100 * (
+        pd.Series(plus_dm).rolling(14).sum() / (tr14 + 1e-9)
+    )
+    minus_di = 100 * (
+        pd.Series(minus_dm).rolling(14).sum() / (tr14 + 1e-9)
+    )
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)
+    df["ADX"] = dx.rolling(14).mean()
+
+    # 9. Linear Regression Slope (20 phiên)
     slopes = [np.nan] * 19
     for i in range(19, len(df)):
         y = df["Close"].iloc[i - 19 : i + 1].values
@@ -177,6 +221,7 @@ def calculate_indicators(df):
         slopes.append(slope)
     df["Slope"] = slopes
 
+    # 10. Ichimoku Kinko Hyo (9, 26, 52) & Chikou Span
     df["Tenkan_sen"] = (
         df["High"].rolling(9).max() + df["Low"].rolling(9).min()
     ) / 2
@@ -241,11 +286,17 @@ def analyze_stock(symbol):
     last_row = df.iloc[-1]
 
     close = last_row["Close"]
+    rsi = last_row["RSI"]
     stoch_rsi = last_row["Stoch_RSI"]
+    macd = last_row["MACD"]
+    macd_signal = last_row["MACD_Signal"]
+    mfi = last_row["MFI"]
     cmf = last_row["CMF"]
     vwap = last_row["VWAP"]
     obv = last_row["OBV"]
     obv_ema = last_row["OBV_EMA"]
+    adx = last_row["ADX"] if not np.isnan(last_row["ADX"]) else 20
+    slope = last_row["Slope"]
     bb_lower = last_row["BB_Lower"]
     bb_upper = last_row["BB_Upper"]
     squeeze_on = last_row["Squeeze_On"]
@@ -253,6 +304,7 @@ def analyze_stock(symbol):
     kijun = last_row["Kijun_sen"]
     chikou = last_row["Chikou_Span"]
 
+    ma50 = df["Close"].rolling(50).mean().iloc[-1]
     ma200 = (
         df["Close"].rolling(200).mean().iloc[-1]
         if len(df) >= 200
@@ -265,54 +317,99 @@ def analyze_stock(symbol):
     stop_loss = max(support - (atr * 1.5), close * 0.93)
     target_price = close + ((close - stop_loss) * 2.0)
 
-    # Đánh giá vĩ mô
-    macro = "🟢 TÍCH CỰC" if close > ma200 else "🔴 THẬN TRỌNG"
+    # --- ĐÁNH GIÁ CHI TIẾT TỪNG KHUNG ---
+    macro = "🟢 TÍCH CỰC (UpTrend dài hạn)" if close > ma200 else "🔴 THẬN TRỌNG (Dưới MA200)"
     if close > ma200 and cmf > 0.05 and obv > obv_ema:
-        macro += " (⭐ ĐIỂM MUA A+ CHÉN THÁNH)"
+        macro += "\n   ⭐ [CHÉN THÁNH A+]: Dòng tiền lớn kê lệnh gom mạnh!"
 
-    # Đánh giá ngắn hạn
+    # Ngắn hạn
+    st_reasons = []
     st_score = 0
-    if stoch_rsi < 20 and close >= vwap:
-        st_score += 3
-    elif stoch_rsi < 20:
+    if adx > 25:
+        st_score += 1
+        st_reasons.append(f"Xu hướng mạnh (ADX: {adx:.1f} > 25)")
+    else:
+        st_reasons.append(f"Thị trường Sideway (ADX: {adx:.1f})")
+
+    if stoch_rsi < 20:
+        st_score += 2
+        st_reasons.append(f"Stoch RSI Quá bán ({stoch_rsi:.1f}) -> Sắp có nhịp hồi T+")
+    elif stoch_rsi > 80:
+        st_score -= 2
+        st_reasons.append(f"Stoch RSI Quá mua ({stoch_rsi:.1f}) -> Rủi ro điều chỉnh")
+
+    if close >= vwap:
         st_score += 1.5
+        st_reasons.append(f"Giá nằm trên VWAP ({vwap:,.0f}): Phe mua kiểm soát")
+    else:
+        st_score -= 1.5
+        st_reasons.append(f"Giá dưới VWAP ({vwap:,.0f}): Lực bán ngắn hạn")
 
     st_action = (
-        "🟢 MUA GOM / LƯỚT T+"
-        if st_score >= 2
-        else ("🔴 CANH BÁN" if stoch_rsi > 80 else "🟡 QUAN SÁT")
+        "🟢 MUA GOM / LƯỚT T+ TÍCH CỰC"
+        if st_score >= 2.5
+        else ("🔴 CANH BÁN / HẠ TỶ TRỌNG" if st_score <= -1.5 else "🟡 QUAN SÁT THÊM")
     )
 
-    # Đánh giá trung hạn
+    # Trung hạn
     mt_score = 0
+    mt_reasons = []
     if close > kijun and (not np.isnan(chikou) and close > chikou):
         mt_score += 3
+        mt_reasons.append("Ichimoku xác nhận: Giá vượt Kijun VÀ trên Chikou (Xác suất tăng 80%)")
+    else:
+        mt_score += 1
+        mt_reasons.append("Đang dao động trong biên độ tích lũy trung hạn")
+
+    if slope > 0:
+        mt_score += 1
+        mt_reasons.append(f"Độ dốc hồi quy tuyến tính Dương (+{slope:.2f})")
+    else:
+        mt_score -= 1
+        mt_reasons.append(f"Độ dốc hồi quy tuyến tính Âm ({slope:.2f})")
+
     mt_action = (
-        "🟢 NẮM GIỮ TRUNG HẠN"
-        if mt_score >= 2
-        else ("🔴 THOÁT HÀNG" if close < kijun else "🟡 TÍCH LŨY")
+        "🟢 NẮM GIỮ / TÍCH SẢN TRUNG HẠN"
+        if mt_score >= 2.5
+        else ("🔴 THOÁT HÀNG / BẢO TOÀN VỐN" if mt_score <= -1.5 else "🟡 CHỜ BREAKOUT")
     )
 
-    # Soạn tin nhắn văn bản
-    text = f"📊 **BÁO CÁO PHÂN TÍCH: {symbol}**\n"
-    text += f"🗓️ Cập nhật: {last_row['time'].strftime('%Y-%m-%d')}\n"
+    # Dài hạn
+    lt_action = "🟢 ĐẦU TƯ GIÁ TRỊ / MUA TÍCH SẢN LỚN" if ma50 > ma200 and close > ma200 else "🟡 THEO DÕI THÊM VĨ MÔ"
+
+    # --- SOẠN NỘI DUNG BÁO CÁO CHI TIẾT ---
+    text = f"📊 **BÁO CÁO PHÂN TÍCH CHUYÊN SÂU: {symbol}**\n"
+    text += f"🗓️ Ngày: {last_row['time'].strftime('%Y-%m-%d')} | Khung: Daily (1D)\n"
     text += f"💵 Giá đóng cửa: `{close:,.0f} VNĐ`\n\n"
-    text += f"🌐 **Vĩ mô & Dòng tiền:** {macro}\n"
+
+    text += f"🌐 **1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN:**\n"
+    text += f"• Trạng thái: {macro}\n"
+    text += f"• Dòng tiền Chaikin (CMF): `{cmf:.2f}` ({'Tiền vào' if cmf > 0 else 'Tiền ra'})\n"
+    text += f"• Dòng tiền thông minh (OBV): `{'Tích cực' if obv > obv_ema else 'Thận trọng'}`\n"
     if squeeze_on:
-        text += f"⚡ *Biến động nén (Squeeze On) - Sắp bứt phá!*\n"
-    text += f"📊 **Volume Profile POC:** `{poc:,.0f} VNĐ`\n\n"
+        text += f"⚡ **[CẢNH BÁO SQUEEZE]:** Biến động nén, sắp có cú bứt phá mạnh!\n"
 
-    text += f"🎯 **QUẢN TRỊ RỦI RO:**\n"
-    text += f"• 🟢 Vùng mua (Entry): `{support * 1.01:,.0f} - {close:,.0f}`\n"
-    text += f"• 🔴 Cắt lỗ (Stoploss): `{stop_loss:,.0f} VNĐ`\n"
-    text += f"• 🎯 Mục tiêu (Target): `{target_price:,.0f} VNĐ`\n\n"
+    text += f"\n📊 **2. HỒ SƠ KHỐI LƯỢNG (VOLUME PROFILE):**\n"
+    text += f"• POC (Tâm dòng tiền hút giá): `{poc:,.0f} VNĐ`\n"
+    text += f"• VAH (Kháng cự Volume): `{vah:,.0f} VNĐ`\n"
+    text += f"• VAL (Hỗ trợ Volume): `{val:,.0f} VNĐ`\n"
 
-    text += f"⚡ **CHIẾN LƯỢC GIAO DỊCH:**\n"
-    text += f"• Ngắn hạn (T+): *{st_action}*\n"
-    text += f"• Trung hạn (1-3T): *{mt_action}*\n"
+    text += f"\n🎯 **3. QUẢN TRỊ RỦI RO & CHIẾN LƯỢC GIAO DỊCH:**\n"
+    text += f"• 🟢 **Vùng mua lý tưởng (Entry):** `{support * 1.01:,.0f} - {close:,.0f} VNĐ`\n"
+    text += f"• 🔴 **Điểm cắt lỗ kỷ luật (Stoploss):** `{stop_loss:,.0f} VNĐ`\n"
+    text += f"• 🎯 **Mục tiêu chốt lời (Target R:R 1:2):** `{target_price:,.0f} VNĐ`\n"
 
-    # Vẽ và lưu biểu đồ vào bộ nhớ
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=120)
+    text += f"\n⚡ **4. KHUYẾN NGHỊ CHI TIẾT ĐA KHUNG:**\n"
+    text += f"• **Ngắn hạn (T+):** *{st_action}*\n"
+    for r in st_reasons:
+        text += f"   - {r}\n"
+    text += f"• **Trung hạn (1-3 tháng):** *{mt_action}*\n"
+    for r in mt_reasons:
+        text += f"   - {r}\n"
+    text += f"• **Dài hạn (Tích sản):** *{lt_action}*\n"
+
+    # --- VẼ BIỂU ĐỒ KỸ THUẬT ---
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(
         df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2
     )
@@ -361,7 +458,9 @@ def analyze_stock(symbol):
         facecolor="red",
         alpha=0.15,
     )
-    ax.set_title(f"Phân Tích Kỹ Thuật - {symbol}")
+    ax.set_title(
+        f"Phân Tích Kỹ Thuật Chuyên Sâu - {symbol}", fontsize=11, fontweight="bold"
+    )
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -380,7 +479,7 @@ async def start_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ):
     await update.message.reply_text(
-        "👋 Chào mừng bạn đến với Bot Phân Tích Chứng Khoán!\n\n"
+        "👋 Chào mừng bạn đến với Bot Phân Tích Chứng Khoán Chuyên Sâu!\n\n"
         "Hãy gõ mã cổ phiếu bạn muốn kiểm tra (Ví dụ: HPG, VHM, SSI, TCB...)"
     )
 
@@ -396,7 +495,7 @@ async def handle_message(
         return
 
     await update.message.reply_text(
-        f"⏳ Đang tải dữ liệu và phân tích mã {symbol}..."
+        f"⏳ Đang quét dữ liệu, tính toán các chỉ báo nâng cao cho mã {symbol}..."
     )
 
     text, img_buf, err = analyze_stock(symbol)
@@ -435,5 +534,3 @@ if __name__ == "__main__":
 
     print("🤖 Bot Telegram đang hoạt động...")
     app.run_polling()
-
-
