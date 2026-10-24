@@ -1020,3 +1020,4 @@ if __name__ == "__main__":
 
     print("🚀 Bot Quant Trading System đã hoàn thiện chuẩn xác...")
     app.run_polling(drop_pending_updates=True)
+
