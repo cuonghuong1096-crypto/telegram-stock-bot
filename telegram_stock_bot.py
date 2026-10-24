@@ -342,10 +342,12 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "MỞ MUA (TÍCH SẢN / LƯỚT T+)"
         nav_rec = "20 - 30% NAV (Rải vốn Entry 1 & Entry 2)"
 
-    def fmt(p):
-        # Đã fix: p từ API TCBS / VNDirect thường tính theo đơn vị VND trực tiếp (ví dụ 45000), 
-        # do đó ta chia cho 1000 đúng 1 lần để hiển thị dạng nghìn VNĐ (ví dụ 45.0k)
-        return f"{p/1000:.1f}k"
+        def fmt(p):
+        # Nếu p đã ở dạng giá trị thực (ví dụ 42500), ta chia 1000. 
+        # Nếu p đã nhỏ hơn 1000 (do bị chia nhầm từ trước), ta giữ nguyên giá trị thực tế của nó.
+        val_to_show = p if p > 1000 else p * 1000 
+        return f"{val_to_show/1000:.1f}k"
+
 
     text = f"📊 **BÁO CÁO PHÂN TÍCH KỸ THUẬT & BẢNG ĐIỆN TỬ: {symbol.upper()}**\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: `{fmt(close)}`\n\n"
