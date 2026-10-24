@@ -95,7 +95,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
                     ["time", "Open", "High", "Low", "Close", "Volume"]
                 ].tail(count).reset_index(drop=True), None
     except requests.exceptions.Timeout:
-        pass # Chuyển sang nguồn dự phòng
+        pass 
     except Exception as e:
         pass
 
@@ -256,7 +256,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (GIỮ NGUYÊN LOGIC)
+# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (FIX LỖI HIỂN THỊ GIÁ)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
@@ -314,19 +314,19 @@ def analyze_stock(symbol, resolution="D", count=250):
     elif stoch_rsi < 20:
         confluence_points.append(f"Stoch RSI quá bán ({stoch_rsi:.1f}) -> Vùng gom tiềm năng")
 
-    entry_1 = round(max(val, last["EMA20"], close * 0.98), 0)
-    entry_2 = round(close, 0)
-    entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 0)
+    entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
+    entry_2 = round(close, 2)
+    entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
 
     stop_loss = round(
-        min(entry_1 - (1.5 * atr), val - (0.5 * atr), df["Low"].tail(5).min()), 0
+        min(entry_1 - (1.5 * atr), val - (0.5 * atr), df["Low"].tail(5).min()), 2
     )
     if stop_loss >= entry_avg:
-        stop_loss = round(entry_avg - (2 * atr), 0)
+        stop_loss = round(entry_avg - (2 * atr), 2)
 
     risk_distance = entry_avg - stop_loss
-    target_1 = round(entry_avg + (risk_distance * 1.5), 0)
-    target_2 = round(entry_avg + (risk_distance * 2.5), 0)
+    target_1 = round(entry_avg + (risk_distance * 1.5), 2)
+    target_2 = round(entry_avg + (risk_distance * 2.5), 2)
 
     t1_pct = ((target_1 - entry_avg) / entry_avg) * 100
     t2_pct = ((target_2 - entry_avg) / entry_avg) * 100
@@ -343,7 +343,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         nav_rec = "20 - 30% NAV (Rải vốn Entry 1 & Entry 2)"
 
     def fmt(p):
-        return f"{p/1000:.1f} nghìn VNĐ"
+        # Đã fix: p từ API TCBS / VNDirect thường tính theo đơn vị VND trực tiếp (ví dụ 45000), 
+        # do đó ta chia cho 1000 đúng 1 lần để hiển thị dạng nghìn VNĐ (ví dụ 45.0k)
+        return f"{p/1000:.1f}k"
 
     text = f"📊 **BÁO CÁO PHÂN TÍCH KỸ THUẬT & BẢNG ĐIỆN TỬ: {symbol.upper()}**\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: `{fmt(close)}`\n\n"
@@ -382,12 +384,13 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• **Điểm cộng (Confluence):** {conf_str}\n"
     text += f"• **Cảnh báo rủi ro (Risk Warnings):** {warn_str}\n"
 
+    # Vẽ biểu đồ với giá trị gốc (không chia 1000 trước khi plot để trục Y hiển thị đúng giá thực tế)
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
-    ax.plot(df["time"], df["Close"] / 1000, label="Giá đóng cửa", color="black", lw=1.2)
-    ax.plot(df["time"], df["EMA20"] / 1000, label="EMA 20", color="blue", linestyle="--", alpha=0.6)
-    ax.plot(df["time"], df["EMA50"] / 1000, label="EMA 50", color="orange", linestyle="--", alpha=0.6)
-    ax.axhline(poc / 1000, color="purple", linestyle=":", label=f"POC: {poc/1000:.1f}k", alpha=0.8)
-    ax.axhline(val / 1000, color="green", linestyle="--", label=f"VAL: {val/1000:.1f}k", alpha=0.6)
+    ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
+    ax.plot(df["time"], df["EMA20"], label="EMA 20", color="blue", linestyle="--", alpha=0.6)
+    ax.plot(df["time"], df["EMA50"], label="EMA 50", color="orange", linestyle="--", alpha=0.6)
+    ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {poc/1000:.1f}k", alpha=0.8)
+    ax.axhline(val, color="green", linestyle="--", label=f"VAL: {val/1000:.1f}k", alpha=0.6)
     ax.set_title(f"Phân Tích Chuyên Sâu Bảng Điện - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
@@ -451,10 +454,8 @@ def run_strategy_backtest(symbol="HPG"):
         close = df["Close"].iloc[i]
         ema50 = df["EMA50"].iloc[i]
         
-        # Giả lập điểm mua khi thỏa mãn điều kiện
         if not np.isnan(rvol) and not np.isnan(cmf) and rvol > 1.3 and cmf > 0.03 and close > ema50:
             entry_price = close
-            # Kiểm tra 10 phiên sau đó (Target R:R 1:1.5 hoặc Stoploss)
             future_prices = df["Close"].iloc[i+1 : i+11].values
             max_p = max(future_prices)
             min_p = min(future_prices)
@@ -466,9 +467,9 @@ def run_strategy_backtest(symbol="HPG"):
             trades += 1
             if max_p >= target:
                 wins += 1
-                total_return += 5.0  # Lợi nhuận kỳ vọng %
+                total_return += 5.0  
             elif min_p <= stoploss:
-                total_return -= 3.0  # Cắt lỗ %
+                total_return -= 3.0  
             else:
                 ret = ((future_prices[-1] - entry_price) / entry_price) * 100
                 total_return += ret
@@ -489,7 +490,6 @@ def background_scheduler_thread(application):
     """Luồng chạy ngầm lập lịch tự động quét và gửi bản tin mỗi ngày"""
     while True:
         now = datetime.datetime.now()
-        # Cài đặt thời gian tự động chạy mỗi ngày vào lúc 14:15 (gần ATC)
         if now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -503,7 +503,7 @@ def background_scheduler_thread(application):
                             application.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
                         except Exception:
                             pass
-            time.sleep(70)  # Nghỉ hơn 1 phút để tránh lặp trong cùng một phút
+            time.sleep(70)  
         time.sleep(30)
 
 
@@ -605,17 +605,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
 
-        # Chạy tác vụ tính toán nặng ngầm qua ThreadPool để phản hồi cực nhanh, chống đơ bot
         def background_task():
             return analyze_stock(symbol, resolution=resolution, count=count)
 
         future = executor.submit(background_task)
         try:
-            # Chờ kết quả tối đa 12 giây
             text, img_buf, err = future.result(timeout=12)
             if err:
                 await query.message.reply_text(f"❌ **Lỗi phân tích mã {symbol}:**\n`{err}`", parse_mode="Markdown")
             else:
+                # Telegram giới hạn caption tối đa 1024 ký tự. 
+                # Nếu text quá dài, ta cắt gọn phần đầu/cuối hoặc gửi tách message để tránh lỗi "Message caption is too long"
+                if len(text) > 1024:
+                    text = text[:1020] + "..."
                 await query.message.reply_photo(photo=img_buf, caption=text, parse_mode="Markdown")
         except Exception as e:
             await query.message.reply_text(f"❌ **Lỗi hệ thống hoặc Quá thời gian xử lý (Timeout):**\n`{str(e)}`", parse_mode="Markdown")
@@ -639,7 +641,6 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Khởi động luồng chạy ngầm gửi bản tin tự động
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -650,4 +651,3 @@ if __name__ == "__main__":
 
     print("🤖 Bot Quant Trading System (Scheduler + Backtest + Tape Reading) đang hoạt động...")
     app.run_polling()
-
