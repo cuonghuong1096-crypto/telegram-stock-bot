@@ -274,8 +274,8 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         market_structure = "SIDEWAY ACCUMULATION"
 
-    confluence_points =[span_1](start_span)[span_1](end_span)
-    risk_warnings =[span_2](start_span)[span_2](end_span)
+    confluence_points = []
+    risk_warnings = []
 
     score = 0
     if close > cloud_top:
@@ -285,7 +285,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         score += 15
         risk_warnings.append("Giá đang nằm trong mây Kumo")
     else:
-        risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")[span_3](start_span)[span_3](end_span)
+        risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")
 
     if cmf > 0.05 and mfi > 50:
         score += 25
@@ -294,7 +294,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         score += 15
         confluence_points.append(f"Dòng tiền duy trì dương nhẹ (CMF: {cmf:.2f})")
     else:
-        risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")[span_4](start_span)[span_4](end_span)
+        risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
     if lr_slope > 0.1:
         score += 20
@@ -302,13 +302,13 @@ def analyze_stock(symbol, resolution="D", count=250):
     elif lr_slope >= 0:
         score += 10
     else:
-        risk_warnings.append("Độ dốc giá âm (Đang hướng xuống)")[span_5](start_span)[span_5](end_span)
+        risk_warnings.append("Độ dốc giá âm (Đang hướng xuống)")
 
     if close > ema50:
         score += 10
         confluence_points.append("Giá nằm trên EMA50")
     else:
-        risk_warnings.append("Giá nằm dưới EMA50")[span_6](start_span)[span_6](end_span)
+        risk_warnings.append("Giá nằm dưới EMA50")
 
     if close >= poc:
         score += 5
@@ -316,7 +316,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     if rvol >= 1.2:
         score += 10
-        confluence_points.append(f"Thanh khoản bùng nổ ({rvol:.2f}x)")[span_7](start_span)[span_7](end_span)
+        confluence_points.append(f"Thanh khoản bùng nổ ({rvol:.2f}x)")
     elif rvol >= 0.8:
         score += 5
     else:
@@ -333,7 +333,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         is_standing_aside = False
-        final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**[span_8](start_span)"[span_8](end_span)
+        final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Chỉ số kỹ thuật hội tụ mạnh mẽ. Dòng tiền và mây Kumo ủng hộ đà tăng, ưu tiên gom quanh `{fmt(val)} - {fmt(poc)}`."
     elif confidence_score >= 45 and close >= cloud_bottom:
         system_status = "QUAN SÁT / MUA THĂM DÒ NỀN"
@@ -343,10 +343,10 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_action = f"Tín hiệu đang trong giai đoạn tích lũy/phân hóa. Chỉ nên mua thăm dò tỷ trọng nhỏ và kiên nhẫn chờ điểm bứt phá khỏi `{fmt(cloud_top)}`."
     else:
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
-        nav_rec = "0% (Giữ tiền mặt)[span_9](start_span)"[span_9](end_span)
+        nav_rec = "0% (Giữ tiền mặt)"
         is_standing_aside = True
-        final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**[span_10](start_span)"[span_10](end_span)
-        final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn.[span_11](start_span)"[span_11](end_span)
+        final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
@@ -360,7 +360,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     if cmf > 0 and mfi >= 45:
         text += f"Dòng tiền lớn đang nâng đỡ giá tốt, động lượng tăng trưởng ổn định. Ưu tiên nắm giữ vị thế.\n\n"
     else:
-        text += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n[span_12](start_span)"[span_12](end_span)
+        text += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
 
     # MỤC 2
     text += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
@@ -371,7 +371,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     if close > cloud_top:
         text += f"Thế nến bùng nổ trên mây Kumo rất tích cực, canh giải ngân khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`).\n\n"
     elif close < cloud_bottom:
-        text += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n[span_13](start_span)"[span_13](end_span)
+        text += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n"
     else:
         text += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
@@ -379,15 +379,15 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n[span_14](start_span)"[span_14](end_span)
+    text += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n"
 
     # MỤC 4
     text += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text += f"• Trạng thái khuyến nghị: {system_status}\n"
-    text += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n[span_15](start_span)"[span_15](end_span)
+    text += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
     text += f"👉 **Kết luận & Hành động:** "
     if is_standing_aside:
-        text += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát cho đến khi độ tin cậy kỹ thuật cải thiện.\n\n[span_16](start_span)"[span_16](end_span)
+        text += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát cho đến khi độ tin cậy kỹ thuật cải thiện.\n\n"
     else:
         text += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
@@ -396,13 +396,13 @@ def analyze_stock(symbol, resolution="D", count=250):
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
     text += f"• Điểm cộng kỹ thuật: {conf_str}\n"
-    text += f"• Cảnh báo rủi ro: {warn_str}\n[span_17](start_span)"[span_17](end_span)
-    text += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n[span_18](start_span)"[span_18](end_span)
+    text += f"• Cảnh báo rủi ro: {warn_str}\n"
+    text += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
     # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CÓ % ĐỘ TIN CẬY & 4 NÚT BẤM
     text += f"🏁 **6. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
-    text += f"• Khuyến nghị: {final_icon}\n[span_19](start_span)"[span_19](end_span)
-    text += f"• Định hướng quyết định: {final_action}[span_20](start_span)"[span_20](end_span)
+    text += f"• Khuyến nghị: {final_icon}\n"
+    text += f"• Định hướng quyết định: {final_action}"
 
     keyboard = [
         [
@@ -838,5 +838,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System (Đầy đủ 6 phần cấu trúc + 4 nút bấm + Portfolio + Screener) đang hoạt động...")
+    print("🚀 Bot Quant Trading System đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
