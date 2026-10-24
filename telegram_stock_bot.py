@@ -37,11 +37,16 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-WATCHLIST_SCAN = [
-    "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
-    "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
-    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG"
-]
+# Phân loại nhóm ngành để quét dòng tiền tự động
+SECTOR_MAPPING = {
+    "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB"],
+    "Bất động sản": ["VHM", "VIC", "VRE", "KDH", "NLG", "DIG", "NVL", "PDR", "DXG", "CEO"],
+    "Chứng khoán": ["SSI", "VCI", "MBS", "FTS", "HCM", "SHS", "VIX", "BSI"],
+    "Thép & Vật liệu": ["HPG", "HSG", "NKG", "VGS"],
+    "Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB"]
+}
+
+WATCHLIST_SCAN = [sym for symbols in SECTOR_MAPPING.values() for sym in symbols]
 
 ACTIVE_CHAT_IDS = set()
 USER_PORTFOLIOS = {}
@@ -147,6 +152,33 @@ def fetch_financial_metrics(symbol):
     return {"pe": 12.5, "pb": 1.6, "roe": 18.2, "eps_growth": 15.4}
 
 
+def analyze_sector_cash_flow():
+    """Tự động gọi API quét giá trị giao dịch và RVOL của từng nhóm ngành để xếp hạng dòng tiền"""
+    sector_scores = {}
+    
+    for sector_name, symbols in SECTOR_MAPPING.items():
+        total_rvol = 0
+        active_count = 0
+        for sym in symbols[:5]: # Lấy top 5 mã đại diện mỗi ngành để tiết kiệm thời gian gọi API
+            df, err = fetch_stock_data(sym, resolution="D", count=25)
+            if not err and not df.empty and len(df) >= 20:
+                df = calculate_indicators(df)
+                last_rvol = df.iloc[-1]["RVOL"]
+                if not np.isnan(last_rvol):
+                    total_rvol += last_rvol
+                    active_count += 1
+        
+        avg_rvol = (total_rvol / active_count) if active_count > 0 else 1.0
+        sector_scores[sector_name] = avg_rvol
+
+    # Sắp xếp nhóm ngành có dòng tiền/RVOL cao nhất
+    sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
+    top_sector, top_rvol = sorted_sectors[0]
+    second_sector, _ = sorted_sectors[1]
+    
+    return top_sector, top_rvol, second_sector
+
+
 def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
@@ -226,7 +258,6 @@ def calculate_indicators(df):
 
 
 def calculate_volume_profile(df, bins=20):
-    """Tính Volume Profile trên 60 nến gần nhất để phản ánh đúng thực tế sóng giá gần nhất"""
     if df.empty:
         return 0, 0, 0
     sub_df = df.tail(60)
@@ -262,7 +293,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (SỬA LỖI MỤC 3)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP SECTOR API FLOW)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -391,12 +422,14 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
     fa_data = fetch_financial_metrics(symbol)
+    
+    # GỌI HÀM QUÉT DÒNG TIỀN NGÀNH THỰC TẾ QUA API
+    top_sector, top_rvol_val, second_sector = analyze_sector_cash_flow()
 
     # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
-    # MỤC 1
     text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
     text_part1 += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
     text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
@@ -407,7 +440,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
 
-    # MỤC 2
     text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
     text_part1 += f"• Thông số mây: {ichi_status}\n"
     text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
@@ -420,19 +452,17 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
-    # MỤC 3 (ĐÃ SỬA LỖI LOGIC GIÁ VỚI VÙNG VOLUME PROFILE)
     text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text_part1 += f"• Vùng giá giao dịch: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
     if close < val:
-        text_part1 += f"Giá ({fmt(close)}) giảm sâu lọt dưới hẳn vùng Volume Profile ({fmt(val)} - {fmt(vah)}). Vùng **{fmt(val)} - {fmt(poc)}** hiện tại trở thành **KHÁNG CỰ CỰC MẠNH** trên cao (vùng kẹp hàng lớn), tuyệt đối không vội bắt đáy.\n\n"
+        text_part1 += f"Giá ({fmt(close)}) giảm sâu lọt dưới hẳn vùng Volume Profile ({fmt(val)} - {fmt(vah)}). Vùng **{fmt(val)} - {fmt(poc)}** hiện tại trở thành **KHÁNG CỰ CỰC MẠNH** trên cao, tuyệt đối không bắt đáy.\n\n"
     elif close > vah:
-        text_part1 += f"Giá ({fmt(close)}) bứt phá vượt qua vùng VAH ({fmt(vah)}). Vùng **{fmt(poc)} - {fmt(vah)}** trở thành **HỖ TRỢ NỀN VỮNG CHẮC** cho nhịp tăng tiếp theo.\n\n"
+        text_part1 += f"Giá ({fmt(close)}) bứt phá vượt qua vùng VAH ({fmt(vah)}). Vùng **{fmt(poc)} - {fmt(vah)}** trở thành **HỖ TRỢ NỀN VỮNG CHẮC** cho nhịp tăng.\n\n"
     else:
-        text_part1 += f"Giá ({fmt(close)}) đang vận động trong vùng Volume Profile. Lực cầu đỡ giá ổn định tại dải **{fmt(val)} - {fmt(poc)}**, chốt lời khi tiến sát cản trên **{fmt(vah)}**.\n\n"
+        text_part1 += f"Giá ({fmt(close)}) vận động trong vùng Volume Profile. Lực cầu đỡ giá ổn định tại dải **{fmt(val)} - {fmt(poc)}**, chốt lời khi sát cản trên **{fmt(vah)}**.\n\n"
 
-    # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
@@ -442,9 +472,8 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 9 ---
+    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 9 (MỤC 7 CẬP NHẬT TỪ API DÒNG TIỀN NGÀNH) ---
     text_part2 = ""
-    # MỤC 5
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
@@ -452,7 +481,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6
     text_part2 += f"📈 6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:\n"
     text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
@@ -463,13 +491,12 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7
-    text_part2 += f"🌐 7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:\n"
-    text_part2 += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
-    text_part2 += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
-    text_part2 += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
+    # MỤC 7: TỰ ĐỘNG QUÉT QUA API DÒNG TIỀN NGÀNH (REAL-TIME SECTOR SCANNER)
+    text_part2 += f"🌐 7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (API SCAN):\n"
+    text_part2 += f"• Ngành hút tiền mạnh nhất phiên: **{top_sector}** (RVOL trung bình: `{top_rvol_val:.2f}x`)\n"
+    text_part2 += f"• Ngành theo sau thu hút dòng tiền: **{second_sector}**\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Dòng tiền thông minh đang tập trung mạnh mẽ vào nhóm **{top_sector}**. Ưu tiên chọn các mã dẫn dắt thuộc nhóm ngành này để tối ưu hóa hiệu suất đầu tư.\n\n"
 
-    # MỤC 8
     text_part2 += f"🏢 8. ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN (FA):\n"
     text_part2 += f"• Định giá: P/E = `{fa_data['pe']:.1f}x` | P/B = `{fa_data['pb']:.1f}x` (So sánh trung bình ngành)\n"
     text_part2 += f"• Hiệu quả & Tăng trưởng: ROE = `{fa_data['roe']:.1f}%` | Tăng trưởng EPS năm = `{fa_data['eps_growth']:+.1f}%`\n"
@@ -479,7 +506,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Định giá ở mức trung bình, cẩn trọng kiểm soát tỷ trọng ngắn hạn.\n\n"
 
-    # MỤC 9
     text_part2 += f"🏁 9. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng quyết định: {final_action}"
@@ -966,14 +992,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|")
         if len(parts) == 3:
             symbol, resolution, count = parts[0], parts[1], int(parts[2])
-            await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
+            await query.edit_message_text(text=f"⏳ Chuyên gia đang quét dòng tiền ngành & phân tích chuyên sâu cho {symbol}...")
 
             def background_task():
                 return analyze_stock(symbol, resolution=resolution, count=count)
 
             future = executor.submit(background_task)
             try:
-                text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=15)
+                text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=25)
                 if err:
                     await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
                 else:
@@ -990,7 +1016,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot Corrected Volume Profile Edition is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot with Real-Time API Sector Flow Scanner is running live!")
 
 
 def run_http_server():
@@ -1018,5 +1044,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn thiện chuẩn xác...")
+    print("🚀 Bot Quant Trading System kèm Quét dòng tiền ngành thời gian thực đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
