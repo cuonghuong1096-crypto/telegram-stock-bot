@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -72,7 +73,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-API-KEY": TCBS_API_KEY,
         }
-        res = requests.get(tcbs_url, headers=headers, timeout=2)
+        res = requests.get(tcbs_url, headers=headers, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -100,7 +101,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "User-Agent": "Mozilla/5.0",
             "Referer": "https://dchart.vndirect.com.vn/",
         }
-        res = requests.get(url, headers=headers, timeout=2)
+        res = requests.get(url, headers=headers, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
@@ -234,7 +235,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (CHIA 2 PHẦN)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -362,6 +363,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
+    # PHẦN 1
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -401,6 +403,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
+    # PHẦN 2
     text_part2 = ""
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
@@ -459,7 +462,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG & REAL-TIME ALERTS
+# 3. MODULE SCAN & BACKTEST & REALTIME ALERTS
 # ==========================================
 def run_market_screener():
     results = []
@@ -676,8 +679,21 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 4. TELEGRAM HANDLERS (ĐÃ TỐI ƯU CẢNH BÁO LỆNH START)
+# 4. TELEGRAM HANDLERS (BẮT LỖI HIỂN THỊ MÀN HÌNH)
 # ==========================================
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Hàm quản lý lỗi toàn cục - Báo lỗi chi tiết trực tiếp lên tin nhắn người dùng"""
+    err_msg = f"❌ **HỆ THỐNG PHÁT HIỆN LỖI RUNTIME:**\n\n`{context.error}`"
+    logging.error(f"Error update: {update} caused error: {context.error}")
+    
+    if isinstance(update, Update) and update.effective_message:
+        try:
+            await update.effective_message.reply_text(err_msg, parse_mode="Markdown")
+        except Exception:
+            # Nếu gửi bằng Markdown bị lỗi thì gửi dạng Plain Text
+            await update.effective_message.reply_text(f"❌ HỆ THỐNG PHÁT HIỆN LỖI:\n{str(context.error)}")
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat_id = update.effective_chat.id
@@ -700,115 +716,124 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(welcome_text, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Lỗi lệnh /start: {e}")
+        await update.message.reply_text(f"❌ Lỗi thực thi /start: {str(e)}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    args = context.args
-    if len(args) < 3:
-        await update.message.reply_text(
-            "Sai cú pháp!\n\n"
-            "Vui lòng nhập đúng định dạng:\n"
-            "/setbuy <MÃ> <giá_mua> <giá_cắt_lỗ> [khối_lượng]\n"
-            "Ví dụ: /setbuy VHM 63.0 62.0 1500"
-        )
-        return
-
-    symbol = args[0].upper().strip()
     try:
-        entry_price = float(args[1])
-        sl_price = float(args[2])
-        qty = int(args[3]) if len(args) >= 4 else 1000
-    except ValueError:
-        await update.message.reply_text("Giá mua, giá cắt lỗ và khối lượng phải là số hợp lệ!")
-        return
+        chat_id = update.effective_chat.id
+        args = context.args
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Sai cú pháp!\n\n"
+                "Vui lòng nhập đúng định dạng:\n"
+                "/setbuy <MÃ> <giá_mua> <giá_cắt_lỗ> [khối_lượng]\n"
+                "Ví dụ: /setbuy VHM 63.0 62.0 1500"
+            )
+            return
 
-    if chat_id not in USER_PORTFOLIOS:
-        USER_PORTFOLIOS[chat_id] = {}
+        symbol = args[0].upper().strip()
+        try:
+            entry_price = float(args[1])
+            sl_price = float(args[2])
+            qty = int(args[3]) if len(args) >= 4 else 1000
+        except ValueError:
+            await update.message.reply_text("Giá mua, giá cắt lỗ và khối lượng phải là số hợp lệ!")
+            return
 
-    USER_PORTFOLIOS[chat_id][symbol] = {
-        "entry": entry_price,
-        "sl": sl_price,
-        "qty": qty
-    }
+        if chat_id not in USER_PORTFOLIOS:
+            USER_PORTFOLIOS[chat_id] = {}
 
-    await update.message.reply_text(
-        f"Đã lưu thành công vào danh mục:\n"
-        f"- Mã: {symbol}\n"
-        f"- Khối lượng: {qty} cổ phiếu\n"
-        f"- Giá mua: {entry_price}\n"
-        f"- Cắt lỗ (SL): {sl_price}\n\n"
-        f"Bot sẽ tự động giám sát và cảnh báo ngay lập tức nếu giá thị trường chạm mốc chốt lời hoặc thủng mức SL!"
-    )
+        USER_PORTFOLIOS[chat_id][symbol] = {
+            "entry": entry_price,
+            "sl": sl_price,
+            "qty": qty
+        }
+
+        await update.message.reply_text(
+            f"Đã lưu thành công vào danh mục:\n"
+            f"- Mã: {symbol}\n"
+            f"- Khối lượng: {qty} cổ phiếu\n"
+            f"- Giá mua: {entry_price}\n"
+            f"- Cắt lỗ (SL): {sl_price}\n\n"
+            f"Bot sẽ tự động giám sát và cảnh báo ngay lập tức nếu giá thị trường chạm mốc chốt lời hoặc thủng mức SL!"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi thực thi /setbuy: {str(e)}")
 
 
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
-        await update.message.reply_text(
-            "📂 Danh mục của bạn đang trống.\n"
-            "👉 Dùng lệnh `/setbuy VHM 63.0 62.0 1500` để thêm mã vào danh mục theo dõi.",
-            parse_mode="Markdown"
-        )
-        return
+    try:
+        chat_id = update.effective_chat.id
+        if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
+            await update.message.reply_text(
+                "📂 Danh mục của bạn đang trống.\n"
+                "👉 Dùng lệnh `/setbuy VHM 63.0 62.0 1500` để thêm mã vào danh mục theo dõi.",
+                parse_mode="Markdown"
+            )
+            return
 
-    text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & CHIẾN LƯỢC QUẢN TRỊ VỊ THẾ**\n\n"
-    for symbol, pos in USER_PORTFOLIOS[chat_id].items():
-        df, err = fetch_stock_data(symbol, resolution="D", count=20)
-        if not err and not df.empty:
-            current_price = df.iloc[-1]["Close"]
-            qty = pos.get("qty", 1000)
-            entry = pos["entry"]
-            sl = pos["sl"]
-            
-            pnl_pct = ((current_price - entry) / entry) * 100
-            pnl_vnd = (current_price - entry) * qty
-            status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
-            
-            poc, vah, val = calculate_volume_profile(df)
-            target_1 = max(entry * 1.05, vah)
-            target_2 = target_1 * 1.08
+        text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & CHIẾN LƯỢC QUẢN TRỊ VỊ THẾ**\n\n"
+        for symbol, pos in USER_PORTFOLIOS[chat_id].items():
+            df, err = fetch_stock_data(symbol, resolution="D", count=20)
+            if not err and not df.empty:
+                current_price = df.iloc[-1]["Close"]
+                qty = pos.get("qty", 1000)
+                entry = pos["entry"]
+                sl = pos["sl"]
+                
+                pnl_pct = ((current_price - entry) / entry) * 100
+                pnl_vnd = (current_price - entry) * qty
+                status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
+                
+                poc, vah, val = calculate_volume_profile(df)
+                target_1 = max(entry * 1.05, vah)
+                target_2 = target_1 * 1.08
 
-            text += f"🔹 **Mã Cổ Phiếu: {symbol}** ({qty} cổ)\n"
-            text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.1f}k`\n"
-            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n\n"
-            text += f"🎯 **CHIẾN LƯỢC CHỐT LỜI & CẮT LỖ CỤ THỂ:**\n"
-            if current_price <= sl:
-                text += f"  🔴 **CẮT LỖ KHẨN CẤP:** Đã thủng mốc SL **`{sl}k`**. Hãy BÁN NGAY!\n"
+                text += f"🔹 **Mã Cổ Phiếu: {symbol}** ({qty} cổ)\n"
+                text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.1f}k`\n"
+                text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n\n"
+                text += f"🎯 **CHIẾN LƯỢC CHỐT LỜI & CẮT LỖ CỤ THỂ:**\n"
+                if current_price <= sl:
+                    text += f"  🔴 **CẮT LỖ KHẨN CẤP:** Đã thủng mốc SL **`{sl}k`**. Hãy BÁN NGAY!\n"
+                else:
+                    text += f"  🛡️ **Mức Cắt Lỗ (SL):** `{sl}k`\n"
+                if current_price >= target_1:
+                    text += f"  ✅ **CHỐT LỜI NGAY:** Đã vượt mục tiêu 1 (`{target_1:.1f}k`). Chốt 50% tỷ trọng.\n"
+                else:
+                    text += f"  ⏳ **Mục tiêu Chốt Lời 1:** `{target_1:.1f}k` | **Mục tiêu 2:** `{target_2:.1f}k`\n"
+                text += "------------------------------------\n"
             else:
-                text += f"  🛡️ **Mức Cắt Lỗ (SL):** `{sl}k`\n"
-            if current_price >= target_1:
-                text += f"  ✅ **CHỐT LỜI NGAY:** Đã vượt mục tiêu 1 (`{target_1:.1f}k`). Chốt 50% tỷ trọng.\n"
-            else:
-                text += f"  ⏳ **Mục tiêu Chốt Lời 1:** `{target_1:.1f}k` | **Mục tiêu 2:** `{target_2:.1f}k`\n"
-            text += "------------------------------------\n"
-        else:
-            text += f"🔹 **{symbol}**: Không lấy được dữ liệu giá hiện tại.\n"
+                text += f"🔹 **{symbol}**: Không lấy được dữ liệu giá hiện tại.\n"
 
-    text += "\n💡 Dùng lệnh `/reset <MÃ>` để xóa mã khỏi danh mục."
-    await update.message.reply_text(text, parse_mode="Markdown")
+        text += "\n💡 Dùng lệnh `/reset <MÃ>` để xóa mã khỏi danh mục."
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi thực thi /portfolio: {str(e)}")
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Vui lòng nhập mã cần xóa! Ví dụ: `/reset VHM` hoặc `/reset ALL`.", parse_mode="Markdown")
-        return
+    try:
+        chat_id = update.effective_chat.id
+        args = context.args
+        if not args:
+            await update.message.reply_text("⚠️ Vui lòng nhập mã cần xóa! Ví dụ: `/reset VHM` hoặc `/reset ALL`.", parse_mode="Markdown")
+            return
 
-    target = args[0].upper().strip()
-    if chat_id in USER_PORTFOLIOS:
-        if target == "ALL":
-            USER_PORTFOLIOS[chat_id] = {}
-            await update.message.reply_text("🗑️ Đã xóa toàn bộ danh mục theo dõi của bạn.")
-        elif target in USER_PORTFOLIOS[chat_id]:
-            del USER_PORTFOLIOS[chat_id][target]
-            await update.message.reply_text(f"🗑️ Đã xóa mã **{target}** khỏi danh mục theo dõi.", parse_mode="Markdown")
+        target = args[0].upper().strip()
+        if chat_id in USER_PORTFOLIOS:
+            if target == "ALL":
+                USER_PORTFOLIOS[chat_id] = {}
+                await update.message.reply_text("🗑️ Đã xóa toàn bộ danh mục theo dõi của bạn.")
+            elif target in USER_PORTFOLIOS[chat_id]:
+                del USER_PORTFOLIOS[chat_id][target]
+                await update.message.reply_text(f"🗑️ Đã xóa mã **{target}** khỏi danh mục theo dõi.", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"⚠️ Không tìm thấy mã **{target}** trong danh mục.", parse_mode="Markdown")
         else:
-            await update.message.reply_text(f"⚠️ Không tìm thấy mã **{target}** trong danh mục.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("📂 Danh mục của bạn đang trống.")
+            await update.message.reply_text("📂 Danh mục của bạn đang trống.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi thực thi /reset: {str(e)}")
 
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -846,26 +871,29 @@ async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
-    text = update.message.text.strip().upper()
-    if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, PNJ, HPG), hoặc dùng /scan, /portfolio, /backtest!")
-        return
+    try:
+        chat_id = update.effective_chat.id
+        ACTIVE_CHAT_IDS.add(chat_id)
+        text = update.message.text.strip().upper()
+        if len(text) < 3 or len(text) > 5 or not text.isalpha():
+            await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, PNJ, HPG), hoặc dùng /scan, /portfolio, /backtest!")
+            return
 
-    keyboard = [
-        [InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{text}|D|250")],
-        [
-            InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{text}|15|200"),
-            InlineKeyboardButton("⏱️ 30m (200 nến)", callback_data=f"{text}|30|200"),
-            InlineKeyboardButton("⏱️ 1H (250 nến)", callback_data=f"{text}|60|200"),
-        ],
-    ]
-    await update.message.reply_text(
-        f"🔍 Đã nhận mã **{text}**. Chọn khung thời gian phân tích:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
+        keyboard = [
+            [InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{text}|D|250")],
+            [
+                InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{text}|15|200"),
+                InlineKeyboardButton("⏱️ 30m (200 nến)", callback_data=f"{text}|30|200"),
+                InlineKeyboardButton("⏱️ 1H (250 nến)", callback_data=f"{text}|60|200"),
+            ],
+        ]
+        await update.message.reply_text(
+            f"🔍 Đã nhận mã **{text}**. Chọn khung thời gian phân tích:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Lỗi tiếp nhận mã: {str(e)}")
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -873,35 +901,43 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data.startswith("help_"):
-        explanations = {
-            "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn của tổ chức.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá (0-100).",
-            "help_rsi": "💡 **Giải thích Ichimoku:**\n• Gồm mây Kumo, Tenkan, Kijun giúp xác định xu hướng và vùng hỗ trợ/kháng cự cực mạnh.",
-            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá khớp khối lượng nhiều nhất.\n• **VAL - VAH:** Vùng giá hỗ trợ & kháng cự tổ chức.",
-            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng quản trị rủi ro tự động."
-        }
-        await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
-        return
+    try:
+        if data.startswith("help_"):
+            explanations = {
+                "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn của tổ chức.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá (0-100).",
+                "help_rsi": "💡 **Giải thích Ichimoku:**\n• Gồm mây Kumo, Tenkan, Kijun giúp xác định xu hướng và vùng hỗ trợ/kháng cự cực mạnh.",
+                "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá khớp khối lượng nhiều nhất.\n• **VAL - VAH:** Vùng giá hỗ trợ & kháng cự tổ chức.",
+                "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng quản trị rủi ro tự động."
+            }
+            await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
+            return
 
-    parts = data.split("|")
-    if len(parts) == 3:
-        symbol, resolution, count = parts[0], parts[1], int(parts[2])
-        await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
+        parts = data.split("|")
+        if len(parts) == 3:
+            symbol, resolution, count = parts[0], parts[1], int(parts[2])
+            await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
 
-        def background_task():
-            return analyze_stock(symbol, resolution=resolution, count=count)
+            def background_task():
+                return analyze_stock(symbol, resolution=resolution, count=count)
 
-        future = executor.submit(background_task)
-        try:
-            text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=12)
-            if err:
-                await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
-            else:
-                await query.message.reply_photo(photo=img_buf)
-                await query.message.reply_text(text_part1, parse_mode="Markdown")
-                await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
-        except Exception as e:
-            await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
+            future = executor.submit(background_task)
+            try:
+                text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=15)
+                if err:
+                    await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
+                else:
+                    await query.message.reply_photo(photo=img_buf)
+                    try:
+                        await query.message.reply_text(text_part1, parse_mode="Markdown")
+                        await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
+                    except Exception:
+                        # Fallback nếu lỗi định dạng Markdown
+                        await query.message.reply_text(text_part1)
+                        await query.message.reply_text(text_part2, reply_markup=reply_markup)
+            except Exception as e:
+                await query.message.reply_text(f"❌ Lỗi hệ thống trong quá trình xử lý mã {symbol}:\n{str(e)}")
+    except Exception as e:
+        await query.message.reply_text(f"❌ Lỗi Callback nút bấm: {str(e)}")
 
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -923,6 +959,9 @@ if __name__ == "__main__":
     print("🤖 Đang khởi tạo kết nối Telegram Bot...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Đăng ký hàm quản lý lỗi toàn cục
+    app.add_error_handler(global_error_handler)
+
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -934,5 +973,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đang hoạt động...")
+    print("🚀 Bot Quant Trading System kèm Bắt lỗi toàn diện đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
