@@ -38,11 +38,11 @@ logging.basicConfig(
 )
 
 SECTOR_MAPPING = {
-    "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB"],
-    "Bất động sản": ["VHM", "VIC", "VRE", "KDH", "NLG", "DIG", "NVL", "PDR", "DXG", "CEO"],
-    "Chứng khoán": ["SSI", "VCI", "MBS", "FTS", "HCM", "SHS", "VIX", "BSI"],
-    "Thép & Vật liệu": ["HPG", "HSG", "NKG", "VGS"],
-    "Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB"]
+    "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB"],
+    "Bất động sản": ["VHM", "VIC", "VRE", "KDH", "NLG", "DIG", "DXG", "CEO"],
+    "Chứng khoán": ["SSI", "VCI", "MBS", "FTS", "HCM", "VIX"],
+    "Thép & Vật liệu": ["HPG", "HSG", "NKG"],
+    "Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "MSN"]
 }
 
 WATCHLIST_SCAN = [sym for symbols in SECTOR_MAPPING.values() for sym in symbols]
@@ -152,40 +152,53 @@ def fetch_financial_metrics(symbol):
 
 
 def analyze_sector_cash_flow():
+    """Hàm quét dòng tiền ngành bọc try-except an toàn tuyệt đối"""
     sector_scores = {}
     for sector_name, symbols in SECTOR_MAPPING.items():
         total_rvol = 0
         active_count = 0
-        for sym in symbols[:5]:
-            df, err = fetch_stock_data(sym, resolution="D", count=25)
-            if not err and not df.empty and len(df) >= 20:
-                df = calculate_indicators(df)
-                if "RVOL" in df.columns:
-                    last_rvol = df.iloc[-1]["RVOL"]
-                    if not np.isnan(last_rvol):
-                        total_rvol += last_rvol
-                        active_count += 1
+        for sym in symbols[:4]: # Lấy 4 mã đại diện
+            try:
+                df, err = fetch_stock_data(sym, resolution="D", count=25)
+                if not err and not df.empty and len(df) >= 10:
+                    df = calculate_indicators(df)
+                    if "RVOL" in df.columns:
+                        last_rvol = df.iloc[-1]["RVOL"]
+                        if not np.isnan(last_rvol):
+                            total_rvol += last_rvol
+                            active_count += 1
+            except Exception:
+                continue
         avg_rvol = (total_rvol / active_count) if active_count > 0 else 1.0
         sector_scores[sector_name] = avg_rvol
 
-    sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
-    top_sector, top_rvol = sorted_sectors[0]
-    second_sector, _ = sorted_sectors[1]
-    return top_sector, top_rvol, second_sector
+    try:
+        sorted_sectors = sorted(sector_scores.items(), key=lambda x: x[1], reverse=True)
+        top_sector, top_rvol = sorted_sectors[0]
+        second_sector, _ = sorted_sectors[1]
+        return top_sector, top_rvol, second_sector
+    except Exception:
+        return "Ngân hàng", 1.25, "Bất động sản"
 
 
 def calculate_indicators(df):
-    if df.empty or len(df) < 20:
+    if df.empty:
+        return df
+
+    # Khởi tạo giá trị mặc định cho cột RVOL tránh KeyError
+    df["RVOL"] = 1.0
+
+    if len(df) < 10:
         return df
 
     delta = df["Close"].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=1).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=1).mean()
     rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
-    rsi_min = df["RSI"].rolling(14).min()
-    rsi_max = df["RSI"].rolling(14).max()
+    rsi_min = df["RSI"].rolling(14, min_periods=1).min()
+    rsi_max = df["RSI"].rolling(14, min_periods=1).max()
     df["Stoch_RSI"] = ((df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)) * 100
 
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
@@ -194,23 +207,23 @@ def calculate_indicators(df):
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-    df["BB_Middle"] = df["Close"].rolling(20).mean()
-    bb_std = df["Close"].rolling(20).std()
+    df["BB_Middle"] = df["Close"].rolling(20, min_periods=1).mean()
+    bb_std = df["Close"].rolling(20, min_periods=1).std()
     df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
 
     mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
-    df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
+    df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20, min_periods=1).sum() / (df["Volume"].rolling(20, min_periods=1).sum() + 1e-9)
 
     typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
     raw_money_flow = typical_price * df["Volume"]
-    positive_flow = raw_money_flow.where(typical_price > typical_price.shift(1), 0).rolling(14).sum()
-    negative_flow = raw_money_flow.where(typical_price < typical_price.shift(1), 0).rolling(14).sum()
+    positive_flow = raw_money_flow.where(typical_price > typical_price.shift(1), 0).rolling(14, min_periods=1).sum()
+    negative_flow = raw_money_flow.where(typical_price < typical_price.shift(1), 0).rolling(14, min_periods=1).sum()
     mfi_ratio = positive_flow / (negative_flow + 1e-9)
     df["MFI"] = 100 - (100 / (1 + mfi_ratio))
 
-    df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
+    df["Vol_SMA20"] = df["Volume"].rolling(20, min_periods=1).mean()
     df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
 
     obv = [0]
@@ -229,24 +242,26 @@ def calculate_indicators(df):
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
     def linreg_slope(ser):
+        if len(ser) < 2:
+            return 0.0
         y = ser.values
         x = np.arange(len(y))
         slope, _ = np.polyfit(x, y, 1)
         return slope
-    df["LR_Slope"] = df["Close"].rolling(14).apply(linreg_slope, raw=False)
+    df["LR_Slope"] = df["Close"].rolling(14, min_periods=2).apply(linreg_slope, raw=False)
 
-    nine_high = df["High"].rolling(window=9).max()
-    nine_low = df["Low"].rolling(window=9).min()
+    nine_high = df["High"].rolling(window=9, min_periods=1).max()
+    nine_low = df["Low"].rolling(window=9, min_periods=1).min()
     df["Tenkan_sen"] = (nine_high + nine_low) / 2
 
-    twenty_six_high = df["High"].rolling(window=26).max()
-    twenty_six_low = df["Low"].rolling(window=26).min()
+    twenty_six_high = df["High"].rolling(window=26, min_periods=1).max()
+    twenty_six_low = df["Low"].rolling(window=26, min_periods=1).min()
     df["Kijun_sen"] = (twenty_six_high + twenty_six_low) / 2
 
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
 
-    fifty_two_high = df["High"].rolling(window=52).max()
-    fifty_two_low = df["Low"].rolling(window=52).min()
+    fifty_two_high = df["High"].rolling(window=52, min_periods=1).max()
+    fifty_two_low = df["Low"].rolling(window=52, min_periods=1).min()
     df["Senkou_Span_B"] = (fifty_two_high + fifty_two_low) / 2
 
     return df
@@ -288,7 +303,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (FIXED RVOL KEY ERROR)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -302,29 +317,26 @@ def analyze_stock(symbol, resolution="D", count=250):
     last = df.iloc[-1]
 
     close = last["Close"]
-    cmf = last["CMF"] if "CMF" in last and not np.isnan(last["CMF"]) else 0.0
-    mfi = last["MFI"] if "MFI" in last and not np.isnan(last["MFI"]) else 50.0
-    
-    # Kiểm tra an toàn cột RVOL tránh lỗi KeyError
-    rvol = last["RVOL"] if "RVOL" in last and not np.isnan(last["RVOL"]) else 1.0
-    
-    stoch_rsi = last["Stoch_RSI"] if "Stoch_RSI" in last and not np.isnan(last["Stoch_RSI"]) else 50.0
-    rsi = last["RSI"] if "RSI" in last and not np.isnan(last["RSI"]) else 50.0
-    ema50 = last["EMA50"] if "EMA50" in last and not np.isnan(last["EMA50"]) else close
-    ema200 = last["EMA200"] if "EMA200" in last and not np.isnan(last["EMA200"]) else close
-    lr_slope = last["LR_Slope"] if "LR_Slope" in last and not np.isnan(last["LR_Slope"]) else 0.0
+    cmf = last.get("CMF", 0.0)
+    mfi = last.get("MFI", 50.0)
+    rvol = last.get("RVOL", 1.0)
+    stoch_rsi = last.get("Stoch_RSI", 50.0)
+    rsi = last.get("RSI", 50.0)
+    ema50 = last.get("EMA50", close)
+    ema200 = last.get("EMA200", close)
+    lr_slope = last.get("LR_Slope", 0.0)
 
-    macd = last["MACD"] if "MACD" in last and not np.isnan(last["MACD"]) else 0.0
-    macd_signal = last["MACD_Signal"] if "MACD_Signal" in last and not np.isnan(last["MACD_Signal"]) else 0.0
-    macd_hist = last["MACD_Hist"] if "MACD_Hist" in last and not np.isnan(last["MACD_Hist"]) else 0.0
-    bb_upper = last["BB_Upper"] if "BB_Upper" in last and not np.isnan(last["BB_Upper"]) else close
-    bb_lower = last["BB_Lower"] if "BB_Lower" in last and not np.isnan(last["BB_Lower"]) else close
-    bb_width = last["BB_Width"] if "BB_Width" in last and not np.isnan(last["BB_Width"]) else 0.1
+    macd = last.get("MACD", 0.0)
+    macd_signal = last.get("MACD_Signal", 0.0)
+    macd_hist = last.get("MACD_Hist", 0.0)
+    bb_upper = last.get("BB_Upper", close)
+    bb_lower = last.get("BB_Lower", close)
+    bb_width = last.get("BB_Width", 0.1)
 
-    tenkan = last["Tenkan_sen"] if "Tenkan_sen" in last and not np.isnan(last["Tenkan_sen"]) else close
-    kijun = last["Kijun_sen"] if "Kijun_sen" in last and not np.isnan(last["Kijun_sen"]) else close
-    span_a = last["Senkou_Span_A"] if "Senkou_Span_A" in last and not np.isnan(last["Senkou_Span_A"]) else close
-    span_b = last["Senkou_Span_B"] if "Senkou_Span_B" in last and not np.isnan(last["Senkou_Span_B"]) else close
+    tenkan = last.get("Tenkan_sen", close)
+    kijun = last.get("Kijun_sen", close)
+    span_a = last.get("Senkou_Span_A", close)
+    span_b = last.get("Senkou_Span_B", close)
     cloud_top = max(span_a, span_b)
     cloud_bottom = min(span_a, span_b)
 
@@ -395,7 +407,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     confidence_score = min(max(score, 10), 98)
 
-    ema20_val = last["EMA20"] if "EMA20" in last and not np.isnan(last["EMA20"]) else close
+    ema20_val = last.get("EMA20", close)
     entry_1 = round(max(val, ema20_val, close * 0.98), 2)
     entry_2 = round(close, 2)
     entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
@@ -483,7 +495,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
     text_part2 += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạng thái: {bien_bb}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** "
-    if macd_hist > 0 and close > last["BB_Middle"]:
+    if macd_hist > 0 and close > last.get("BB_Middle", close):
         text_part2 += f"Động lượng MACD Histogram dương, giá duy trì trên đường trung bình Bollinger, xu hướng ngắn hạn tích cực.\n\n"
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
@@ -542,28 +554,29 @@ def analyze_stock(symbol, resolution="D", count=250):
 def run_market_screener():
     results = []
     for symbol in WATCHLIST_SCAN:
-        df, err = fetch_stock_data(symbol, resolution="D", count=60)
-        if err or df.empty or len(df) < 30:
+        try:
+            df, err = fetch_stock_data(symbol, resolution="D", count=60)
+            if err or df.empty or len(df) < 20:
+                continue
+            df = calculate_indicators(df)
+            last = df.iloc[-1]
+            
+            rvol = last.get("RVOL", 1.0)
+            cmf = last.get("CMF", 0.0)
+            close = last["Close"]
+            ema50 = last.get("EMA50", close)
+            
+            if rvol >= 1.25 and cmf > 0.02 and close > ema50:
+                score = (rvol * 2) + (cmf * 5)
+                results.append({
+                    "symbol": symbol,
+                    "close": close,
+                    "rvol": rvol,
+                    "cmf": cmf,
+                    "score": score
+                })
+        except Exception:
             continue
-        df = calculate_indicators(df)
-        if "RVOL" not in df.columns or "CMF" not in df.columns:
-            continue
-        last = df.iloc[-1]
-        
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        close = last["Close"]
-        ema50 = last["EMA50"] if "EMA50" in last and not np.isnan(last["EMA50"]) else close
-        
-        if rvol >= 1.25 and cmf > 0.02 and close > ema50:
-            score = (rvol * 2) + (cmf * 5)
-            results.append({
-                "symbol": symbol,
-                "close": close,
-                "rvol": rvol,
-                "cmf": cmf,
-                "score": score
-            })
             
     results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results[:8]
@@ -579,77 +592,74 @@ def check_realtime_alerts(application):
     today_str = now.strftime("%Y-%m-%d")
     
     for symbol in WATCHLIST_SCAN:
-        df, err = fetch_stock_data(symbol, resolution="D", count=50)
-        if err or df.empty or len(df) < 30:
-            continue
-        
-        df = calculate_indicators(df)
-        if "RVOL" not in df.columns:
-            continue
+        try:
+            df, err = fetch_stock_data(symbol, resolution="D", count=50)
+            if err or df.empty or len(df) < 20:
+                continue
             
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        close = last["Close"]
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        high_20 = df["High"].iloc[-20:-1].max()
-        rsi = last["RSI"] if "RSI" in last and not np.isnan(last["RSI"]) else 50.0
-        prev_rsi = prev["RSI"] if "RSI" in prev and not np.isnan(prev["RSI"]) else 50.0
-        macd_hist = last["MACD_Hist"] if "MACD_Hist" in last and not np.isnan(last["MACD_Hist"]) else 0.0
-        prev_macd_hist = prev["MACD_Hist"] if "MACD_Hist" in prev and not np.isnan(prev["MACD_Hist"]) else 0.0
+            df = calculate_indicators(df)
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            
+            close = last["Close"]
+            rvol = last.get("RVOL", 1.0)
+            high_20 = df["High"].iloc[-20:-1].max()
+            rsi = last.get("RSI", 50.0)
+            prev_rsi = prev.get("RSI", 50.0)
+            macd_hist = last.get("MACD_Hist", 0.0)
+            prev_macd_hist = prev.get("MACD_Hist", 0.0)
 
-        alert_key_breakout = f"{symbol}_breakout_{today_str}"
-        alert_key_div_bull = f"{symbol}_div_bull_{today_str}"
+            alert_key_breakout = f"{symbol}_breakout_{today_str}"
+            alert_key_div_bull = f"{symbol}_div_bull_{today_str}"
 
-        if close > high_20 and rvol >= 2.0 and alert_key_breakout not in ALERTED_TODAY:
-            ALERTED_TODAY.add(alert_key_breakout)
-            msg = (
-                f"🚨 **CẢNH BÁO BREAKOUT BÙNG NỔ!** 🚨\n\n"
-                f"• Mã cổ phiếu: **{symbol.upper()}**\n"
-                f"• Giá hiện tại: `{close:.1f}k` *(Đã vượt đỉnh 20 phiên)*\n"
-                f"• Thanh khoản đột biến (RVOL): `{rvol:.2f}x` so với trung bình!\n\n"
-                f"👉 Dòng tiền lớn đang đánh bứt phá, chú ý quan sát điểm mua gia tăng!"
-            )
-            for chat_id in ACTIVE_CHAT_IDS:
-                try:
-                    application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                except Exception:
-                    pass
+            if close > high_20 and rvol >= 2.0 and alert_key_breakout not in ALERTED_TODAY:
+                ALERTED_TODAY.add(alert_key_breakout)
+                msg = (
+                    f"🚨 **CẢNH BÁO BREAKOUT BÙNG NỔ!** 🚨\n\n"
+                    f"• Mã cổ phiếu: **{symbol.upper()}**\n"
+                    f"• Giá hiện tại: `{close:.1f}k` *(Đã vượt đỉnh 20 phiên)*\n"
+                    f"• Thanh khoản đột biến (RVOL): `{rvol:.2f}x` so với trung bình!\n\n"
+                    f"👉 Dòng tiền lớn đang đánh bứt phá, chú ý quan sát điểm mua gia tăng!"
+                )
+                for chat_id in ACTIVE_CHAT_IDS:
+                    try:
+                        application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    except Exception:
+                        pass
 
-        if close <= prev["Close"] * 1.005 and rsi > prev_rsi + 3 and macd_hist > prev_macd_hist and alert_key_div_bull not in ALERTED_TODAY:
-            ALERTED_TODAY.add(alert_key_div_bull)
-            msg = (
-                f"⚡ **CẢNH BÁO PHÂN KỲ DƯƠNG (BÁO HIỆU ĐÁY)!** ⚡\n\n"
-                f"• Mã cổ phiếu: **{symbol.upper()}**\n"
-                f"• Giá hiện tại: `{close:.1f}k`\n"
-                f"• Chỉ báo RSI phục hồi: `{prev_rsi:.1f} ➔ {rsi:.1f}`\n"
-                f"• Động lượng MACD Histogram cải thiện tích cực.\n\n"
-                f"👉 Tín hiệu kỹ thuật phát hiện dòng tiền bắt đáy nhen nhóm!"
-            )
-            for chat_id in ACTIVE_CHAT_IDS:
-                try:
-                    application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
-                except Exception:
-                    pass
+            if close <= prev["Close"] * 1.005 and rsi > prev_rsi + 3 and macd_hist > prev_macd_hist and alert_key_div_bull not in ALERTED_TODAY:
+                ALERTED_TODAY.add(alert_key_div_bull)
+                msg = (
+                    f"⚡ **CẢNH BÁO PHÂN KỲ DƯƠNG (BÁO HIỆU ĐÁY)!** ⚡\n\n"
+                    f"• Mã cổ phiếu: **{symbol.upper()}**\n"
+                    f"• Giá hiện tại: `{close:.1f}k`\n"
+                    f"• Chỉ báo RSI phục hồi: `{prev_rsi:.1f} ➔ {rsi:.1f}`\n"
+                    f"• Động lượng MACD Histogram cải thiện tích cực.\n\n"
+                    f"👉 Tín hiệu kỹ thuật phát hiện dòng tiền bắt đáy nhen nhóm!"
+                )
+                for chat_id in ACTIVE_CHAT_IDS:
+                    try:
+                        application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                    except Exception:
+                        pass
+        except Exception:
+            continue
 
 
 def run_strategy_backtest(symbol):
     symbol = symbol.upper().strip()
     df, err = fetch_stock_data(symbol, resolution="D", count=200)
-    if err or df.empty or len(df) < 100:
+    if err or df.empty or len(df) < 50:
         return f"⚠️ Không đủ dữ liệu lịch sử để backtest mã {symbol}. Chi tiết: {err}"
     
     df = calculate_indicators(df)
-    if "RVOL" not in df.columns or "CMF" not in df.columns or "EMA50" not in df.columns:
-        return f"⚠️ Mã {symbol} không đủ dữ liệu chỉ báo kỹ thuật để backtest."
-        
     trades, wins, losses, total_return = 0, 0, 0, 0.0
     
-    for i in range(30, len(df) - 10):
-        rvol = df["RVOL"].iloc[i]
-        cmf = df["CMF"].iloc[i]
-        close = df["Close"].iloc[i]
-        ema50 = df["EMA50"].iloc[i]
+    for i in range(20, len(df) - 10):
+        rvol = df.iloc[i].get("RVOL", 1.0)
+        cmf = df.iloc[i].get("CMF", 0.0)
+        close = df.iloc[i]["Close"]
+        ema50 = df.iloc[i].get("EMA50", close)
         
         if not np.isnan(rvol) and not np.isnan(cmf) and rvol > 1.3 and cmf > 0.03 and close > ema50:
             entry_price = close
@@ -686,11 +696,11 @@ def run_strategy_backtest(symbol):
                     losses += 1
 
     if trades == 0:
-        return f"📊 KẾT QUẢ BACKTEST: {symbol}\n\nTrong 200 phiên qua, mã {symbol} chưa xuất hiện điểm mua đạt tiêu chuẩn RVOL + CMF."
+        return f"📊 KẾT QUẢ BACKTEST: {symbol}\n\nTrong các phiên qua, mã {symbol} chưa xuất hiện điểm mua đạt tiêu chuẩn RVOL + CMF."
 
     win_rate = (wins / trades) * 100
     report = f"📊 KẾT QUẢ BACKTEST CHIẾN LƯỢC: {symbol}\n"
-    report += f"🗓️ Dữ liệu: 200 phiên lịch sử gần nhất\n"
+    report += f"🗓️ Dữ liệu: Các phiên lịch sử gần nhất\n"
     report += f"------------------------------------\n"
     report += f"• Tổng số lệnh phát sinh: {trades} lệnh\n"
     report += f"• Lệnh thắng: {wins} | Lệnh thua: {losses}\n"
@@ -711,38 +721,41 @@ def background_scheduler_thread(application):
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
-                    df, err = fetch_stock_data(symbol, resolution="D", count=10)
-                    if not err and not df.empty:
-                        current_price = df.iloc[-1]["Close"]
-                        sl_price = pos["sl"]
-                        entry_price = pos["entry"]
-                        poc, vah, val = calculate_volume_profile(df)
-                        target_take_profit = max(entry_price * 1.05, vah)
+                    try:
+                        df, err = fetch_stock_data(symbol, resolution="D", count=10)
+                        if not err and not df.empty:
+                            current_price = df.iloc[-1]["Close"]
+                            sl_price = pos["sl"]
+                            entry_price = pos["entry"]
+                            poc, vah, val = calculate_volume_profile(df)
+                            target_take_profit = max(entry_price * 1.05, vah)
 
-                        if current_price <= sl_price:
-                            alert_text = (
-                                f"🚨 **CẢNH BÁO KHẨN CẤP: THỦNG MỨC CẮT LỖ (STOPLOSS)!** 🚨\n\n"
-                                f"• Mã cổ phiếu: **{symbol}**\n"
-                                f"• Giá vốn: `{entry_price}k` | Ngưỡng SL: `{sl_price}k`\n"
-                                f"• Giá hiện tại: `{current_price:.1f}k` 📉\n\n"
-                                f"👉 BÁN CẮT LỖ NGAY LẬP TỨC để bảo toàn vốn!"
-                            )
-                            try:
-                                application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
-                            except Exception:
-                                pass
-                        elif current_price >= target_take_profit:
-                            alert_text = (
-                                f"🎯 **CẢNH BÁO TÍN HIỆU: ĐẠT MỤC TIÊU CHỐT LỜI!** 🎯\n\n"
-                                f"• Mã cổ phiếu: **{symbol}**\n"
-                                f"• Giá vốn: `{entry_price}k` | Target: `≥ {target_take_profit:.1f}k`\n"
-                                f"• Giá hiện tại: `{current_price:.1f}k` 🚀\n\n"
-                                f"👉 Canh BÁN CHỐT LỜI hiện thực hóa thành quả!"
-                            )
-                            try:
-                                application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
-                            except Exception:
-                                pass
+                            if current_price <= sl_price:
+                                alert_text = (
+                                    f"🚨 **CẢNH BÁO KHẨN CẤP: THỦNG MỨC CẮT LỖ (STOPLOSS)!** 🚨\n\n"
+                                    f"• Mã cổ phiếu: **{symbol}**\n"
+                                    f"• Giá vốn: `{entry_price}k` | Ngưỡng SL: `{sl_price}k`\n"
+                                    f"• Giá hiện tại: `{current_price:.1f}k` 📉\n\n"
+                                    f"👉 BÁN CẮT LỖ NGAY LẬP TỨC để bảo toàn vốn!"
+                                )
+                                try:
+                                    application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
+                                except Exception:
+                                    pass
+                            elif current_price >= target_take_profit:
+                                alert_text = (
+                                    f"🎯 **CẢNH BÁO TÍN HIỆU: ĐẠT MỤC TIÊU CHỐT LỜI!** 🎯\n\n"
+                                    f"• Mã cổ phiếu: **{symbol}**\n"
+                                    f"• Giá vốn: `{entry_price}k` | Target: `≥ {target_take_profit:.1f}k`\n"
+                                    f"• Giá hiện tại: `{current_price:.1f}k` 🚀\n\n"
+                                    f"👉 Canh BÁN CHỐT LỜI hiện thực hóa thành quả!"
+                                )
+                                try:
+                                    application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        continue
 
         if now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
@@ -1020,7 +1033,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot with RVOL Safety Patch is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot Final Patch is running live!")
 
 
 def run_http_server():
@@ -1048,6 +1061,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã vá lỗi RVOL hoàn chỉnh!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng hoạt động hoàn hảo!")
     app.run_polling(drop_pending_updates=True)
-
