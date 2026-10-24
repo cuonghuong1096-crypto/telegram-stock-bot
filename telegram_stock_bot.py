@@ -122,31 +122,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     return pd.DataFrame(), f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không hợp lệ."
 
 
-def fetch_financial_metrics(symbol):
-    symbol = symbol.upper().strip()
-    url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/second-tc-price?tickers={symbol}"
-    try:
-        headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                item = data[0]
-                pe = item.get("pe", 0.0)
-                pb = item.get("pb", 0.0)
-                roe = item.get("roe", 0.0) * 100 if item.get("roe", 0) < 1 else item.get("roe", 0.0)
-                eps_growth = item.get("epsGrowth1Year", 0.0) * 100 if abs(item.get("epsGrowth1Year", 0)) < 2 else item.get("epsGrowth1Year", 0.0)
-                return {
-                    "pe": pe,
-                    "pb": pb,
-                    "roe": roe,
-                    "eps_growth": eps_growth
-                }
-    except Exception:
-        pass
-    return {"pe": 12.5, "pb": 1.6, "roe": 18.2, "eps_growth": 15.4}
-
-
 def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
@@ -226,7 +201,6 @@ def calculate_indicators(df):
 
 
 def calculate_volume_profile(df, bins=20):
-    """Tính Volume Profile trên 60 nến gần nhất để phản ánh đúng thực tế sóng giá gần nhất"""
     if df.empty:
         return 0, 0, 0
     sub_df = df.tail(60)
@@ -262,7 +236,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (SỬA LỖI MỤC 3)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (ĐÃ BỎ MỤC 7 & 8)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -390,8 +364,6 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
-    fa_data = fetch_financial_metrics(symbol)
-
     # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
@@ -420,7 +392,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
-    # MỤC 3 (ĐÃ SỬA LỖI LOGIC GIÁ VỚI VÙNG VOLUME PROFILE)
+    # MỤC 3
     text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text_part1 += f"• Vùng giá giao dịch: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
@@ -442,7 +414,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: MỤC 5 ĐẾN MỤC 9 ---
+    # --- PHẦN 2: MỤC 5, 6 & 9 (ĐÃ BỎ 7 & 8) ---
     text_part2 = ""
     # MỤC 5
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
@@ -463,24 +435,8 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7
-    text_part2 += f"🌐 7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:\n"
-    text_part2 += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
-    text_part2 += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
-    text_part2 += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
-
-    # MỤC 8
-    text_part2 += f"🏢 8. ĐỊNH GIÁ & SỨC KHỎE TÀI CHÍNH CƠ BẢN (FA):\n"
-    text_part2 += f"• Định giá: P/E = `{fa_data['pe']:.1f}x` | P/B = `{fa_data['pb']:.1f}x` (So sánh trung bình ngành)\n"
-    text_part2 += f"• Hiệu quả & Tăng trưởng: ROE = `{fa_data['roe']:.1f}%` | Tăng trưởng EPS năm = `{fa_data['eps_growth']:+.1f}%`\n"
-    text_part2 += f"👉 **Kết luận & Hành động:** "
-    if fa_data['roe'] > 15 and fa_data['eps_growth'] > 10:
-        text_part2 += f"Nền tảng tài chính vững chắc, loại trừ rủi ro bẫy giá (Bulltrap) từ doanh nghiệp yếu kém.\n\n"
-    else:
-        text_part2 += f"Định giá ở mức trung bình, cẩn trọng kiểm soát tỷ trọng ngắn hạn.\n\n"
-
-    # MỤC 9
-    text_part2 += f"🏁 9. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
+    # MỤC 9 (CHUYỂN THÀNH MỤC 7 SAU KHI BỎ 7 & 8 CŨ)
+    text_part2 += f"🏁 7. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng quyết định: {final_action}"
 
@@ -990,7 +946,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot Corrected Volume Profile Edition is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot without Sections 7 & 8 is running live!")
 
 
 def run_http_server():
@@ -1020,4 +976,3 @@ if __name__ == "__main__":
 
     print("🚀 Bot Quant Trading System đã hoàn thiện chuẩn xác...")
     app.run_polling(drop_pending_updates=True)
-
