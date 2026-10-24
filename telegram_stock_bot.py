@@ -47,7 +47,7 @@ executor = ThreadPoolExecutor(max_workers=6)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN NÂNG CAO
+# 1. HÀM CALL DATA & TÍNH TOÁN
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -242,7 +242,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ (FIX ĐỊNH DẠNG GIÁ ĐÚNG)
+# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
@@ -319,7 +319,6 @@ def analyze_stock(symbol, resolution="D", count=250):
         nav_rec = "20 - 30% NAV"
 
     def fmt(p):
-        # Dữ liệu từ API đã sẵn ở đơn vị nghìn đồng (ví dụ: 42.5), ta chỉ cần hiển thị trực tiếp kèm chữ k
         return f"{p:.1f}k"
 
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
@@ -371,7 +370,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG (MARKET SCREENER)
+# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG
 # ==========================================
 def run_market_screener():
     results = []
@@ -402,46 +401,89 @@ def run_market_screener():
 
 
 # ==========================================
-# 4. MODULE BACKTEST HIỆU SUẤT CHIẾN LƯỢC
+# 4. MODULE BACKTEST HIỆU SUẤT CHIẾN LƯỢC (ĐÃ CHỈNH SỬA LOGIC CHUẨN)
 # ==========================================
-def run_strategy_backtest(symbol="HPG"):
+def run_strategy_backtest(symbol):
+    """
+    Backtest chiến lược mua dựa trên tín hiệu Dòng tiền (RVOL > 1.3, CMF > 0.03, Giá > EMA50)
+    trên dữ liệu lịch sử 200 phiên gần nhất.
+    Yêu cầu tham số: symbol (bắt buộc, không để mặc định).
+    """
+    symbol = symbol.upper().strip()
     df, err = fetch_stock_data(symbol, resolution="D", count=200)
     if err or df.empty or len(df) < 100:
-        return f"Không đủ dữ liệu lịch sử để backtest mã {symbol}. Chi tiết: {err}"
+        return f"⚠️ Không đủ dữ liệu lịch sử để backtest mã {symbol}. Chi tiết: {err}"
     
     df = calculate_indicators(df)
-    trades, wins, total_return = 0, 0, 0.0
+    trades = 0
+    wins = 0
+    losses = 0
+    total_return = 0.0
     
+    # Duyệt nến lịch sử từ nến thứ 30 đến trước 10 phiên cuối
     for i in range(30, len(df) - 10):
         rvol = df["RVOL"].iloc[i]
         cmf = df["CMF"].iloc[i]
         close = df["Close"].iloc[i]
         ema50 = df["EMA50"].iloc[i]
         
+        # Điều kiện Mua (Signal): Dòng tiền tổ chức bùng nổ & xu hướng tăng
         if not np.isnan(rvol) and not np.isnan(cmf) and rvol > 1.3 and cmf > 0.03 and close > ema50:
             entry_price = close
-            future_prices = df["Close"].iloc[i+1 : i+11].values
-            max_p, min_p = max(future_prices), min(future_prices)
-            
             atr = df["ATR"].iloc[i] if not np.isnan(df["ATR"].iloc[i]) else close * 0.02
-            target = entry_price + (1.5 * 1.5 * atr)
-            stoploss = entry_price - (1.5 * atr)
+            
+            target_price = entry_price + (1.5 * 1.5 * atr)
+            stoploss_price = entry_price - (1.5 * atr)
             
             trades += 1
-            if max_p >= target:
-                wins += 1
-                total_return += 5.0  
-            elif min_p <= stoploss:
-                total_return -= 3.0  
-            else:
-                ret = ((future_prices[-1] - entry_price) / entry_price) * 100
+            trade_closed = False
+            
+            # Kiểm tra diễn biến từng phiên trong 10 phiên tiếp theo (T+10)
+            for j in range(i + 1, min(i + 11, len(df))):
+                high_p = df["High"].iloc[j]
+                low_p = df["Low"].iloc[j]
+                
+                # Ưu tiên kiểm tra Stoploss trước nếu nến vi phạm
+                if low_p <= stoploss_price:
+                    losses += 1
+                    ret = ((stoploss_price - entry_price) / entry_price) * 100
+                    total_return += ret
+                    trade_closed = True
+                    break
+                elif high_p >= target_price:
+                    wins += 1
+                    ret = ((target_price - entry_price) / entry_price) * 100
+                    total_return += ret
+                    trade_closed = True
+                    break
+            
+            # Nếu sau 10 phiên chưa chạm Target hay Stoploss, chốt lời/lỗ theo giá đóng cửa phiên T+10
+            if not trade_closed:
+                exit_price = df["Close"].iloc[min(i + 10, len(df) - 1)]
+                ret = ((exit_price - entry_price) / entry_price) * 100
                 total_return += ret
+                if ret > 0:
+                    wins += 1
+                else:
+                    losses += 1
 
-    win_rate = (wins / trades * 100) if trades > 0 else 0
-    report = f"=== KẾT QUẢ BACKTEST CHIẾN LƯỢC: {symbol.upper()} ===\n"
-    report += f"• Tổng số lệnh kiểm thử: {trades}\n"
+    if trades == 0:
+        return f"📊 KẾT QUẢ BACKTEST: {symbol}\n\nTrong 200 phiên qua, mã {symbol} chưa xuất hiện điểm mua đạt tiêu chuẩn RVOL + CMF."
+
+    win_rate = (wins / trades) * 100
+    report = f"📊 KẾT QUẢ BACKTEST CHIẾN LƯỢC: {symbol}\n"
+    report += f"🗓️ Dữ liệu: 200 phiên lịch sử gần nhất\n"
+    report += f"------------------------------------\n"
+    report += f"• Tổng số lệnh phát sinh: {trades} lệnh\n"
+    report += f"• Lệnh thắng: {wins} | Lệnh thua: {losses}\n"
     report += f"• Tỷ lệ thắng (Win-rate): {win_rate:.1f}%\n"
-    report += f"• Lợi nhuận tích lũy giả lập: {total_return:+.2f}%\n"
+    report += f"• Hiệu suất tích lũy giả lập: {total_return:+.2f}%\n\n"
+    
+    if win_rate >= 55 and total_return > 0:
+        report += f"💡 Đánh giá: Mã {symbol} tương thích TỐT với chiến lược RVOL + CMF."
+    else:
+        report += f"💡 Đánh giá: Mã {symbol} phản ứng TRUNG BÌNH/YẾU với chiến lược này."
+        
     return report
 
 
@@ -469,7 +511,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 6. TELEGRAM HANDLERS & WEB SERVER
+# 6. TELEGRAM HANDLERS (ĐÃ BỎ MẶC ĐỊNH HPG Ở /backtest)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -478,7 +520,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Chào mừng bạn đến với Bot Quant Trading System!\n\n"
         "• Gõ mã cổ phiếu (VD: VHM, HPG) để xem phân tích.\n"
         "• Gõ /scan để quét toàn thị trường.\n"
-        "• Gõ /backtest HPG để test chiến lược."
+        "• Gõ /backtest [mã] (VD: /backtest VHM) để đo lường hiệu suất chiến lược."
     )
 
 
@@ -503,10 +545,21 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    args = context.args
-    symbol = args[0].upper() if args else "HPG"
     
-    msg = await update.message.reply_text(f"⏳ Đang chạy Backtest cho mã {symbol}...")
+    args = context.args
+    # Bắt buộc người dùng nhập kèm mã cổ phiếu sau lệnh /backtest
+    if not args:
+        await update.message.reply_text(
+            "⚠️ **Thiếu mã cổ phiếu!**\n\n"
+            "👉 Vui lòng nhập đúng cú pháp: `/backtest <MÃ_CP>`\n"
+            "📌 *Ví dụ:* `/backtest VHM` hoặc `/backtest SSI`",
+            parse_mode="Markdown"
+        )
+        return
+        
+    symbol = args[0].upper().strip()
+    
+    msg = await update.message.reply_text(f"⏳ Đang chạy thuật toán Backtest chiến lược cho mã {symbol}...")
     try:
         report = run_strategy_backtest(symbol)
         await msg.edit_text(report)
@@ -536,9 +589,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
     ]
     await update.message.reply_text(
-        f"🔍 Đã nhận mã **{symbol}**. Chọn khung thời gian phân tích:",
+        f"🔍 Đã nhận mã {symbol}. Chọn khung thời gian phân tích:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
     )
 
 
@@ -562,9 +614,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if err:
                 await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
             else:
-                # 1. Gửi ảnh biểu đồ trước
                 await query.message.reply_photo(photo=img_buf)
-                # 2. Gửi toàn bộ nội dung văn bản báo cáo chi tiết thành tin nhắn riêng để không bị giới hạn 1024 ký tự và không bị cắt cụt
                 await query.message.reply_text(text)
         except Exception as e:
             await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
