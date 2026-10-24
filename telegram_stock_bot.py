@@ -49,7 +49,7 @@ executor = ThreadPoolExecutor(max_workers=6)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN (CÓ ICHIMOKU)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -124,6 +124,7 @@ def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
 
+    # --- 1. RSI & Stochastic RSI ---
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -132,22 +133,29 @@ def calculate_indicators(df):
 
     rsi_min = df["RSI"].rolling(14).min()
     rsi_max = df["RSI"].rolling(14).max()
-    df["Stoch_RSI"] = (
-        (df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)
-    ) * 100
+    df["Stoch_RSI"] = ((df["RSI"] - rsi_min) / (rsi_max - rsi_min + 1e-9)) * 100
 
+    # --- 2. MACD ---
     ema12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = ema12 - ema26
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_Hist"] = df["MACD"] - df["MACD_Signal"]
 
-    mf_multiplier = (
-        (df["Close"] - df["Low"]) - (df["High"] - df["Close"])
-    ) / (df["High"] - df["Low"] + 1e-9)
-    df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (
-        df["Volume"].rolling(20).sum() + 1e-9
-    )
+    # --- 3. CMF & MFI (Dòng tiền) ---
+    mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
+    df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
+
+    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
+    raw_money_flow = typical_price * df["Volume"]
+    positive_flow = raw_money_flow.where(typical_price > typical_price.shift(1), 0).rolling(14).sum()
+    negative_flow = raw_money_flow.where(typical_price < typical_price.shift(1), 0).rolling(14).sum()
+    mfi_ratio = positive_flow / (negative_flow + 1e-9)
+    df["MFI"] = 100 - (100 / (1 + mfi_ratio))
+
+    # --- 4. RVOL & OBV ---
+    df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
+    df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
 
     obv = [0]
     for i in range(1, len(df)):
@@ -160,32 +168,30 @@ def calculate_indicators(df):
     df["OBV"] = obv
     df["OBV_EMA"] = df["OBV"].ewm(span=20, adjust=False).mean()
 
-    df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
-    df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
-
-    typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
-    df["VWAP"] = (typical_price * df["Volume"]).cumsum() / (
-        df["Volume"].cumsum() + 1e-9
-    )
+    # --- 5. EMA & VWAP ---
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-    # --- TÍNH TOÁN CÁC CHỈ SỐ ICHIMOKU ---
-    # 1. Tenkan-sen (Conversion Line): (9-period high + 9-period low)/2
+    # --- 6. Linear Regression Slope (Độ dốc hồi quy tuyến tính 14 phiên) ---
+    def linreg_slope(ser):
+        y = ser.values
+        x = np.arange(len(y))
+        slope, _ = np.polyfit(x, y, 1)
+        return slope
+    df["LR_Slope"] = df["Close"].rolling(14).apply(linreg_slope, raw=False)
+
+    # --- 7. ICHIMOKU CLOUD ---
     nine_high = df["High"].rolling(window=9).max()
     nine_low = df["Low"].rolling(window=9).min()
     df["Tenkan_sen"] = (nine_high + nine_low) / 2
 
-    # 2. Kijun-sen (Base Line): (26-period high + 26-period low)/2
     twenty_six_high = df["High"].rolling(window=26).max()
     twenty_six_low = df["Low"].rolling(window=26).min()
     df["Kijun_sen"] = (twenty_six_high + twenty_six_low) / 2
 
-    # 3. Senkou Span A (Leading Span A): (Tenkan-sen + Kijun-sen)/2
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
 
-    # 4. Senkou Span B (Leading Span B): (52-period high + 52-period low)/2
     fifty_two_high = df["High"].rolling(window=52).max()
     fifty_two_low = df["Low"].rolling(window=52).min()
     df["Senkou_Span_B"] = (fifty_two_high + fifty_two_low) / 2
@@ -200,9 +206,7 @@ def calculate_volume_profile(df, bins=20):
     if price_min == price_max:
         return price_min, price_min, price_min
 
-    hist, bin_edges = np.histogram(
-        df["Close"], bins=bins, weights=df["Volume"]
-    )
+    hist, bin_edges = np.histogram(df["Close"], bins=bins, weights=df["Volume"])
     poc_idx = np.argmax(hist)
     poc = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
 
@@ -230,7 +234,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
@@ -242,19 +246,20 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     close = last["Close"]
     cmf = last["CMF"]
+    mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
     rvol = last["RVOL"]
     stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
     rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
     macdh = last["MACD_Hist"]
     ema50 = last["EMA50"]
     ema200 = last["EMA200"]
+    lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
 
-    # Đọc giá trị Ichimoku
+    # Ichimoku data
     tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
     kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
     span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
     span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
-
     cloud_top = max(span_a, span_b)
     cloud_bottom = min(span_a, span_b)
 
@@ -288,15 +293,15 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append("Giá nằm dưới hoặc trong mây Kumo")
 
-    if cmf > 0:
-        confluence_points.append(f"Dòng tiền CMF dương ({cmf:.2f})")
+    if cmf > 0 and mfi > 50:
+        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận vào")
     else:
-        risk_warnings.append(f"Dòng tiền CMF âm ({cmf:.2f})")
+        risk_warnings.append(f"Dòng tiền suy yếu (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
     if rvol > 1.2:
-        confluence_points.append(f"Thanh khoản bùng nổ ({rvol:.2f})")
-    elif rvol < 0.8:
-        risk_warnings.append(f"Thanh khoản cạn kiệt ({rvol:.2f})")
+        confluence_points.append(f"Thanh khoản bùng nổ ({rvol:.2f}x)")
+    else:
+        risk_warnings.append(f"Thanh khoản thấp ({rvol:.2f}x)")
 
     entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
     entry_2 = round(close, 2)
@@ -324,73 +329,77 @@ def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
         return f"{p:.1f}k"
 
+    # --- XÂY DỰNG BÁO CÁO CHUYÊN GIA (MỖI MỤC ĐỀU CÓ THÔNG SỐ & KẾT LUẬN HÀNH ĐỘNG) ---
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
     # MỤC 1
     text += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
-    text += f"• Chỉ số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
-    text += f"• Chỉ báo: CMF: {cmf:.2f} | RVOL: {rvol:.2f} | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
-    if cmf > 0 and rvol >= 1.0:
-        text += f"👉 **Hành động Mục 1:** Dòng tiền tích cực, ưu tiên nắm giữ.\n\n"
+    text += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
+    text += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
+    text += f"• Đồ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
+    if cmf > 0 and mfi > 50 and lr_slope >= 0:
+        text += f"👉 **Kết luận & Hành động:** Dòng tiền và động lượng tăng trưởng tốt, ưu tiên nắm giữ hoặc canh gia tăng tỷ trọng khi rung lắc.\n\n"
     else:
-        text += f"👉 **Hành động Mục 1:** Dòng tiền yếu/âm, hạn chế mua đuổi.\n\n"
+        text += f"👉 **Kết luận & Hành động:** Dòng tiền và độ dốc xu hướng đang suy yếu, hạn chế mua đuổi, ưu tiên quản trị rủi ro.\n\n"
 
-    # MỤC 2 (ĐÃ THAY BẰNG CHỈ BÁO ICHIMOKU)
-    text += f"☁️ 2. CHỈ BÁO ICHIMOKU:\n"
-    text += f"• Trạng thái mây: {ichi_status}\n"
-    text += f"• Tenkan-sen (9): {fmt(tenkan)} | Kijun-sen (26): {fmt(kijun)}\n"
-    text += f"• Mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
+    # MỤC 2
+    text += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
+    text += f"• Thông số mây: {ichi_status}\n"
+    text += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
+    text += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
     if close > cloud_top and tenkan > kijun:
-        text += f"👉 **Hành động Mục 2:** Xu hướng tăng mạnh trên mây, ưu tiên canh mua khi giá test Kijun-sen.\n\n"
+        text += f"👉 **Kết luận & Hành động:** Trạng thái kỹ thuật mạnh mẽ trên mây Kumo, canh mua chủ động khi giá test đường Kijun-sen.\n\n"
     elif close < cloud_bottom:
-        text += f"👉 **Hành động Mục 2:** Giá nằm dưới mây Kumo, tín hiệu suy yếu rõ rệt, tránh bắt đáy.\n\n"
+        text += f"👉 **Kết luận & Hành động:** Giá nằm hoàn toàn dưới mây Kumo, cấu trúc xu hướng giảm dài hạn, tuyệt đối không bắt đáy.\n\n"
     else:
-        text += f"👉 **Hành động Mục 2:** Giá đang dao động trong mây, cần kiên nhẫn chờ điểm break khỏi mây.\n\n"
+        text += f"👉 **Kết luận & Hành động:** Giá đi ngang trong mây, tín hiệu nhiễu cao, kiên nhẫn chờ giá bứt phá hẳn khỏi mây.\n\n"
 
     # MỤC 3
-    text += f"📊 3. VOLUME PROFILE:\n"
-    text += f"• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text += f"👉 **Hành động Mục 3:** Mua gom quanh vùng **{fmt(val)} - {fmt(poc)}**, chốt lời sát **{fmt(vah)}**.\n\n"
+    text += f"📊 3. VOLUME PROFILE & CẤN ĐỐI KHỐI LƯỢNG:\n"
+    text += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
+    text += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
+    text += f"👉 **Kết luận & Hành động:** Xây dựng vị thế gom hàng quanh vùng hỗ trợ **{fmt(val)} - {fmt(poc)}** và hiện thực hóa lợi nhuận khi tiệm cận **{fmt(vah)}**.\n\n"
 
     # MỤC 4
-    text += f"🎯 4. QUẢN TRỊ RỦI RO (RISK MANAGEMENT):\n"
-    text += f"• Trạng thái hệ thống: {system_status}\n"
-    text += f"• Khuyến nghị NAV phân bổ: {nav_rec}\n"
+    text += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
+    text += f"• Thông số hệ thống: {system_status}\n"
+    text += f"• Khuyến nghị NAV: {nav_rec}\n"
     if is_standing_aside:
-        text += f"• 🛡️ *Watchzone:* {fmt(entry_1)} - {fmt(entry_2)}\n"
-        text += f"👉 **Hành động Mục 4:** Đứng ngoài bảo toàn vốn.\n\n"
+        text += f"• Vùng quan sát an toàn (Watchzone): {fmt(entry_1)} - {fmt(entry_2)}\n"
+        text += f"👉 **Kết luận & Hành động:** Đứng ngoài quan sát, bảo toàn 100% tiền mặt cho đến khi cấu trúc giá chuyển biến tích cực.\n\n"
     else:
-        text += f"• Vùng mua: {fmt(entry_1)} - {fmt(entry_2)} | SL: {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
-        text += f"👉 **Hành động Mục 4:** Giải ngân theo NAV, tuân thủ tuyệt đối điểm cắt lỗ.\n\n"
+        text += f"• Vùng mua giải ngân: {fmt(entry_1)} - {fmt(entry_2)} (Trung bình: {fmt(entry_avg)})\n"
+        text += f"• Điểm cắt lỗ (Stoploss): {fmt(stop_loss)} ({sl_pct:.2f}%)\n"
+        text += f"👉 **Kết luận & Hành động:** Giải ngân theo đúng tỷ trọng NAV khuyến nghị và tuân thủ tuyệt đối kỷ luật cắt lỗ tại mốc `{fmt(stop_loss)}`.\n\n"
 
     # MỤC 5
-    text += f"⚡ 5. ĐIỂM CỘNG & CẢNH BÁO TỔNG HỢP:\n"
-    conf_str = "; ".join(confluence_points) if confluence_points else "Không có"
-    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có"
-    text += f"• Điểm cộng: {conf_str}\n"
-    text += f"• Cảnh báo: {warn_str}\n"
-    text += f"👉 **Hành động Mục 5:** Cân nhắc kỹ các điểm cộng/trừ trước khi xuống tiền.\n\n"
+    text += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
+    conf_str = "; ".join(confluence_points) if confluence_points else "Không có tín hiệu hội tụ mạnh"
+    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo nghiêm trọng"
+    text += f"• Điểm cộng kỹ thuật: {conf_str}\n"
+    text += f"• Cảnh báo rủi ro: {warn_str}\n"
+    text += f"👉 **Kết luận & Hành động:** Cân đối kỹ lưỡng các yếu tố ủng hộ và rủi ro trước khi thực thi lệnh mua/bán.\n\n"
 
-    # MỤC 6: TỔNG KẾT & KHUYẾN NGHỊ CUỐI CÙNG
+    # MỤC 6: TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG (DỰA TRÊN TẤT CẢ DỮ LIỆU)
     if is_standing_aside:
         final_icon = "🔴 **ĐỨNG NGOÀI (BẢO TOÀN VỐN)**"
-        final_action = "Cổ phiếu dưới mây/rủi ro cao, không nên giải ngân mới lúc này."
-    elif cmf > 0 and rvol >= 1.0 and close > cloud_bottom and not is_standing_aside:
+        final_action = "Tín hiệu kỹ thuật và Ichimoku tiêu cực, rủi ro cao, không nên giải ngân mới."
+    elif cmf > 0 and mfi > 45 and close > cloud_bottom and not is_standing_aside:
         final_icon = "🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG**"
-        final_action = f"Cấu trúc mây và dòng tiền ủng hộ, canh gom quanh `{fmt(val)} - {fmt(poc)}`."
+        final_action = f"Dòng tiền lớn và mây Kumo ủng hộ, ưu tiên gom giá đỏ quanh `{fmt(val)} - {fmt(poc)}`."
     else:
-        final_icon = "🟡 **QUAN SÁT / CHỜ CHIẾT KHẤU**"
-        final_action = "Tín hiệu chưa thực sự đồng thuận, kiên nhẫn chờ vùng giá an toàn hơn."
+        final_icon = "🟡 **QUAN SÁT / CHỜ CHIẾT KHẤU AN TOÀN**"
+        final_action = "Các chỉ báo chưa đồng thuận tuyệt đối, kiên nhẫn đứng ngoài chờ điểm đến chiết khấu tốt hơn."
 
     text += f"🏁 **6. TỔNG KẾT CHIẾN LƯỢC CUỐI CÙNG:**\n"
-    text += f"• Khuyến nghị: {final_icon}\n"
-    text += f"• Hành động quyết định: {final_action}"
+    text += f"• Nhận định chung: {final_icon}\n"
+    text += f"• Quyết định hành động: {final_action}"
 
     keyboard = [
         [
-            InlineKeyboardButton("💡 Giải thích CMF/RVOL", callback_data="help_cmf"),
-            InlineKeyboardButton("💡 Giải thích RSI", callback_data="help_rsi"),
+            InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
+            InlineKeyboardButton("💡 Giải thích Ichimoku", callback_data="help_rsi"),
         ],
         [
             InlineKeyboardButton("💡 Giải thích Volume Profile", callback_data="help_vp"),
@@ -401,11 +410,11 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
-    ax.plot(df["time"], df["Tenkan-sen"] if "Tenkan-sen" in df else df["EMA20"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
-    ax.plot(df["time"], df["Kijun-sen"] if "Kijun-sen" in df else df["EMA50"], label="Kijun", color="orange", linestyle="--", alpha=0.6)
+    ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
+    ax.plot(df["time"], df["Kijun_sen"], label="Kijun", color="orange", linestyle="--", alpha=0.6)
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
     ax.axhline(val, color="green", linestyle="--", label=f"VAL: {fmt(val)}", alpha=0.6)
-    ax.set_title(f"Phân Tích - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
+    ax.set_title(f"Phân Tích Chuyên Sâu - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -567,7 +576,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
         "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
-        "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, VPB)*\n\n"
+        "`VHM`  *(hoặc nhập mã bất kỳ như HPG, SSI, VIC)*\n\n"
         "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
         "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
         "3️⃣ **Xem danh mục đầu tư & Phương án xử lý Lợi nhuận / SL:**\n"
@@ -579,7 +588,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
         "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
         "------------------------------------\n"
-        "💡 *Lưu ý:* Mục 2 đã được cập nhật hoàn toàn thành Chỉ báo Ichimoku."
+        "💡 *Lưu ý:* Hệ thống phân tích chuyên sâu tích hợp Ichimoku, MFI, Linear Regression Slope và tổng kết chiến lược cuối cùng đã sẵn sàng."
     )
     
     try:
@@ -759,7 +768,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, HPG), hoặc dùng /scan, /portfolio, /backtest!")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, VIC), hoặc dùng /scan, /portfolio, /backtest!")
         return
 
     symbol = text
@@ -788,10 +797,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("help_"):
         explanations = {
-            "help_cmf": "💡 **Giải thích CMF & RVOL:**\n• **CMF:** Đo dòng tiền lớn (>0 tiền vào, <0 tiền ra).\n• **RVOL:** So thanh khoản hiện tại với trung bình 20 phiên (>1.2 là bùng nổ).",
-            "help_rsi": "💡 **Giải thích RSI:** Đo sức mạnh giá (0-100). >70 quá mua, <30 quá bán.",
-            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá khớp nhiều nhất.\n• **VAL - VAH:** Vùng hỗ trợ và kháng cự mạnh.",
-            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng.\n• Dùng `/portfolio` để xem chiến lược chốt lời từng phần & chặn lãi."
+            "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá (0-100).",
+            "help_rsi": "💡 **Giải thích Ichimoku:**\n• Gồm mây Kumo, Tenkan, Kijun giúp xác định xu hướng và hỗ trợ/kháng cự cực mạnh.",
+            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá giao dịch nhiều nhất.\n• **VAL - VAH:** Vùng giá hỗ trợ & kháng cự tổ chức.",
+            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng."
         }
         await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
         return
@@ -800,7 +809,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
 
-        await query.edit_message_text(text=f"⏳ Đang phân tích chuyên sâu cho {symbol}...")
+        await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
 
         def background_task():
             return analyze_stock(symbol, resolution=resolution, count=count)
@@ -821,7 +830,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot Expert Edition is running live!")
 
 
 def run_http_server():
@@ -847,5 +856,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đang hoạt động mượt mà với chỉ báo Ichimoku ở Mục 2...")
+    print("🚀 Bot Quant Trading System (Phiên bản Chuyên Gia) đang hoạt động mượt mà...")
     app.run_polling(drop_pending_updates=True)
