@@ -188,7 +188,7 @@ def calculate_indicators(df):
     df["Tenkan_sen"] = (nine_high + nine_low) / 2
 
     twenty_six_high = df["High"].rolling(window=26).max()
-    twenty_six_low = df["High"].rolling(window=26).min()
+    twenty_six_low = df["Low"].rolling(window=26).min()
     df["Kijun_sen"] = (twenty_six_high + twenty_six_low) / 2
 
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
@@ -235,7 +235,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (MỞ RỘNG 8 PHẦN)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (CHIA THÀNH 2 PHẦN TRÁNH TRÀN KÝ TỰ)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -243,7 +243,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     df, err = fetch_stock_data(symbol, resolution=resolution, count=count)
     if err or df.empty:
-        return None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
+        return None, None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
 
     df = calculate_indicators(df)
     last = df.iloc[-1]
@@ -364,78 +364,81 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
-    text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
-    text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
+    # --- PHẦN 1: TỪ TIÊU ĐỀ ĐẾN MỤC 4 ---
+    text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
+    text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
     # MỤC 1
-    text += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
-    text += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
-    text += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
-    text += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
-    text += f"👉 **Kết luận & Hành động:** "
+    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
+    text_part1 += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
+    text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
+    text_part1 += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** "
     if cmf > 0 and mfi >= 45:
-        text += f"Dòng tiền lớn đang nâng đỡ giá tốt, động lượng tăng trưởng ổn định. Ưu tiên nắm giữ vị thế.\n\n"
+        text_part1 += f"Dòng tiền lớn đang nâng đỡ giá tốt, động lượng tăng trưởng ổn định. Ưu tiên nắm giữ vị thế.\n\n"
     else:
-        text += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
+        text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
 
     # MỤC 2
-    text += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
-    text += f"• Thông số mây: {ichi_status}\n"
-    text += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
-    text += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
-    text += f"👉 **Kết luận & Hành động:** "
+    text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
+    text_part1 += f"• Thông số mây: {ichi_status}\n"
+    text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
+    text_part1 += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** "
     if close > cloud_top:
-        text += f"Thế nến bùng nổ trên mây Kumo rất tích cực, canh giải ngân khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`).\n\n"
+        text_part1 += f"Thế nến bùng nổ trên mây Kumo rất tích cực, canh giải ngân khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`).\n\n"
     elif close < cloud_bottom:
-        text += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n"
+        text_part1 += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n"
     else:
-        text += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
+        text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
     # MỤC 3
-    text += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
-    text += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
-    text += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n"
+    text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
+    text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
+    text_part1 += f"• Vùng hỗ trợ/kháng cự: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** Lực cầu đỡ giá tốt tại vùng **{fmt(val)} - {fmt(poc)}**, chốt lời chủ động khi tiến sát cản trên **{fmt(vah)}**.\n\n"
 
     # MỤC 4
-    text += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
-    text += f"• Trạng thái khuyến nghị: {system_status}\n"
-    text += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
-    text += f"👉 **Kết luận & Hành động:** "
+    text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
+    text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
+    text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** "
     if is_standing_aside:
-        text += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát cho đến khi độ tin cậy kỹ thuật cải thiện.\n\n"
+        text_part1 += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát cho đến khi độ tin cậy kỹ thuật cải thiện.\n\n"
     else:
-        text += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
+        text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
+    # --- PHẦN 2: TỪ MỤC 5 ĐẾN MỤC 8 ---
+    text_part2 = ""
     # MỤC 5
-    text += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
+    text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
-    text += f"• Điểm cộng kỹ thuật: {conf_str}\n"
-    text += f"• Cảnh báo rủi ro: {warn_str}\n"
-    text += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
+    text_part2 += f"• Điểm cộng kỹ thuật: {conf_str}\n"
+    text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
 
-    # MỤC 6 MỚI: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG (MACD & BOLLINGER BANDS)
-    text += f"📈 **6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:**\n"
-    text += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
-    text biên_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
-    text += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạng thái: {biên_bb}\n"
-    text += f"👉 **Kết luận & Hành động:** "
+    # MỤC 6: ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG (MACD & BOLLINGER BANDS)
+    text_part2 += f"📈 **6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:**\n"
+    text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
+    bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
+    text_part2 += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạng thái: {bien_bb}\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** "
     if macd_hist > 0 and close > last["BB_Middle"]:
-        text += f"Động lượng MACD Histogram dương, giá duy trì trên đường trung bình Bollinger, xu hướng ngắn hạn tích cực.\n\n"
+        text_part2 += f"Động lượng MACD Histogram dương, giá duy trì trên đường trung bình Bollinger, xu hướng ngắn hạn tích cực.\n\n"
     else:
-        text += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
+        text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
 
-    # MỤC 7 MỚI: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (MARKET BREADTH & SECTOR)
-    text += f"🌐 **7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:**\n"
-    text += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
-    text += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
-    text += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
+    # MỤC 7: CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN (MARKET BREADTH & SECTOR)
+    text_part2 += f"🌐 **7. CẤU TRÚC THỊ TRƯỜNG & ĐỘNG THÁI DÒNG TIỀN:**\n"
+    text_part2 += f"• Thanh khoản tổng thị trường: Đánh giá dòng tiền lan tỏa toàn sàn, trạng thái hấp thụ cung tốt.\n"
+    text_part2 += f"• Phân bổ dòng tiền ngành: Dòng tiền thông minh luân chuyển chọn lọc giữa Ngân hàng, Bất động sản và Chứng khoán.\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Ưu tiên chọn các mã dẫn dắt có dòng tiền ngành hậu thuẫn mạnh mẽ.\n\n"
 
-    # MỤC 8 (CŨ LÀ 6): TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP
-    text += f"🏁 **8. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
-    text += f"• Khuyến nghị: {final_icon}\n"
-    text += f"• Định hướng quyết định: {final_action}"
+    # MỤC 8: TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP
+    text_part2 += f"🏁 **8. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:**\n"
+    text_part2 += f"• Khuyến nghị: {final_icon}\n"
+    text_part2 += f"• Định hướng quyết định: {final_action}"
 
     keyboard = [
         [
@@ -464,7 +467,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     buf.seek(0)
     plt.close(fig)
 
-    return text, buf, reply_markup, None
+    return text_part1, text_part2, buf, reply_markup, None
 
 
 # ==========================================
@@ -831,12 +834,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         future = executor.submit(background_task)
         try:
-            text, img_buf, reply_markup, err = future.result(timeout=12)
+            text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=12)
             if err:
                 await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
             else:
+                # Gửi ảnh biểu đồ trước
                 await query.message.reply_photo(photo=img_buf)
-                await query.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+                # Gửi Phần 1 (Mục 1 - Mục 4)
+                await query.message.reply_text(text_part1, parse_mode="Markdown")
+                # Gửi Phần 2 (Mục 5 - Mục 8) kèm bàn phím nút bấm
+                await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
         except Exception as e:
             await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
 
