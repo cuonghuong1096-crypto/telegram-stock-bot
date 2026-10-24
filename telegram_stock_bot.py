@@ -236,7 +236,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (ĐÃ BỎ MỤC 7 & 8)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (ĐÃ TỐI ƯU & KHẮC PHỤC MÂU THUẪN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -338,31 +338,47 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Thanh khoản cạn kiệt/thấp ({rvol:.2f}x)")
 
-    confidence_score = min(max(score, 10), 98)
+    # --- KIỂM TRA ĐIỀU KIỆN QUÁ MUA (OVERBOUGHT) ĐỂ KHẮC PHỤC MÂU THUẪN MUA ĐUỔI ---
+    is_overbought = (rsi > 70 or stoch_rsi > 90 or close > bb_upper)
+    if is_overbought:
+        score -= 20
+        risk_warnings.append(f"Cảnh báo Quá mua cực đoan (RSI: {rsi:.1f}, StochRSI: {stoch_rsi:.1f}, Vượt Bollinger Trên)")
 
-    entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
-    entry_2 = round(close, 2)
-    entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
+    # Giới hạn điểm số thực tế (Không dùng mốc 98% ảo nếu đang quá mua)
+    confidence_score = min(max(score, 10), 90 if not is_overbought else 65)
+
+    # --- TỐI ƯU ĐIỂM GIẢI NGÂN & STOPLOSS (TRÁNH MÂU THUẪN) ---
+    if is_overbought:
+        # Nếu quá mua, khuyến nghị đợi giá check lại hỗ trợ Kijun hoặc VAL thay vì mua đuổi giá hiện tại
+        entry_1 = round(min(kijun, val), 2)
+        entry_2 = round(val, 2)
+        entry_avg = round((entry_1 + entry_2) / 2, 2)
+    else:
+        entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
+        entry_2 = round(close, 2)
+        entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
+
     stop_loss = round(entry_avg * 0.935, 2)
 
-    if confidence_score >= 70 and close > cloud_bottom:
+    # Đánh giá trạng thái hệ thống chuẩn xác dựa trên điểm số và trạng thái quá mua
+    if confidence_score >= 70 and not is_overbought and close > cloud_bottom:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         is_standing_aside = False
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Chỉ số kỹ thuật hội tụ mạnh mẽ. Dòng tiền và mây Kumo ủng hộ đà tăng, ưu tiên gom quanh `{fmt(val)} - {fmt(poc)}`."
+        final_action = f"Cấu trúc kỹ thuật hội tụ tốt. Ưu tiên gom quanh vùng hỗ trợ `{fmt(val)} - {fmt(poc)}`."
     elif confidence_score >= 45 and close >= cloud_bottom:
-        system_status = "QUAN SÁT / MUA THĂM DÒ NỀN"
-        nav_rec = "10 - 15% NAV"
+        system_status = "QUAN SÁT / CHỜ CHIẾT KHẤU AN TOÀN"
+        nav_rec = "10 - 15% NAV (Thăm dò tỷ trọng nhỏ)"
         is_standing_aside = False
-        final_icon = f"🟡 **GIAO DỊCH THĂM DÒ (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Tín hiệu đang trong giai đoạn tích lũy/phân hóa. Chỉ nên mua thăm dò tỷ trọng nhỏ và kiên nhẫn chờ điểm bứt phá khỏi `{fmt(cloud_top)}`."
+        final_icon = f"🟡 **THẬN TRỌNG / CHỜ ĐIỀU CHỈNH (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Thị trường ngắn hạn đã vào vùng Quá Mua / Hưng phấn. **TUYỆT ĐỐI KHÔNG MUA ĐUỔI**, kiên nhẫn chờ giá test lại đường Kijun-sen (`{fmt(kijun)}`) hoặc mây hỗ trợ."
     else:
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
         nav_rec = "0% (Giữ tiền mặt)"
         is_standing_aside = True
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Cấu trúc giá yếu, nằm dưới mây hoặc dòng tiền chưa đồng thuận. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
+        final_action = f"Cấu trúc rủi ro cao hoặc tín hiệu suy yếu. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
     # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
@@ -375,9 +391,9 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
     if cmf > 0 and mfi >= 45:
-        text_part1 += f"Dòng tiền lớn đang nâng đỡ giá tốt, động lượng tăng trưởng ổn định. Ưu tiên nắm giữ vị thế.\n\n"
+        text_part1 += f"Dòng tiền lớn đang nâng đỡ giá tốt. Tuy nhiên cần chú ý nhịp chững lại nếu chỉ báo quá mua xuất hiện.\n\n"
     else:
-        text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, không đi tiền lớn, tập trung kiểm soát rủi ro vị thế.\n\n"
+        text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, tập trung kiểm soát rủi ro vị thế.\n\n"
 
     # MỤC 2
     text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
@@ -386,7 +402,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
     if close > cloud_top:
-        text_part1 += f"Thế nến bùng nổ trên mây Kumo rất tích cực, canh giải ngân khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`).\n\n"
+        text_part1 += f"Giá bứt phá trên mây Kumo rất tích cực. Canh giải ngân chuẩn xác khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`), không FOMO mua giá cao.\n\n"
     elif close < cloud_bottom:
         text_part1 += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n"
     else:
@@ -397,12 +413,10 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text_part1 += f"• Vùng giá giao dịch: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
-    if close < val:
-        text_part1 += f"Giá ({fmt(close)}) giảm sâu lọt dưới hẳn vùng Volume Profile ({fmt(val)} - {fmt(vah)}). Vùng **{fmt(val)} - {fmt(poc)}** hiện tại trở thành **KHÁNG CỰ CỰC MẠNH** trên cao (vùng kẹp hàng lớn), tuyệt đối không vội bắt đáy.\n\n"
-    elif close > vah:
-        text_part1 += f"Giá ({fmt(close)}) bứt phá vượt qua vùng VAH ({fmt(vah)}). Vùng **{fmt(poc)} - {fmt(vah)}** trở thành **HỖ TRỢ NỀN VỮNG CHẮC** cho nhịp tăng tiếp theo.\n\n"
+    if close > vah:
+        text_part1 += f"Giá ({fmt(close)}) vượt qua vùng VAH ({fmt(vah)}). Vùng **{fmt(poc)} - {fmt(vah)}** là HỖ TRỢ NỀN. Không mua đuổi khi giá cách xa vùng hỗ trợ này.\n\n"
     else:
-        text_part1 += f"Giá ({fmt(close)}) đang vận động trong vùng Volume Profile. Lực cầu đỡ giá ổn định tại dải **{fmt(val)} - {fmt(poc)}**, chốt lời khi tiến sát cản trên **{fmt(vah)}**.\n\n"
+        text_part1 += f"Giá ({fmt(close)}) vận động trong Volume Profile, lực cầu ổn định tại dải **{fmt(val)} - {fmt(poc)}**.\n\n"
 
     # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
@@ -410,11 +424,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
     if is_standing_aside:
-        text_part1 += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát cho đến khi độ tin cậy kỹ thuật cải thiện.\n\n"
+        text_part1 += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát.\n\n"
     else:
-        text_part1 += f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đăt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
+        text_part1 += f"Chờ mua quanh mốc an toàn `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: MỤC 5, 6 & 9 (ĐÃ BỎ 7 & 8) ---
+    # --- PHẦN 2: MỤC 5, 6 & 7 ---
     text_part2 = ""
     # MỤC 5
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
@@ -422,7 +436,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
     text_part2 += f"• Điểm cộng kỹ thuật: {conf_str}\n"
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
-    text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá cân bằng giữa tỷ lệ Lợi nhuận / Rủi ro trước khi thực thi lệnh.\n\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Tuân thủ kỷ luật giao dịch, tránh mua đuổi khi chỉ báo kỹ thuật phát tín hiệu quá mua.\n\n"
 
     # MỤC 6
     text_part2 += f"📈 6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:\n"
@@ -430,12 +444,12 @@ def analyze_stock(symbol, resolution="D", count=250):
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
     text_part2 += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạng thái: {bien_bb}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** "
-    if macd_hist > 0 and close > last["BB_Middle"]:
-        text_part2 += f"Động lượng MACD Histogram dương, giá duy trì trên đường trung bình Bollinger, xu hướng ngắn hạn tích cực.\n\n"
+    if is_overbought:
+        text_part2 += f"Cảnh báo giá chạm hoặc vượt cận trên Bollinger Bands kết hợp RSI/StochRSI cao. Xuất hiện áp lực chốt lời ngắn hạn.\n\n"
     else:
-        text_part2 += f"Động lượng MACD suy yếu hoặc giá áp sát biên dưới Bollinger, thận trọng nhịp điều chỉnh ngắn hạn.\n\n"
+        text_part2 += f"Động lượng MACD Histogram tích cực, biên độ giá ổn định, dư địa tăng trưởng còn mở ra.\n\n"
 
-    # MỤC 9 (CHUYỂN THÀNH MỤC 7 SAU KHI BỎ 7 & 8 CŨ)
+    # MỤC 7
     text_part2 += f"🏁 7. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng quyết định: {final_action}"
@@ -946,7 +960,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot without Sections 7 & 8 is running live!")
+        self.wfile.write(b"Optimized Quant Bot is running live!")
 
 
 def run_http_server():
@@ -974,5 +988,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn thiện chuẩn xác...")
+    print("🚀 Bot Quant Trading System đã được tối ưu hóa toàn diện!")
     app.run_polling(drop_pending_updates=True)
