@@ -37,6 +37,7 @@ logging.basicConfig(
 # 1. HÀM CALL DATA & TÍNH FULL CHỈ BÁO KỸ THUẬT
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
+    """Lấy dữ liệu OHLCV lịch sử tối ưu cho mọi khung thời gian"""
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
@@ -50,6 +51,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         res_param = "D"
         start_time = end_time - (count * 86400 * 3)
 
+    # 1. Thử gọi API TCBS Stock-Insight
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
@@ -78,6 +80,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     except Exception:
         pass
 
+    # 2. Nguồn dự phòng VNDirect DChart
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={res_param}&symbol={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {
@@ -106,6 +109,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
 
 def calculate_indicators(df):
+    """Tính toán toàn bộ các chỉ báo kỹ thuật nâng cao"""
     if df.empty or len(df) < 52:
         return df
 
@@ -186,7 +190,7 @@ def calculate_indicators(df):
     )
     df["ATR"] = true_range.rolling(14).mean()
 
-    # 7.1 Keltner Channels (20, ATR multiplier 1.5)
+    # 7.1 Keltner Channels (20, ATR multiplier 1.5) & Squeeze
     df["KC_Middle"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["KC_Upper"] = df["KC_Middle"] + (df["ATR"] * 1.5)
     df["KC_Lower"] = df["KC_Middle"] - (df["ATR"] * 1.5)
@@ -241,6 +245,7 @@ def calculate_indicators(df):
 
 
 def calculate_volume_profile(df, bins=20):
+    """Tính toán Volume Profile (POC, VAH, VAL)"""
     if df.empty:
         return 0, 0, 0
     price_min = df["Low"].min()
@@ -289,8 +294,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     close = last_row["Close"]
     rsi = last_row["RSI"]
     stoch_rsi = last_row["Stoch_RSI"]
-    macd_hist = last_row["MACD_Hist"]
-    mfi = last_row["MFI"]
     cmf = last_row["CMF"]
     vwap = last_row["VWAP"]
     obv = last_row["OBV"]
@@ -317,14 +320,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     stop_loss = max(support - (atr * 1.5), close * 0.93)
     target_price = close + ((close - stop_loss) * 2.0)
 
-    # 1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN NÂNG CAO
+    # Đánh giá vĩ mô & dòng tiền
     macro = (
         "🟢 TÍCH CỰC (UpTrend dài hạn)" if close > ma200 else "🔴 THẬN TRỌNG"
     )
     if close > ma200 and cmf > 0.05 and obv > obv_ema:
         macro += "\n   ⭐ [CHÉN THÁNH A+]: Dòng tiền lớn kê lệnh gom mạnh!"
 
-    # 2. CHIẾN LƯỢC NGẮN HẠN (T+)
+    # Ngắn hạn
     st_reasons = []
     st_score = 0
     if adx > 25:
@@ -336,43 +339,30 @@ def analyze_stock(symbol, resolution="D", count=250):
     if stoch_rsi < 20:
         st_score += 2
         st_reasons.append(
-            f"Stoch RSI Quá bán ({stoch_rsi:.1f}) -> Vùng đảo chiều T+ rất cao"
+            f"Stoch RSI Quá bán ({stoch_rsi:.1f}) -> Sắp có nhịp hồi T+"
         )
     elif stoch_rsi > 80:
         st_score -= 2
-        st_reasons.append(
-            f"Stoch RSI Quá mua ({stoch_rsi:.1f}) -> Rủi ro điều chỉnh ngắn hạn"
-        )
-
-    if mfi > 50:
-        st_score += 1
-        st_reasons.append(f"Dòng tiền nội tại MFI khỏe ({mfi:.1f} > 50)")
-    else:
-        st_score -= 1
-        st_reasons.append(f"Dòng tiền nội tại MFI yếu ({mfi:.1f} < 50)")
-
-    if macd_hist > 0:
-        st_score += 1
-        st_reasons.append("Động lượng MACD Histogram dương (Lực mua áp đảo)")
-    else:
-        st_score -= 1
-        st_reasons.append("Động lượng MACD Histogram âm (Lực bán chiếm ưu thế)")
+        st_reasons.append(f"Stoch RSI Quá mua ({stoch_rsi:.1f}) -> Rủi ro")
 
     if close >= vwap:
         st_score += 1.5
         st_reasons.append(f"Giá nằm trên VWAP ({vwap:,.0f}): Phe mua kiểm soát")
     else:
         st_score -= 1.5
-        st_reasons.append(f"Giá dưới VWAP ({vwap:,.0f}): Áp lực bán ngắn hạn")
+        st_reasons.append(f"Giá dưới VWAP ({vwap:,.0f}): Lực bán ngắn hạn")
 
-    if st_score >= 3:
-        st_action = "🟢 MUA GOM / LƯỚT T+ TÍCH CỰC (Xác suất cao)"
-    elif st_score <= -2:
-        st_action = "🔴 CANH BÁN / HẠ TỶ TRỌNG (Rủi ro cao)"
-    else:
-        st_action = "🟡 QUAN SÁT / CHỜ CHIẾT KHẤU THÊM"
+    st_action = (
+        "🟢 MUA GOM / LƯỚT T+ TÍCH CỰC"
+        if st_score >= 2.5
+        else (
+            "🔴 CANH BÁN / HẠ TỶ TRỌNG"
+            if st_score <= -1.5
+            else "🟡 QUAN SÁT THÊM"
+        )
+    )
 
-    # 3. CHIẾN LƯỢC TRUNG HẠN (1 - 3 THÁNG)
+    # Trung hạn
     mt_score = 0
     mt_reasons = []
     if close > kijun and (not np.isnan(chikou) and close > chikou):
@@ -382,23 +372,25 @@ def analyze_stock(symbol, resolution="D", count=250):
         )
     else:
         mt_score += 1
-        mt_reasons.append("Đang dao động tích lũy trong biên độ trung hạn")
+        mt_reasons.append("Đang dao động tích lũy trung hạn")
 
     if slope > 0:
-        mt_score += 1.5
+        mt_score += 1
         mt_reasons.append(f"Độ dốc hồi quy tuyến tính Dương (+{slope:.2f})")
     else:
-        mt_score -= 1.5
+        mt_score -= 1
         mt_reasons.append(f"Độ dốc hồi quy tuyến tính Âm ({slope:.2f})")
 
-    if mt_score >= 3:
-        mt_action = "🟢 NẮM GIỮ / TÍCH SẢN TRUNG HẠN"
-    elif mt_score <= -1:
-        mt_action = "🔴 THOÁT HÀNG / BẢO TOÀN VỐN"
-    else:
-        mt_action = "🟡 CHỜ XÁC NHẬN PHÁ VỠ (BREAKOUT)"
+    mt_action = (
+        "🟢 NẮM GIỮ / TÍCH SẢN TRUNG HẠN"
+        if mt_score >= 2.5
+        else (
+            "🔴 THOÁT HÀNG / BẢO TOÀN VỐN"
+            if mt_score <= -1.5
+            else "🟡 CHỜ BREAKOUT"
+        )
+    )
 
-    # 4. DÀI HẠN
     lt_action = (
         "🟢 ĐẦU TƯ GIÁ TRỊ / MUA TÍCH SẢN LỚN"
         if ma50 > ma200 and close > ma200
@@ -414,32 +406,28 @@ def analyze_stock(symbol, resolution="D", count=250):
     }
     res_display = resolution_labels.get(resolution, resolution)
 
-    # --- SOẠN BÁO CÁO TELEGRAM CHI TIẾT ---
+    # Soạn báo cáo chi tiết gửi về Telegram
     text = f"📊 **BÁO CÁO PHÂN TÍCH CHUYÊN SÂU: {symbol}**\n"
     text += f"🗓️ Ngày: {last_row['time'].strftime('%Y-%m-%d')} | Khung: {res_display} | Số nến: {count}\n"
     text += f"💵 Giá đóng cửa: `{close:,.0f} VNĐ`\n\n"
 
-    text += f"🌐 **1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN LỚN:**\n"
+    text += f"🌐 **1. ĐÁNH GIÁ VĨ MÔ & DÒNG TIỀN:**\n"
     text += f"• Trạng thái: {macro}\n"
     text += (
         f"• Dòng tiền Chaikin (CMF): `{cmf:.2f}`"
         f" ({'Tiền vào' if cmf > 0 else 'Tiền ra'})\n"
     )
     text += (
-        f"• Chỉ số dòng tiền nội tại (MFI): `{mfi:.1f}`"
-        f" ({'Quá mua' if mfi > 80 else ('Quá bán' if mfi < 20 else 'Trung lập')})\n"
-    )
-    text += (
         f"• Dòng tiền thông minh (OBV):"
-        f" `{'Tích cực (Tích lũy)' if obv > obv_ema else 'Thận trọng (Phân phối)'}`\n"
+        f" `{'Tích cực' if obv > obv_ema else 'Thận trọng'}`\n"
     )
     if squeeze_on:
-        text += f"⚡ **[CẢNH BÁO SQUEEZE]:** Biến động nén Bollinger trong Keltner, chuẩn bị bứt phá mạnh!\n"
+        text += f"⚡ **[CẢNH BÁO SQUEEZE]:** Biến động nén, sắp bứt phá mạnh!\n"
 
     text += f"\n📊 **2. HỒ SƠ KHỐI LƯỢNG (VOLUME PROFILE):**\n"
     text += f"• POC (Tâm dòng tiền hút giá): `{poc:,.0f} VNĐ`\n"
-    text += f"• VAH (Kháng cự Volume mạnh): `{vah:,.0f} VNĐ`\n"
-    text += f"• VAL (Hỗ trợ Volume mạnh): `{val:,.0f} VNĐ`\n"
+    text += f"• VAH (Kháng cự Volume): `{vah:,.0f} VNĐ`\n"
+    text += f"• VAL (Hỗ trợ Volume): `{val:,.0f} VNĐ`\n"
 
     text += f"\n🎯 **3. QUẢN TRỊ RỦI RO & CHIẾN LƯỢC GIAO DỊCH:**\n"
     text += (
@@ -452,16 +440,16 @@ def analyze_stock(symbol, resolution="D", count=250):
         f" `{target_price:,.0f} VNĐ`\n"
     )
 
-    text += f"\n⚡ **4. KHUYẾN NGHỊ RA QUYẾT ĐỊNH ĐA KHUNG:**\n"
-    text += f"• **Ngắn hạn (T+):** *{st_action}* (Điểm: {st_score})\n"
+    text += f"\n⚡ **4. KHUYẾN NGHỊ CHI TIẾT ĐA KHUNG:**\n"
+    text += f"• **Ngắn hạn (T+):** *{st_action}*\n"
     for r in st_reasons:
         text += f"   - {r}\n"
-    text += f"• **Trung hạn (1-3 tháng):** *{mt_action}* (Điểm: {mt_score})\n"
+    text += f"• **Trung hạn (1-3 tháng):** *{mt_action}*\n"
     for r in mt_reasons:
         text += f"   - {r}\n"
     text += f"• **Dài hạn (Tích sản):** *{lt_action}*\n"
 
-    # --- VẼ BIỂU ĐỒ NÂNG CAO ---
+    # Vẽ biểu đồ Matplotlib nâng cao
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(
         df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2
@@ -512,7 +500,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         alpha=0.15,
     )
     ax.set_title(
-        f"Phân Tích Kỹ Thuật Chuyên Sâu - {symbol} ({res_display} - {count} nến)",
+        f"Phân Tích Kỹ Thuật - {symbol} ({res_display} - {count} nến)",
         fontsize=11,
         fontweight="bold",
     )
@@ -550,6 +538,7 @@ async def handle_message(
         return
 
     symbol = text
+    # Tạo bảng nút bấm chọn Khung thời gian & Số nến giống PC
     keyboard = [
         [
             InlineKeyboardButton(
@@ -605,7 +594,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 
-# Tạo web server giả lập để Render duy trì service Free
+# Tạo web server giả lập để Render duy trì service Free 24/7
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
@@ -621,6 +610,7 @@ def run_http_server():
 
 
 if __name__ == "__main__":
+    # Chạy HTTP Server ẩn ở luồng riêng cho Render
     threading.Thread(target=run_http_server, daemon=True).start()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
