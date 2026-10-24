@@ -49,7 +49,7 @@ executor = ThreadPoolExecutor(max_workers=6)
 
 
 # ==========================================
-# 1. HÀM CALL DATA AN TOÀN (CHỐNG TREO)
+# 1. HÀM CALL DATA & TÍNH TOÁN (CÓ ICHIMOKU)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -120,27 +120,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     return pd.DataFrame(), f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không hợp lệ."
 
 
-def fetch_market_tape_data(symbol, df_last=None):
-    symbol = symbol.upper().strip()
-    buy_active = 50
-    if df_last is not None and not df_last.empty:
-        high = df_last["High"]
-        low = df_last["Low"]
-        close = df_last["Close"]
-        if high > low:
-            buy_active = int(((close - low) / (high - low)) * 100)
-            buy_active = max(10, min(90, buy_active))
-
-    tape_data = {
-        "buy_active_pct": buy_active,
-        "foreign_net": "N/A",
-        "prop_net": "N/A",
-        "put_through_val": "N/A",
-        "foreign_room_pct": "N/A",
-    }
-    return tape_data
-
-
 def calculate_indicators(df):
     if df.empty or len(df) < 52:
         return df
@@ -192,27 +171,24 @@ def calculate_indicators(df):
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
 
-    df["BB_Middle"] = df["Close"].rolling(20).mean()
-    bb_std = df["Close"].rolling(20).std()
-    df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
-    df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
+    # --- TÍNH TOÁN CÁC CHỈ SỐ ICHIMOKU ---
+    # 1. Tenkan-sen (Conversion Line): (9-period high + 9-period low)/2
+    nine_high = df["High"].rolling(window=9).max()
+    nine_low = df["Low"].rolling(window=9).min()
+    df["Tenkan_sen"] = (nine_high + nine_low) / 2
 
-    high_low = df["High"] - df["Low"]
-    high_close = np.abs(df["High"] - df["Close"].shift())
-    low_close = np.abs(df["Low"] - df["Close"].shift())
-    df["ATR"] = (
-        pd.concat([high_low, high_close, low_close], axis=1)
-        .max(axis=1)
-        .rolling(14)
-        .mean()
-    )
+    # 2. Kijun-sen (Base Line): (26-period high + 26-period low)/2
+    twenty_six_high = df["High"].rolling(window=26).max()
+    twenty_six_low = df["Low"].rolling(window=26).min()
+    df["Kijun_sen"] = (twenty_six_high + twenty_six_low) / 2
 
-    df["KC_Middle"] = df["Close"].ewm(span=20, adjust=False).mean()
-    df["KC_Upper"] = df["KC_Middle"] + (df["ATR"] * 1.5)
-    df["KC_Lower"] = df["KC_Middle"] - (df["ATR"] * 1.5)
-    df["Squeeze_On"] = (df["BB_Upper"] < df["KC_Upper"]) & (
-        df["BB_Lower"] > df["KC_Lower"]
-    )
+    # 3. Senkou Span A (Leading Span A): (Tenkan-sen + Kijun-sen)/2
+    df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
+
+    # 4. Senkou Span B (Leading Span B): (52-period high + 52-period low)/2
+    fifty_two_high = df["High"].rolling(window=52).max()
+    fifty_two_low = df["Low"].rolling(window=52).min()
+    df["Senkou_Span_B"] = (fifty_two_high + fifty_two_low) / 2
 
     return df
 
@@ -263,7 +239,6 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     df = calculate_indicators(df)
     last = df.iloc[-1]
-    tape = fetch_market_tape_data(symbol, df_last=last)
 
     close = last["Close"]
     cmf = last["CMF"]
@@ -273,7 +248,22 @@ def analyze_stock(symbol, resolution="D", count=250):
     macdh = last["MACD_Hist"]
     ema50 = last["EMA50"]
     ema200 = last["EMA200"]
-    squeeze_on = last["Squeeze_On"]
+
+    # Đọc giá trị Ichimoku
+    tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
+    kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
+    span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
+    span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
+
+    cloud_top = max(span_a, span_b)
+    cloud_bottom = min(span_a, span_b)
+
+    if close > cloud_top:
+        ichi_status = "BÙNG NỔ TRÊN MÂY (TĂNG MẠNH)"
+    elif close < cloud_bottom:
+        ichi_status = "DƯỚI MÂY (XU HƯỚNG GIẢM)"
+    else:
+        ichi_status = "ĐANG TRONG MÂY (TÍCH LŨY/BIỆN ĐỘNG)"
 
     poc, vah, val = calculate_volume_profile(df)
 
@@ -293,6 +283,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append("Giá nằm dưới EMA50")
 
+    if close > cloud_top:
+        confluence_points.append("Giá vượt mây Kumo")
+    else:
+        risk_warnings.append("Giá nằm dưới hoặc trong mây Kumo")
+
     if cmf > 0:
         confluence_points.append(f"Dòng tiền CMF dương ({cmf:.2f})")
     else:
@@ -303,11 +298,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     elif rvol < 0.8:
         risk_warnings.append(f"Thanh khoản cạn kiệt ({rvol:.2f})")
 
-    if squeeze_on:
-        risk_warnings.append("Đang tích nén chặt (Squeeze On)")
-    else:
-        confluence_points.append("Biến động bình thường")
-
     entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
     entry_2 = round(close, 2)
     entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
@@ -315,13 +305,10 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     risk_distance = entry_avg - stop_loss
     target_1 = round(entry_avg + (risk_distance * 1.5), 2)
-    target_2 = round(entry_avg + (risk_distance * 2.5), 2)
-
     t1_pct = ((target_1 - entry_avg) / entry_avg) * 100
-    t2_pct = ((target_2 - entry_avg) / entry_avg) * 100
     sl_pct = ((stop_loss - entry_avg) / entry_avg) * 100
 
-    if market_structure == "DOWNTREND" or stoch_rsi > 85 or cmf < -0.15:
+    if market_structure == "DOWNTREND" or stoch_rsi > 85 or cmf < -0.15 or close < cloud_bottom:
         system_status = "ĐỨNG NGOÀI (CẢNH BÁO RỦI RO)"
         nav_rec = "0% (Bảo toàn vốn)"
         is_standing_aside = True
@@ -337,7 +324,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
         return f"{p:.1f}k"
 
-    # Xây dựng báo cáo tối ưu hành động từng phần và phần tổng kết cuối cùng
     text = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -350,13 +336,17 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text += f"👉 **Hành động Mục 1:** Dòng tiền yếu/âm, hạn chế mua đuổi.\n\n"
 
-    # MỤC 2
-    text += f"⚡ 2. BẢNG ĐIỆN & ÁP LỰC CUNG CẦU (TAPE READING):\n"
-    text += f"• Mua/Bán chủ động: {tape['buy_active_pct']}% / {100 - tape['buy_active_pct']}%\n"
-    if tape['buy_active_pct'] >= 55:
-        text += f"👉 **Hành động Mục 2:** Lực mua chủ động áp đảo, có thể canh nhịp test hỗ trợ.\n\n"
+    # MỤC 2 (ĐÃ THAY BẰNG CHỈ BÁO ICHIMOKU)
+    text += f"☁️ 2. CHỈ BÁO ICHIMOKU:\n"
+    text += f"• Trạng thái mây: {ichi_status}\n"
+    text += f"• Tenkan-sen (9): {fmt(tenkan)} | Kijun-sen (26): {fmt(kijun)}\n"
+    text += f"• Mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
+    if close > cloud_top and tenkan > kijun:
+        text += f"👉 **Hành động Mục 2:** Xu hướng tăng mạnh trên mây, ưu tiên canh mua khi giá test Kijun-sen.\n\n"
+    elif close < cloud_bottom:
+        text += f"👉 **Hành động Mục 2:** Giá nằm dưới mây Kumo, tín hiệu suy yếu rõ rệt, tránh bắt đáy.\n\n"
     else:
-        text += f"👉 **Hành động Mục 2:** Áp lực bán chiếm ưu thế, thận trọng quan sát.\n\n"
+        text += f"👉 **Hành động Mục 2:** Giá đang dao động trong mây, cần kiên nhẫn chờ điểm break khỏi mây.\n\n"
 
     # MỤC 3
     text += f"📊 3. VOLUME PROFILE:\n"
@@ -382,13 +372,13 @@ def analyze_stock(symbol, resolution="D", count=250):
     text += f"• Cảnh báo: {warn_str}\n"
     text += f"👉 **Hành động Mục 5:** Cân nhắc kỹ các điểm cộng/trừ trước khi xuống tiền.\n\n"
 
-    # MỤC 6: TỔNG KẾT & KHUYẾN NGHỊ CUỐI CÙNG (CÓ ICON RÕ RÀNG)
+    # MỤC 6: TỔNG KẾT & KHUYẾN NGHỊ CUỐI CÙNG
     if is_standing_aside:
         final_icon = "🔴 **ĐỨNG NGOÀI (BẢO TOÀN VỐN)**"
-        final_action = "Thị trường/cổ phiếu rủi ro cao, không nên giải ngân mới lúc này."
-    elif cmf > 0 and rvol >= 1.0 and not is_standing_aside:
+        final_action = "Cổ phiếu dưới mây/rủi ro cao, không nên giải ngân mới lúc này."
+    elif cmf > 0 and rvol >= 1.0 and close > cloud_bottom and not is_standing_aside:
         final_icon = "🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG**"
-        final_action = f"Dòng tiền và cấu trúc ủng hộ, canh gom giá đỏ quanh `{fmt(val)} - {fmt(poc)}`."
+        final_action = f"Cấu trúc mây và dòng tiền ủng hộ, canh gom quanh `{fmt(val)} - {fmt(poc)}`."
     else:
         final_icon = "🟡 **QUAN SÁT / CHỜ CHIẾT KHẤU**"
         final_action = "Tín hiệu chưa thực sự đồng thuận, kiên nhẫn chờ vùng giá an toàn hơn."
@@ -411,8 +401,8 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
-    ax.plot(df["time"], df["EMA20"], label="EMA 20", color="blue", linestyle="--", alpha=0.6)
-    ax.plot(df["time"], df["EMA50"], label="EMA 50", color="orange", linestyle="--", alpha=0.6)
+    ax.plot(df["time"], df["Tenkan-sen"] if "Tenkan-sen" in df else df["EMA20"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
+    ax.plot(df["time"], df["Kijun-sen"] if "Kijun-sen" in df else df["EMA50"], label="Kijun", color="orange", linestyle="--", alpha=0.6)
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
     ax.axhline(val, color="green", linestyle="--", label=f"VAL: {fmt(val)}", alpha=0.6)
     ax.set_title(f"Phân Tích - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
@@ -589,7 +579,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
         "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
         "------------------------------------\n"
-        "💡 *Lưu ý:* Hệ thống báo cáo kỹ thuật nay đã tích hợp phần Tổng kết chiến lược cuối cùng với icon quyết định trực quan."
+        "💡 *Lưu ý:* Mục 2 đã được cập nhật hoàn toàn thành Chỉ báo Ichimoku."
     )
     
     try:
@@ -857,5 +847,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đang hoạt động mượt mà với phần Tổng kết chiến lược cuối cùng...")
+    print("🚀 Bot Quant Trading System đang hoạt động mượt mà với chỉ báo Ichimoku ở Mục 2...")
     app.run_polling(drop_pending_updates=True)
