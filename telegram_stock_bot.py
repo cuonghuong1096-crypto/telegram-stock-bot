@@ -44,6 +44,7 @@ WATCHLIST_SCAN = [
 
 ACTIVE_CHAT_IDS = set()
 USER_PORTFOLIOS = {}
+ALERTED_TODAY = set()  # Tránh gửi trùng lặp cảnh báo trong phiên
 
 executor = ThreadPoolExecutor(max_workers=8)
 
@@ -235,7 +236,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (CHIA THÀNH 2 PHẦN TRÁNH TRÀN KÝ TỰ)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (8 PHẦN - CHIA 2 TIN NHẮN)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -258,7 +259,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     ema200 = last["EMA200"]
     lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
 
-    # MACD & Bollinger Values
     macd = last["MACD"] if not np.isnan(last["MACD"]) else 0.0
     macd_signal = last["MACD_Signal"] if not np.isnan(last["MACD_Signal"]) else 0.0
     macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
@@ -471,7 +471,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG & BACKTEST & PORTFOLIO
+# 3. MODULE QUÉT TOÀN THỊ TRƯỜNG & REAL-TIME ALERTS
 # ==========================================
 def run_market_screener():
     results = []
@@ -499,6 +499,72 @@ def run_market_screener():
             
     results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results[:8]
+
+
+def check_realtime_alerts(application):
+    """Quét và gửi cảnh báo Real-time Breakout & Phân kỳ RSI/MACD trong giờ giao dịch"""
+    now = datetime.datetime.now()
+    # Chỉ quét trong khung giờ giao dịch chứng khoán: 9h00 đến 14h45 các ngày từ Thứ 2 đến Thứ 6
+    if now.weekday() >= 5:
+        return
+    if not (9 <= now.hour < 15 or (now.hour == 14 and now.minute <= 45)):
+        return
+
+    today_str = now.strftime("%Y-%m-%d")
+    
+    for symbol in WATCHLIST_SCAN:
+        df, err = fetch_stock_data(symbol, resolution="D", count=50)
+        if err or df.empty or len(df) < 30:
+            continue
+        
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        close = last["Close"]
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        high_20 = df["High"].iloc[-20:-1].max() # Đỉnh cũ 20 phiên gần nhất
+        rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
+        prev_rsi = prev["RSI"] if not np.isnan(prev["RSI"]) else 50.0
+        macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+        prev_macd_hist = prev["MACD_Hist"] if not np.isnan(prev["MACD_Hist"]) else 0.0
+
+        alert_key_breakout = f"{symbol}_breakout_{today_str}"
+        alert_key_div_bull = f"{symbol}_div_bull_{today_str}"
+
+        # 1. Cảnh báo Breakout theo thời gian thực (Vượt đỉnh 20 phiên + Thanh khoản gấp 2-3 lần)
+        if close > high_20 and rvol >= 2.0 and alert_key_breakout not in ALERTED_TODAY:
+            ALERTED_TODAY.add(alert_key_breakout)
+            msg = (
+                f"🚨 **CẢNH BÁO BREAKOUT BÙNG NỔ!** 🚨\n\n"
+                f"• Mã cổ phiếu: **{symbol.upper()}**\n"
+                f"• Giá hiện tại: `{close:.1f}k` *(Đã vượt đỉnh 20 phiên)*\n"
+                f"• Thanh khoản đột biến (RVOL): `{rvol:.2f}x` so với trung bình!\n\n"
+                f"👉 Dòng tiền lớn đang đánh bứt phá, chú ý quan sát điểm mua gia tăng!"
+            )
+            for chat_id in ACTIVE_CHAT_IDS:
+                try:
+                    application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                except Exception:
+                    pass
+
+        # 2. Cảnh báo Phân kỳ Dương RSI / MACD (Báo hiệu đáy / đảo chiều tăng)
+        # Điều kiện: Giá tạo đáy thấp hơn hoặc đi ngang nhưng RSI/MACD Histogram hướng lên mạnh từ vùng thấp
+        if close <= prev["Close"] * 1.005 and rsi > prev_rsi + 3 and macd_hist > prev_macd_hist and alert_key_div_bull not in ALERTED_TODAY:
+            ALERTED_TODAY.add(alert_key_div_bull)
+            msg = (
+                f"⚡ **CẢNH BÁO PHÂN KỲ DƯƠNG (BÁO HIỆU ĐÁY)!** ⚡\n\n"
+                f"• Mã cổ phiếu: **{symbol.upper()}**\n"
+                f"• Giá hiện tại: `{close:.1f}k`\n"
+                f"• Chỉ báo RSI phục hồi: `{prev_rsi:.1f} ➔ {rsi:.1f}`\n"
+                f"• Động lượng MACD Histogram cải thiện tích cực.\n\n"
+                f"👉 Tín hiệu kỹ thuật phát hiện dòng tiền bắt đáy nhen nhóm!"
+            )
+            for chat_id in ACTIVE_CHAT_IDS:
+                try:
+                    application.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                except Exception:
+                    pass
 
 
 def run_strategy_backtest(symbol):
@@ -567,6 +633,13 @@ def run_strategy_backtest(symbol):
 def background_scheduler_thread(application):
     while True:
         now = datetime.datetime.now()
+        
+        # Chạy kiểm tra cảnh báo real-time Breakout & Phân kỳ liên tục
+        try:
+            check_realtime_alerts(application)
+        except Exception:
+            pass
+
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -616,6 +689,7 @@ def background_scheduler_thread(application):
                         except Exception:
                             pass
             time.sleep(70)
+        
         time.sleep(60)
 
 
@@ -838,11 +912,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if err:
                 await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
             else:
-                # Gửi ảnh biểu đồ trước
                 await query.message.reply_photo(photo=img_buf)
-                # Gửi Phần 1 (Mục 1 - Mục 4)
                 await query.message.reply_text(text_part1, parse_mode="Markdown")
-                # Gửi Phần 2 (Mục 5 - Mục 8) kèm bàn phím nút bấm
                 await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
         except Exception as e:
             await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
@@ -852,7 +923,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Full-Stack Quant Bot Complete Edition is running live!")
+        self.wfile.write(b"Full-Stack Quant Bot Complete Edition with Real-Time Alerts is running live!")
 
 
 def run_http_server():
@@ -878,5 +949,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đang hoạt động...")
+    print("🚀 Bot Quant Trading System kèm Real-time Breakout Alert đang hoạt động...")
     app.run_polling(drop_pending_updates=True)
