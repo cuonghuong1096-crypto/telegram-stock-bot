@@ -45,7 +45,7 @@ WATCHLIST_SCAN = [
 ACTIVE_CHAT_IDS = set()
 USER_PORTFOLIOS = {}
 
-executor = ThreadPoolExecutor(max_workers=6)
+executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ==========================================
@@ -424,7 +424,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    fig, ax = plt.subplots(figsize=(8, 5), dpi=120)
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=100) # Tối ưu DPI xuống 100 để vẽ ảnh siêu tốc mà vẫn sắc nét
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
     ax.plot(df["time"], df["Kijun_sen"], label="Kijun", color="orange", linestyle="--", alpha=0.6)
@@ -833,4 +833,63 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("help_"):
         explanations = {
             "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá (0-100).",
-            "help_rsi": "💡 **Giải thích Ich
+            "help_rsi": "💡 **Giải thích Ichimoku:**\n• Gồm mây Kumo, Tenkan, Kijun giúp xác định xu hướng và hỗ trợ/kháng cự cực mạnh.",
+            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC:** Mức giá giao dịch nhiều nhất.\n• **VAL - VAH:** Vùng giá hỗ trợ & kháng cự tổ chức.",
+            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng `/setbuy VHM 63.0 62.0 1500` để lưu giá mua, SL & khối lượng."
+        }
+        await query.message.reply_text(explanations.get(data, "Đang cập nhật hướng dẫn..."), parse_mode="Markdown")
+        return
+
+    parts = data.split("|")
+    if len(parts) == 3:
+        symbol, resolution, count = parts[0], parts[1], int(parts[2])
+
+        await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
+
+        def background_task():
+            return analyze_stock(symbol, resolution=resolution, count=count)
+
+        future = executor.submit(background_task)
+        try:
+            text, img_buf, reply_markup, err = future.result(timeout=12)
+            if err:
+                await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
+            else:
+                await query.message.reply_photo(photo=img_buf)
+                await query.message.reply_text(text, reply_markup=reply_markup)
+        except Exception as e:
+            await query.message.reply_text(f"❌ Lỗi hệ thống hoặc quá thời gian xử lý:\n{str(e)}")
+
+
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Full-Stack Quant Bot Dynamic Confidence Edition is running live!")
+
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run_http_server, daemon=True).start()
+
+    print("🤖 Đang khởi tạo kết nối Telegram Bot...")
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
+
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("backtest", backtest_command))
+    app.add_handler(CommandHandler("setbuy", setbuy_command))
+    app.add_handler(CommandHandler("portfolio", portfolio_command))
+    app.add_handler(CommandHandler("reset", reset_command))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(CallbackQueryHandler(button_callback))
+
+    print("🚀 Bot Quant Trading System (Phiên bản Hoàn Chỉnh & Tốc Độ) đang hoạt động...")
+    app.run_polling(drop_pending_updates=True)
