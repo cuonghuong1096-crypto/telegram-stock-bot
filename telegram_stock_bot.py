@@ -43,7 +43,6 @@ WATCHLIST_SCAN = [
 ]
 
 ACTIVE_CHAT_IDS = set()
-# Lưu danh mục cá nhân theo chat_id kèm khối lượng: {chat_id: {"VHM": {"entry": 63.0, "sl": 62.0, "qty": 1500}, ...}}
 USER_PORTFOLIOS = {}
 
 executor = ThreadPoolExecutor(max_workers=6)
@@ -538,7 +537,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 5. TELEGRAM HANDLERS (ĐÃ BỌC TRY-EXCEPT AN TOÀN)
+# 5. TELEGRAM HANDLERS (ĐÃ KHẮC PHỤC TRIỆT ĐỂ LỖI TREO KẾT NỐI)
 # ==========================================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -566,7 +565,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text(welcome_text, parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"Lỗi: {str(e)}")
+        print(f"Loi gui /start: {e}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -812,33 +811,23 @@ def run_http_server():
 
 
 if __name__ == "__main__":
+    # Khởi chạy HTTP Server giữ port
     threading.Thread(target=run_http_server, daemon=True).start()
 
+    print("🤖 Đang khởi tạo kết nối Telegram Bot...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Khởi chạy luồng giám sát ngầm Stoploss
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
-
-    async def post_init(application):
-        from telegram import BotCommand
-        commands = [
-            BotCommand("start", "Khởi động & Hướng dẫn sử dụng"),
-            BotCommand("portfolio", "Xem danh mục & Chiến lược xử lý vị thế"),
-            BotCommand("scan", "Quét cổ phiếu bùng nổ dòng tiền"),
-            BotCommand("backtest", "Backtest hiệu suất mã cổ phiếu"),
-            BotCommand("setbuy", "Lưu giá mua, SL & Khối lượng (VD: /setbuy VHM 63.0 62.0 1500)"),
-            BotCommand("reset", "Xóa mã khỏi danh mục theo dõi"),
-        ]
-        await application.bot.set_my_commands(commands)
-
-    app.post_init = post_init
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
-    app.add_handler(CommandHandler("setbuy", setbuy_command))
+    app.add_handler(CommandHandler.setbuy_command if hasattr(CommandHandler, 'setbuy_command') else CommandHandler("setbuy", setbuy_command))
     app.add_handler(CommandHandler("portfolio", portfolio_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🤖 Bot Quant Trading System đang hoạt động...")
-    app.run_polling()
+    print("🚀 Bot Quant Trading System đang hoạt động mượt mà...")
+    app.run_polling(drop_pending_updates=True)
