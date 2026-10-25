@@ -367,7 +367,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
         entry_2 = round(val if is_below_val else close, 2)
         entry_avg = round((entry_1 + entry_2) / 2, 2)
-        stop_loss = round(entry_avg * 0.93, 2) # Stoploss luôn nằm dưới giá hiện tại khi ở vị thế mua
+        stop_loss = round(entry_avg * 0.93, 2)
         action_note = f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`."
         
     elif confidence_score >= 45:
@@ -388,7 +388,6 @@ def analyze_stock(symbol, resolution="D", count=250):
         is_standing_aside = True
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Giá nằm dưới vùng giá trị Volume Profile (đối mặt kháng cự dày đặc). Đứng ngoài bảo toàn vốn."
-        # Khi đứng ngoài / downtrend dài hạn, không đưa ra vùng giải ngân và điểm mua mâu thuẫn
         action_note = f"Tuyệt đối không giải ngân mua mới. Canh các nhịp hồi kỹ thuật để cơ cấu danh mục, bảo toàn dòng tiền mặt."
 
     # --- ĐỘNG NẠP LOGIC PHẦN 5: ĐA DẠNG HÓA KỊCH BẢN PHÂN TÍCH TỪNG TRƯỜNG HỢP ---
@@ -436,7 +435,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Vùng giá trị: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {zone_desc}\n\n"
 
-    # MỤC 4 (ĐÃ ĐỒNG BỘ CHẶT CHẼ TRẠNG THÁI NAV VÀ HÀNH ĐỘNG - CHỐNG MÂU THUẪN)
+    # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
@@ -962,27 +961,47 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Lỗi Callback nút bấm: {str(e)}")
 
 
+# ==========================================
+# 5. HTTP SERVER & SELF-PING (CHỐNG NGỦ ĐÔNG)
+# ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Dynamic Quant Bot with Unified Logic Rules is running live!")
-
+        self.wfile.write(b"Dynamic Quant Bot with Self-Ping is running live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
+def self_ping_thread():
+    """Tự động ping chính URL của ứng dụng trên Render mỗi 4 phút để chống ngủ đông"""
+    app_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not app_url:
+        return
+    while True:
+        time.sleep(240)  # 4 phút ping 1 lần
+        try:
+            requests.get(app_url, timeout=10)
+            logging.info("Self-ping successful to keep server alive.")
+        except Exception as e:
+            logging.error(f"Self-ping failed: {e}")
+
 
 if __name__ == "__main__":
+    # Khởi chạy HTTP Server trên cổng 8080
     threading.Thread(target=run_http_server, daemon=True).start()
+
+    # Khởi chạy luồng tự động Ping chống ngủ đông
+    threading.Thread(target=self_ping_thread, daemon=True).start()
 
     print("🤖 Đang khởi tạo kết nối Telegram Bot...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_error_handler(global_error_handler)
 
+    # Khởi chạy luồng quét ngầm và cảnh báo
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -994,5 +1013,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật các quy tắc logic chuẩn hóa!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng hoạt động ổn định 24/7!")
     app.run_polling(drop_pending_updates=True)
