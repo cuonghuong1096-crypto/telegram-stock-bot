@@ -7,7 +7,6 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import urllib.parse
 
 import matplotlib
 matplotlib.use('Agg')
@@ -15,7 +14,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -240,29 +238,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM TẠO PROMPT DỮ LIỆU ĐỂ BẤM SANG CHROME GEMINI
-# ==========================================
-def generate_stock_prompt_data(symbol, last, indicators_dict):
-    """Đóng gói số liệu thành một đoạn prompt hoàn chỉnh để người dùng bấm sang web Gemini phân tích"""
-    prompt_text = f"""Dựa vào các số liệu kỹ thuật định lượng chuẩn xác dưới đây của mã cổ phiếu {symbol.upper()}, hãy viết báo cáo phân tích kỹ thuật gồm đúng 7 mục cấu trúc bằng tiếng Việt:
-
-- Ngày giao dịch: {indicators_dict['date']}
-- Giá đóng cửa hiện tại: {indicators_dict['close']:.1f}k
-- Xu hướng dài hạn (SMA200): {indicators_dict['sma200']:.1f}k
-- CMF: {indicators_dict['cmf']:.2f} | MFI: {indicators_dict['mfi']:.1f} | RVOL: {indicators_dict['rvol']:.2f}x
-- MACD Histogram: {indicators_dict['macd_hist']:+.2f} | LR Slope: {indicators_dict['lr_slope']:+.2f}
-- Trạng thái Ichimoku: {indicators_dict['ichi_status']} (Tenkan: {indicators_dict['tenkan']:.1f}k, Kijun: {indicators_dict['kijun']:.1f}k)
-- Động lượng ngắn hạn: RSI = {indicators_dict['rsi']:.1f}, StochRSI = {indicators_dict['stoch_rsi']:.1f}
-- Volume Profile: POC = {indicators_dict['poc']:.1f}k, VAL = {indicators_dict['val']:.1f}k, VAH = {indicators_dict['vah']:.1f}k
-- Bollinger Bands: Cận trên = {indicators_dict['bb_upper']:.1f}k, Cận dưới = {indicators_dict['bb_lower']:.1f}k
-
-Hãy viết báo cáo chuyên nghiệp gồm 7 mục: Cấu trúc xu hướng & dòng tiền, Ichimoku & động lượng, Volume Profile, Quản trị rủi ro & NAV, Điểm cộng & Rủi ro, Bollinger Bands, Tổng kết chiến lược kèm định hướng quyết định."""
-
-    return prompt_text
-
-
-# ==========================================
-# 3. HÀM PHÂN TÍCH CHUYÊN SÂU TẠO LINK GEMINI GỬI VỀ TELEGRAM
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP 4 LOGIC THÔNG MINH)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -276,14 +252,23 @@ def analyze_stock(symbol, resolution="D", count=250):
     last = df.iloc[-1]
 
     close = last["Close"]
-    cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+    cmf = last["CMF"]
     mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
-    rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+    rvol = last["RVOL"]
     stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
     rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
-    sma200 = last["SMA200"] if not np.isnan(last["SMA200"]) else close
+    ema50 = last["EMA50"]
+    ema200 = last["EMA200"]
+    sma50 = last["SMA50"] if not np.isnan(last["SMA50"]) else ema50
+    sma200 = last["SMA200"] if not np.isnan(last["SMA200"]) else ema200
     lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
+
+    macd = last["MACD"] if not np.isnan(last["MACD"]) else 0.0
+    macd_signal = last["MACD_Signal"] if not np.isnan(last["MACD_Signal"]) else 0.0
     macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+    bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
+    bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
+    bb_width = last["BB_Width"] if not np.isnan(last["BB_Width"]) else 0.1
 
     tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
     kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
@@ -300,40 +285,182 @@ def analyze_stock(symbol, resolution="D", count=250):
         ichi_status = "ĐANG TRONG MÂY (TÍCH LŨY/BIỆN ĐỘNG)"
 
     poc, vah, val = calculate_volume_profile(df)
-    bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
-    bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
-    bb_width = last["BB_Width"] if not np.isnan(last["BB_Width"]) else 0.1
 
-    indicators_dict = {
-        "date": last["time"].strftime('%Y-%m-%d'),
-        "close": close, "sma200": sma200, "cmf": cmf, "mfi": mfi, "rvol": rvol,
-        "macd_hist": macd_hist, "lr_slope": lr_slope, "ichi_status": ichi_status,
-        "tenkan": tenkan, "kijun": kijun, "rsi": rsi, "stoch_rsi": stoch_rsi,
-        "poc": poc, "val": val, "vah": vah, "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_width": bb_width
-    }
+    if close > sma200:
+        long_term_trend = "UPTREND DÀI HẠN (Trên SMA200)"
+        vn_index_status = "TÍCH CỰC"
+    else:
+        long_term_trend = "DOWNTREND/PHỤC HỒI DÀI HẠN (Dưới SMA200)"
+        vn_index_status = "THẬN TRỌNG"
 
-    # Tạo nội dung prompt tóm tắt số liệu
-    prompt_content = generate_stock_prompt_data(symbol, last, indicators_dict)
-    encoded_prompt = urllib.parse.quote(prompt_content)
-    gemini_web_url = f"https://aistudio.google.com/prompts/new_chat?text={encoded_prompt}"
+    confluence_points = []
+    risk_warnings = []
 
-    # Thông điệp trả về Telegram
-    text_part1 = (
-        f"📊 **ĐÃ TỔNG HỢP SỐ LIỆU KỸ THUẬT: {symbol.upper()}**\n"
-        f"🗓️ Ngày: {indicators_dict['date']} | Giá hiện tại: {fmt(close)}\n\n"
-        f"📌 **CÁC CHỈ SỐ ĐỊNH LƯỢNG CHÍNH:**\n"
-        f"• Xu hướng (SMA200): `{fmt(sma200)}` | RVOL: `{rvol:.2f}x`\n"
-        f"• Dòng tiền (CMF/MFI): `{cmf:.2f}` / `{mfi:.1f}`\n"
-        f"• Động lượng (RSI/StochRSI): `{rsi:.1f}` / `{stoch_rsi:.1f}`\n"
-        f"• Ichimoku: `{ichi_status}`\n"
-        f"• Volume Profile (POC/VAL/VAH): `{fmt(poc)}` / `{fmt(val)}` / `{fmt(vah)}`\n\n"
-        f"👉 Bấm vào nút bên dưới để mở trực tiếp trang web Gemini trên Chrome, dán số liệu và nhận báo cáo đầy đủ!"
-    )
+    score = 0
+    if close > cloud_top:
+        score += 25
+        confluence_points.append("Giá nằm trên mây Kumo")
+    elif close >= cloud_bottom:
+        score += 10
+        risk_warnings.append("Giá đang nằm trong mây Kumo")
+    else:
+        risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")
 
-    text_part2 = f"🔗 **LINK MỞ TRANG WEB GEMINI TRÊN CHROME:**\n[Bấm vào đây để phân tích mã {symbol.upper()} trên Gemini AI]({gemini_web_url})"
+    # LOGIC NÂNG CAO 2: ĐỊNH VỊ DÒNG TIỀN THÔNG MINH (SMART MONEY VS HOT MONEY)
+    if cmf > 0.05 and mfi > 50:
+        score += 20
+        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận tích lũy")
+    elif rvol > 1.5 and cmf < 0:
+        score -= 10
+        risk_warnings.append(f"Cảnh báo Dòng tiền đầu cơ (Hot Money): RVOL cao ({rvol:.2f}x) nhưng CMF âm ({cmf:.2f}) -> Dấu hiệu phân phối / nhỏ lẻ cọ xát.")
+    elif cmf > 0 or mfi > 45:
+        score += 10
+    else:
+        risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
+
+    # LOGIC NÂNG CAO 1: BỘ LỌC BẪY GIÁ (TRAP FILTER) & QUÁ MUA TOÀN DIỆN
+    is_bull_trap = (rsi < 40 and stoch_rsi > 80)
+    is_bear_trap = (rsi > 65 and stoch_rsi < 20)
+    is_overbought_full = (stoch_rsi > 90 and rsi > 70)
+
+    if is_bull_trap:
+        score -= 20
+        risk_warnings.append(f"⚡ Phát hiện Bẫy giá (Bull Trap): RSI yếu ({rsi:.1f}) nhưng StochRSI quá mua ({stoch_rsi:.1f}) -> Nhịp hồi kỹ thuật dụ cầu rủi ro.")
+    elif is_overbought_full:
+        score -= 15
+        risk_warnings.append(f"⚠️ Cảnh báo Quá mua toàn diện (RSI: {rsi:.1f}, StochRSI: {stoch_rsi:.1f}) -> Dư địa ngắn hạn cạn kiệt, rủi ro điều chỉnh cao.")
+    else:
+        score += 10
+        confluence_points.append("Động lượng hài hòa, không quá cực đoan")
+
+    if close > sma200:
+        score += 15
+        confluence_points.append("Giá duy trì trên đường dài hạn SMA200")
+    else:
+        risk_warnings.append("Giá nằm dưới SMA200 (Xu hướng dài hạn thận trọng)")
+
+    if macd_hist > 0:
+        score += 15
+        confluence_points.append(f"MACD Histogram dương ({macd_hist:+.2f}) ủng hộ đà tăng")
+    else:
+        risk_warnings.append(f"MACD Histogram âm ({macd_hist:+.2f}) thể hiện động lượng suy yếu")
+
+    confidence_score = min(max(score, 10), 88)
+
+    # LOGIC NÂNG CAO 3: ĐỊNH VỊ VÙNG VOLUME PROFILE CHÍNH XÁC
+    is_below_val = (close < val)
+    if is_below_val:
+        zone_desc = f"Vùng **{fmt(val)} - {fmt(vah)}** (Giá hiện tại nằm dưới VAL): Trở thành **KHÁNG CỰ MẠNH** (vùng kẹp hàng lớn phía trên)."
+    elif close > vah:
+        zone_desc = f"Vùng **{fmt(poc)} - {fmt(vah)}** (Giá hiện tại nằm trên VAH): Trở thành **HỖ TRỢ NỀN VỮNG CHẮC**."
+    elif val <= close <= vah:
+        zone_desc = f"Vùng **{fmt(val)} - {fmt(vah)}** (Giá đang trong Value Area): Biên độ tích lũy chuẩn hóa, theo dõi phản ứng tại biên."
+    else:
+        zone_desc = f"Vùng **{fmt(val)} - {fmt(poc)}**: Vùng nhạy cảm sát biên dưới Volume Profile."
+
+    # QUẢN TRỊ RỦI RO & PHÂN BỔ NAV
+    if confidence_score >= 65 and not is_below_val and close > cloud_bottom and not is_overbought_full:
+        system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
+        nav_rec = "25 - 35% NAV"
+        final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
+        
+        entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
+        entry_2 = round(val if is_below_val else close, 2)
+        entry_avg = round((entry_1 + entry_2) / 2, 2)
+        stop_loss = round(entry_avg * 0.93, 2)
+        action_note = f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`."
+        
+    elif confidence_score >= 45 and not is_bull_trap:
+        system_status = "QUAN SÁT / THẬN TRỌNG RUNG LẮC"
+        nav_rec = "10 - 15% NAV (Thăm dò tỷ trọng nhỏ)"
+        final_icon = f"🟡 **GIAO DỊCH THĂM DÒ / QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Tồn tại mâu thuẫn chỉ báo hoặc kháng cự Volume Profile. **Kiên nhẫn chờ chiết khấu an toàn** hoặc test đường Kijun-sen (`{fmt(kijun)}`)."
+        
+        entry_1 = round(close * 0.97, 2)
+        entry_2 = round(close, 2)
+        entry_avg = round((entry_1 + entry_2) / 2, 2)
+        stop_loss = round(entry_avg * 0.93, 2)
+        action_note = f"Thăm dò tỷ trọng nhỏ quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, quản trị rủi ro chặt với Stoploss tại `{fmt(stop_loss)}`."
+    else:
+        system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
+        nav_rec = "0% (Giữ tiền mặt)"
+        final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Thị trường đối mặt rủi ro quá mua toàn diện hoặc bẫy giá tăng trưởng. Đứng ngoài bảo toàn vốn."
+        action_note = f"Tuyệt đối không giải ngân mua mới. Canh các nhịp hồi kỹ thuật để cơ cấu danh mục, bảo toàn dòng tiền mặt."
+
+    conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ mạnh"
+    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
+
+    if is_below_val and cmf < 0:
+        sec5_action = "⚠️ **Kịch bản Rủi ro dòng tiền rút:** Giá nằm dưới vùng giá trị thấp (VAL) kết hợp CMF âm cho thấy bên bán đang chiếm ưu thế hoàn toàn. Tuyệt đối không bắt đáy sớm, ưu tiên quản trị tiền mặt."
+    elif is_bull_trap:
+        sec5_action = "⚡ **Kịch bản Bẫy giá ngắn hạn (Bull Trap):** Động lượng StochRSI quá mua trong khi RSI thực tế rất yếu, rủi ro điều chỉnh mạnh kiểm định lại hỗ trợ dưới."
+    elif is_overbought_full:
+        sec5_action = "⚠️ **Kịch bản Quá mua hưng phấn:** Các chỉ báo động lượng đã chạm ngưỡng cực đoan, tuyệt đối không mua đuổi, ưu tiên chốt lời hiện thực hóa lợi nhuận."
+    elif confidence_score >= 65 and not is_below_val:
+        sec5_action = "🚀 **Kịch bản Thuận lợi:** Các điểm cộng kỹ thuật áp đảo, dòng tiền lớn và cấu trúc mây ủng hộ tiếp diễn xu hướng tăng."
+    else:
+        sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Thị trường chưa có xu hướng rõ ràng, tín hiệu điểm cộng và rủi ro đan xen. Cần tuân thủ kỷ luật giao dịch."
+
+    # XÂY DỰNG BẢN TIN PHẦN 1 & PHẦN 2
+    text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
+    text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
+
+    # MỤC 1
+    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN (MA & MACD):\n"
+    text_part1 += f"• Xu hướng dài hạn (SMA200): {long_term_trend} (Giá: {fmt(close)} vs SMA200: {fmt(sma200)})\n"
+    text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | MACD Hist: {macd_hist:+.2f}\n"
+    text_part1 += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** "
+    if close > sma200 and macd_hist > 0:
+        text_part1 += f"Xu hướng dài hạn tích cực, MACD ủng hộ động lượng tăng trưởng ổn định.\n\n"
+    else:
+        text_part1 += f"Cấu trúc dài hạn/động lượng phân hóa, cần tuân thủ kỷ luật phòng thủ.\n\n"
+
+    # MỤC 2 (ĐÃ TÍCH HỢP LOGIC NHẬN DIỆN BẪY GIÁ CHUẨN XÁC)
+    text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG (RSI & StochRSI):\n"
+    text_part1 += f"• Thông số mây: {ichi_status}\n"
+    text_part1 += f"• Động lượng ngắn/trung hạn: RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
+    text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** "
+    if is_bull_trap:
+        text_part1 += f"Phát hiện bẫy giá (Bull Trap). Nhịp hồi kỹ thuật rủi ro cao, tuyệt đối không mua đuổi bắt đáy.\n\n"
+    elif is_overbought_full:
+        text_part1 += f"Động lượng quá mua toàn diện, ưu tiên quan sát bảo toàn vị thế, không mở mua mới.\n\n"
+    else:
+        text_part1 += f"Thế nến và động lượng vận động ổn định, canh giải ngân kiểm định vùng hỗ trợ.\n\n"
+
+    # MỤC 3
+    text_part1 += f"📊 3. VOLUME PROFILE & ĐÁNH GIÁ KHÁNG CỰ / HỖ TRỢ:\n"
+    text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
+    text_part1 += f"• Vùng giá trị: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** {zone_desc}\n\n"
+
+    # MỤC 4
+    text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
+    text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
+    text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
+
+    # PHẦN 2
+    text_part2 = ""
+    text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
+    text_part2 += f"• Điểm cộng kỹ thuật: {conf_str}\n"
+    text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** {sec5_action}\n\n"
+
+    text_part2 += f"📈 6. DÃI BOLINGER BANDS & BIẾN ĐỘNG GIÁ:\n"
+    text_part2 += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạm giữa: {fmt(last['BB_Middle'])}\n"
+    bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá biên độ)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
+    text_part2 += f"• Trạng thái biến động: {bien_bb} (Độ rộng: {bb_width:.3f})\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Dựa vào biên độ Bollinger Bands để đo lường dư địa ngắn hạn trước khi mở vị thế.\n\n"
+
+    text_part2 += f"🏁 7. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
+    text_part2 += f"• Khuyến nghị: {final_icon}\n"
+    text_part2 += f"• Định hướng quyết định: {final_action}"
 
     keyboard = [
-        [InlineKeyboardButton("🌐 Mở Gemini AI trên Chrome", url=gemini_web_url)],
         [
             InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
             InlineKeyboardButton("💡 Giải thích Ichimoku", callback_data="help_rsi"),
@@ -345,7 +472,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Vẽ biểu đồ kỹ thuật đính kèm
     fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
@@ -353,7 +479,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     ax.plot(df["time"], df["SMA200"], label="SMA200", color="red", linestyle=":", alpha=0.7)
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
     ax.axhline(val, color="red", linestyle="--", label=f"VAL (Kháng cự): {fmt(val)}", alpha=0.6)
-    ax.set_title(f"Phân Tích Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
+    ax.set_title(f"Phân Tích Chuyên Sâu - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -366,7 +492,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 4. MODULE SCAN & BACKTEST & REALTIME ALERTS
+# 3. MODULE SCAN & BACKTEST & REALTIME ALERTS
 # ==========================================
 def run_market_screener():
     results = []
@@ -583,7 +709,7 @@ def background_scheduler_thread(application):
 
 
 # ==========================================
-# 5. TELEGRAM HANDLERS
+# 4. TELEGRAM HANDLERS
 # ==========================================
 async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     err_msg = f"❌ **HỆ THỐNG PHÁT HIỆN LỖI RUNTIME:**\n\n`{context.error}`"
@@ -604,7 +730,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
             "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
             "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
-            "`VHM`  *(hoặc nhập mã bất kỳ như HPG, PNJ, TCB)*\n\n"
+            "`VHM`  *(hoặc nhập mã bất kỳ như HPG, PNJ, VRE)*\n\n"
             "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
             "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
             "3️⃣ **Xem danh mục đầu tư & Mức giá cụ thể Chốt lời / Cắt lỗ:**\n"
@@ -817,7 +943,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|")
         if len(parts) == 3:
             symbol, resolution, count = parts[0], parts[1], int(parts[2])
-            await query.edit_message_text(text=f"⏳ Đang tổng hợp số liệu kỹ thuật cho {symbol}...")
+            await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
 
             def background_task():
                 return analyze_stock(symbol, resolution=resolution, count=count)
@@ -829,10 +955,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
                 else:
                     await query.message.reply_photo(photo=img_buf)
-                    if text_part1:
-                        await query.message.reply_text(text_part1, parse_mode="Markdown")
-                    if text_part2:
-                        await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
+                    await query.message.reply_text(text_part1, parse_mode="Markdown")
+                    await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
             except Exception as e:
                 await query.message.reply_text(f"❌ Lỗi hệ thống trong quá trình xử lý mã {symbol}:\n{str(e)}")
     except Exception as e:
@@ -840,13 +964,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 6. HTTP SERVER & CHỐNG NGỦ ĐÔNG
+# 5. HTTP SERVER & SELF-PING (CHỐNG NGỦ ĐÔNG)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Trading Bot with Gemini Web Link is running live!")
+        self.wfile.write(b"Dynamic Quant Bot with Smart Logic Rules is running live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -854,11 +978,12 @@ def run_http_server():
     server.serve_forever()
 
 def self_ping_thread():
+    """Tự động ping chính URL của ứng dụng trên Render mỗi 4 phút để chống ngủ đông"""
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not app_url:
         return
     while True:
-        time.sleep(240)
+        time.sleep(240)  # 4 phút ping 1 lần
         try:
             requests.get(app_url, timeout=10)
             logging.info("Self-ping successful to keep server alive.")
@@ -867,7 +992,10 @@ def self_ping_thread():
 
 
 if __name__ == "__main__":
+    # Khởi chạy HTTP Server trên cổng 8080
     threading.Thread(target=run_http_server, daemon=True).start()
+
+    # Khởi chạy luồng tự động Ping chống ngủ đông
     threading.Thread(target=self_ping_thread, daemon=True).start()
 
     print("🤖 Đang khởi tạo kết nối Telegram Bot...")
@@ -875,6 +1003,7 @@ if __name__ == "__main__":
 
     app.add_error_handler(global_error_handler)
 
+    # Khởi chạy luồng quét ngầm và cảnh báo
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -886,5 +1015,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng hoạt động ổn định 24/7!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng với bộ logic thông minh hoàn chỉnh!")
     app.run_polling(drop_pending_updates=True)
