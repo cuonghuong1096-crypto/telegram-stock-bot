@@ -306,7 +306,7 @@ HÃY VIẾT BÁO CÁO THEO ĐÚNG CẤU TRÚC 7 MỤC SAU (Trình bày súc tíc
 
     try:
         response = gemini_client.models.generate_content(
-            model='gemini-2.5-flash',  # Sử dụng model nhanh và thông minh hiện tại
+            model='gemini-3.8-flash',  # <--- Sửa thành tên này
             contents=prompt,
         )
         full_text = response.text.strip()
