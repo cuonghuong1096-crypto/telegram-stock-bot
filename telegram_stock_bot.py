@@ -51,23 +51,29 @@ executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TÍCH HỢP ATR & ADX)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TỰ ĐỘNG QUY ĐỔI COUNT & RESAMPLE KHUNG W)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
+    # TỰ ĐỘNG QUY ĐỔI SỐ LƯỢNG NẾN (COUNT) THEO KHUNG THỜI GIAN
     if resolution in ["1", "5", "15", "30", "60"]:
         res_param = resolution
+        count = max(count, 450)  # Phủ 450+ nến cho khung phút
         start_time = end_time - (count * int(resolution) * 60 * 4)
     elif resolution == "W":
-        res_param = "W"
-        start_time = end_time - (count * 7 * 86400 * 5)
+        # Khung tuần: Gọi khung Ngày (D) với 1000 phiên rồi resample thành tuần để tránh lỗi API
+        res_param = "D"
+        count = 1000 
+        start_time = end_time - (count * 86400 * 3)
     else:
         res_param = "D"
+        count = max(count, 300)  # Đảm bảo tối thiểu 300 nến cho khung D (SMA200 & Volume Profile)
         start_time = end_time - (count * 86400 * 3)
 
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
+    df_raw = pd.DataFrame()
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -77,9 +83,9 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
-                df = pd.DataFrame(data)
-                df["time"] = pd.to_datetime(df["tradingDate"])
-                df.rename(
+                df_raw = pd.DataFrame(data)
+                df_raw["time"] = pd.to_datetime(df_raw["tradingDate"])
+                df_raw.rename(
                     columns={
                         "open": "Open",
                         "high": "High",
@@ -89,37 +95,51 @@ def fetch_stock_data(symbol, resolution="D", count=250):
                     },
                     inplace=True,
                 )
-                return df[
-                    ["time", "Open", "High", "Low", "Close", "Volume"]
-                ].tail(count).reset_index(drop=True), None
     except Exception:
         pass
 
-    url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={res_param}&symbol={symbol}&from={start_time}&to={end_time}"
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://dchart.vndirect.com.vn/",
-        }
-        res = requests.get(url, headers=headers, timeout=3)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
-                df = pd.DataFrame(
-                    {
-                        "time": pd.to_datetime(data["t"], unit="s"),
-                        "Open": data["o"],
-                        "High": data["h"],
-                        "Low": data["l"],
-                        "Close": data["c"],
-                        "Volume": data["v"],
-                    }
-                )
-                return df.tail(count).reset_index(drop=True), None
-    except Exception as e:
-        return pd.DataFrame(), f"Lỗi kết nối API dự phòng: {str(e)}"
+    if df_raw.empty:
+        url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={res_param}&symbol={symbol}&from={start_time}&to={end_time}"
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://dchart.vndirect.com.vn/",
+            }
+            res = requests.get(url, headers=headers, timeout=3)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
+                    df_raw = pd.DataFrame(
+                        {
+                            "time": pd.to_datetime(data["t"], unit="s"),
+                            "Open": data["o"],
+                            "High": data["h"],
+                            "Low": data["l"],
+                            "Close": data["c"],
+                            "Volume": data["v"],
+                        }
+                    )
+        except Exception as e:
+            return pd.DataFrame(), f"Lỗi kết nối API dự phòng: {str(e)}"
 
-    return pd.DataFrame(), f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không hợp lệ."
+    if df_raw.empty:
+        return pd.DataFrame(), f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không hợp lệ."
+
+    df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
+
+    # NẾU LÀ KHUNG TUẦN (W): TỰ ĐỘNG GOM NHÓM (RESAMPLE) TỪ DỮ LIỆU NẾN NGÀY (D)
+    if resolution == "W":
+        df_raw.set_index("time", inplace=True)
+        df_weekly = df_raw.resample("W").agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum"
+        }).dropna().reset_index()
+        return df_weekly.tail(250).reset_index(drop=True), None
+
+    return df_raw.tail(count).reset_index(drop=True), None
 
 
 def calculate_indicators(df):
@@ -442,7 +462,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     # XÂY DỰNG BẢN TIN PHẦN 1 & PHẦN 2 (GIỮ NGUYÊN FORM MẪU GỐC)
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
-    text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
+    text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n\n"
 
     # MỤC 1
     text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN (MA & MACD):\n"
@@ -503,6 +523,13 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     keyboard = [
         [
+            InlineKeyboardButton("📅 1D", callback_data=f"{symbol}|D|300"),
+            InlineKeyboardButton("⏱️ 15m", callback_data=f"{symbol}|15|450"),
+            InlineKeyboardButton("⏱️ 30m", callback_data=f"{symbol}|30|450"),
+            InlineKeyboardButton("⏱️ 1H", callback_data=f"{symbol}|60|450"),
+            InlineKeyboardButton("📈 1W", callback_data=f"{symbol}|W|250"),
+        ],
+        [
             InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
             InlineKeyboardButton("💡 Giải thích Ichimoku", callback_data="help_rsi"),
         ],
@@ -538,8 +565,8 @@ def analyze_stock(symbol, resolution="D", count=250):
 def run_market_screener():
     results = []
     for symbol in WATCHLIST_SCAN:
-        df, err = fetch_stock_data(symbol, resolution="D", count=60)
-        if err or df.empty or len(df) < 30:
+        df, err = fetch_stock_data(symbol, resolution="D", count=300)
+        if err or df.empty or len(df) < 50:
             continue
         df = calculate_indicators(df)
         last = df.iloc[-1]
@@ -550,7 +577,6 @@ def run_market_screener():
         close = last["Close"]
         ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
         
-        # Lọc bổ sung ADX >= 20 tránh tín hiệu nhiễu
         if rvol >= 1.25 and cmf > 0.02 and close > ema50 and adx >= 20:
             score = (rvol * 2) + (cmf * 5) + (adx * 0.1)
             results.append({
@@ -576,8 +602,8 @@ def check_realtime_alerts(application):
     today_str = now.strftime("%Y-%m-%d")
     
     for symbol in WATCHLIST_SCAN:
-        df, err = fetch_stock_data(symbol, resolution="D", count=50)
-        if err or df.empty or len(df) < 30:
+        df, err = fetch_stock_data(symbol, resolution="D", count=300)
+        if err or df.empty or len(df) < 50:
             continue
         
         df = calculate_indicators(df)
@@ -630,14 +656,14 @@ def check_realtime_alerts(application):
 
 def run_strategy_backtest(symbol):
     symbol = symbol.upper().strip()
-    df, err = fetch_stock_data(symbol, resolution="D", count=200)
+    df, err = fetch_stock_data(symbol, resolution="D", count=300)
     if err or df.empty or len(df) < 100:
         return f"⚠️ Không đủ dữ liệu lịch sử để backtest mã {symbol}. Chi tiết: {err}"
     
     df = calculate_indicators(df)
     trades, wins, losses, total_return = 0, 0, 0, 0.0
     
-    for i in range(30, len(df) - 10):
+    for i in range(50, len(df) - 10):
         rvol = df["RVOL"].iloc[i]
         cmf = df["CMF"].iloc[i]
         adx = df["ADX"].iloc[i]
@@ -680,11 +706,11 @@ def run_strategy_backtest(symbol):
                     losses += 1
 
     if trades == 0:
-        return f"📊 KẾT QUẢ BACKTEST: {symbol}\n\nTrong 200 phiên qua, mã {symbol} chưa xuất hiện điểm mua đạt tiêu chuẩn RVOL + CMF + ADX."
+        return f"📊 KẾT QUẢ BACKTEST: {symbol}\n\nTrong dữ liệu lịch sử qua, mã {symbol} chưa xuất hiện điểm mua đạt tiêu chuẩn."
 
     win_rate = (wins / trades) * 100
     report = f"📊 KẾT QUẢ BACKTEST CHIẾN LƯỢC (ATR & ADX): {symbol}\n"
-    report += f"🗓️ Dữ liệu: 200 phiên lịch sử gần nhất\n"
+    report += f"🗓️ Dữ liệu: 300 phiên lịch sử gần nhất\n"
     report += f"------------------------------------\n"
     report += f"• Tổng số lệnh phát sinh: {trades} lệnh\n"
     report += f"• Lệnh thắng: {wins} | Lệnh thua: {losses}\n"
@@ -705,7 +731,7 @@ def background_scheduler_thread(application):
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
-                    df, err = fetch_stock_data(symbol, resolution="D", count=10)
+                    df, err = fetch_stock_data(symbol, resolution="D", count=30)
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         sl_price = pos["sl"]
@@ -784,7 +810,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/portfolio` \n\n"
             "4️⃣ **Quét dòng tiền bùng nổ toàn thị trường:**\n"
             "`/scan` \n\n"
-            "5️⃣ **Backtest hiệu suất chiến lược 200 phiên:**\n"
+            "5️⃣ **Backtest hiệu suất chiến lược 300 phiên:**\n"
             "`/backtest VHM` \n\n"
             "6️⃣ **Xóa mã khỏi danh mục theo dõi:**\n"
             "`/reset VHM`  *(hoặc `/reset ALL` để xóa sạch danh mục)*"
@@ -817,7 +843,7 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Tự động lấy dữ liệu nến gần nhất để tính ATR
-        df, err = fetch_stock_data(symbol, resolution="D", count=30)
+        df, err = fetch_stock_data(symbol, resolution="D", count=50)
         if err or df.empty:
             await update.message.reply_text(f"❌ Không lấy được dữ liệu mã {symbol} để tính ATR tự động. Chi tiết: {err}")
             return
@@ -863,7 +889,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text = "📂 **DANH MỤC ĐẦU TƯ CÁ NHÂN & CHIẾN LƯỢC QUẢN TRỊ VỊ THẾ**\n\n"
         for symbol, pos in USER_PORTFOLIOS[chat_id].items():
-            df, err = fetch_stock_data(symbol, resolution="D", count=20)
+            df, err = fetch_stock_data(symbol, resolution="D", count=30)
             if not err and not df.empty:
                 current_price = df.iloc[-1]["Close"]
                 qty = pos.get("qty", 1000)
@@ -968,11 +994,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         keyboard = [
-            [InlineKeyboardButton("📅 1D (250 nến)", callback_data=f"{text}|D|250")],
             [
-                InlineKeyboardButton("⏱️ 15m (200 nến)", callback_data=f"{text}|15|200"),
-                InlineKeyboardButton("⏱️ 30m (200 nến)", callback_data=f"{text}|30|200"),
-                InlineKeyboardButton("⏱️ 1H (250 nến)", callback_data=f"{text}|60|200"),
+                InlineKeyboardButton("📅 1D", callback_data=f"{text}|D|300"),
+                InlineKeyboardButton("⏱️ 15m", callback_data=f"{text}|15|450"),
+                InlineKeyboardButton("⏱️ 30m", callback_data=f"{text}|30|450"),
+                InlineKeyboardButton("⏱️ 1H", callback_data=f"{text}|60|450"),
+                InlineKeyboardButton("📈 1W", callback_data=f"{text}|W|250"),
             ],
         ]
         await update.message.reply_text(
@@ -1003,7 +1030,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|")
         if len(parts) == 3:
             symbol, resolution, count = parts[0], parts[1], int(parts[2])
-            await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol}...")
+            await query.edit_message_text(text=f"⏳ Chuyên gia đang phân tích chuyên sâu cho {symbol} (Khung: {resolution})...")
 
             def background_task():
                 return analyze_stock(symbol, resolution=resolution, count=count)
@@ -1030,7 +1057,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Dynamic Quant Bot with ATR and ADX is running live!")
+        self.wfile.write(b"Dynamic Quant Bot with ATR, ADX and Flexible Timeframes is running live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1075,5 +1102,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng với bộ logic thông minh tối ưu hoàn chỉnh!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng với toàn bộ tính năng tối ưu hoàn chỉnh!")
     app.run_polling(drop_pending_updates=True)
