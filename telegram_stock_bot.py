@@ -7,6 +7,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import urllib.parse
 
 import matplotlib
 matplotlib.use('Agg')
@@ -14,7 +15,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-from google import genai  # Thư viện Google GenAI
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -33,10 +33,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TCBS_API_KEY = os.environ.get(
     "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
 )
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# Khởi tạo Gemini Client
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -244,96 +240,29 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM TẠO PROMPT VÀ GỌI GEMINI API (CÓ FALLBACK & RETRY)
+# 2. HÀM TẠO PROMPT DỮ LIỆU ĐỂ BẤM SANG CHROME GEMINI
 # ==========================================
-def generate_ai_analysis_report(symbol, last, indicators_dict):
-    if not gemini_client:
-        return None, None, "Chưa cấu hình GEMINI_API_KEY trong biến môi trường!"
+def generate_stock_prompt_data(symbol, last, indicators_dict):
+    """Đóng gói số liệu thành một đoạn prompt hoàn chỉnh để người dùng bấm sang web Gemini phân tích"""
+    prompt_text = f"""Dựa vào các số liệu kỹ thuật định lượng chuẩn xác dưới đây của mã cổ phiếu {symbol.upper()}, hãy viết báo cáo phân tích kỹ thuật gồm đúng 7 mục cấu trúc bằng tiếng Việt:
 
-    prompt = f"""
-Bạn là một chuyên gia phân tích kỹ thuật chứng khoán Việt Nam hàng đầu (Quant Trader). Dựa trên các dữ liệu định lượng chính xác được cung cấp bên dưới của mã cổ phiếu {symbol.upper()}, hãy viết một báo cáo phân tích chuyên sâu gồm đúng 7 mục cấu trúc bằng tiếng Việt theo định dạng Markdown.
-
-DỮ LIỆU ĐỊNH LƯỢNG KỸ THUẬT:
 - Ngày giao dịch: {indicators_dict['date']}
 - Giá đóng cửa hiện tại: {indicators_dict['close']:.1f}k
-- Xu hướng dài hạn (SMA200): {indicators_dict['sma200']:.1f}k (Giá so với SMA200: {'Trên' if indicators_dict['close'] > indicators_dict['sma200'] else 'Dưới'})
-- CMF (Dòng tiền lớn): {indicators_dict['cmf']:.2f}
-- MFI (Chỉ số dòng tiền): {indicators_dict['mfi']:.1f}
-- RVOL (Thanh khoản tương đối): {indicators_dict['rvol']:.2f}x
-- MACD Histogram: {indicators_dict['macd_hist']:+.2f}
-- Độ dốc xu hướng (LR Slope): {indicators_dict['lr_slope']:+.2f}
+- Xu hướng dài hạn (SMA200): {indicators_dict['sma200']:.1f}k
+- CMF: {indicators_dict['cmf']:.2f} | MFI: {indicators_dict['mfi']:.1f} | RVOL: {indicators_dict['rvol']:.2f}x
+- MACD Histogram: {indicators_dict['macd_hist']:+.2f} | LR Slope: {indicators_dict['lr_slope']:+.2f}
 - Trạng thái Ichimoku: {indicators_dict['ichi_status']} (Tenkan: {indicators_dict['tenkan']:.1f}k, Kijun: {indicators_dict['kijun']:.1f}k)
 - Động lượng ngắn hạn: RSI = {indicators_dict['rsi']:.1f}, StochRSI = {indicators_dict['stoch_rsi']:.1f}
-- Volume Profile: POC = {indicators_dict['poc']:.1f}k, VAL = {indicators_dict['val']:.1f}k, VAH = {indicators_dict['vah']:.1f}k (Vị thế giá: {'Dưới VAL (Kháng cự mạnh)' if indicators_dict['close'] < indicators_dict['val'] else 'Trên VAH (Hỗ trợ tốt)' if indicators_dict['close'] > indicators_dict['vah'] else 'Trong Value Area'})
-- Bollinger Bands: Cận trên = {indicators_dict['bb_upper']:.1f}k, Cận dưới = {indicators_dict['bb_lower']:.1f}k, Độ rộng BB = {indicators_dict['bb_width']:.3f}
+- Volume Profile: POC = {indicators_dict['poc']:.1f}k, VAL = {indicators_dict['val']:.1f}k, VAH = {indicators_dict['vah']:.1f}k
+- Bollinger Bands: Cận trên = {indicators_dict['bb_upper']:.1f}k, Cận dưới = {indicators_dict['bb_lower']:.1f}k
 
-HÃY VIẾT BÁO CÁO THEO ĐÚNG CẤU TRÚC 7 MỤC SAU (Trình bày súc tích, chuyên nghiệp, sắc sảo, không lan man):
+Hãy viết báo cáo chuyên nghiệp gồm 7 mục: Cấu trúc xu hướng & dòng tiền, Ichimoku & động lượng, Volume Profile, Quản trị rủi ro & NAV, Điểm cộng & Rủi ro, Bollinger Bands, Tổng kết chiến lược kèm định hướng quyết định."""
 
-📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}
-🗓️ Ngày: {indicators_dict['date']} | Giá hiện tại: {indicators_dict['close']:.1f}k
-
-🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN (MA & MACD):
-• [Nêu nhận định chi tiết về SMA200, CMF, MFI, RVOL và MACD]
-👉 **Kết luận & Hành động:** [Đưa ra định hướng hành động ngắn gọn]
-
-☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG (RSI & StochRSI):
-• [Nêu thông số mây Kumo, Tenkan, Kijun, phân tích trạng thái quá mua/quá bán hoặc bẫy giá của RSI & StochRSI]
-👉 **Kết luận & Hành động:** [Đưa ra định hướng hành động]
-
-📊 3. VOLUME PROFILE & ĐÁNH GIÁ KHÁNG CỰ / HỖ TRỢ:
-• [Nêu thông số POC, VAL, VAH và vị thế của giá hiện tại so với vùng giá trị]
-👉 **Kết luận & Hành động:** [Đánh giá vùng hỗ trợ/kháng cự]
-
-🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:
-• Trạng thái khuyến nghị: [Chọn 1 trong 3: MỞ MUA / GIA TỶ TRỌNG, QUAN SÁT / THÂN TRỌNG, hoặc ĐỨNG NGOÀI BẢO TOÀN VỐN]
-• Tỷ trọng phân bổ NAV: [Ví dụ: 0% hoặc 10-15% hoặc 25-35%]
-👉 **Kết luận & Hành động:** [Ghi rõ mức giá giải ngân dự kiến và mức Stoploss cụ thể dựa trên số liệu Kijun/VAL]
-
-⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:
-• Điểm cộng kỹ thuật: [Liệt kê các yếu tố tích cực]
-• Cảnh báo rủi ro: [Liệt kê các yếu tố tiêu cực/rủi ro bẫy giá]
-👉 **Kết luận & Hành động:** [Đưa ra kịch bản thực chiến phù hợp nhất]
-
-📈 6. DÃI BOLINGER BANDS & BIẾN ĐỘNG GIÁ:
-• [Nêu thông số Bollinger Bands và độ rộng dải]
-👉 **Kết luận & Hành động:** [Đánh giá dư địa ngắn hạn]
-
-🏁 7. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:
-• Khuyến nghị: [Đưa ra Icon trạng thái, mức độ tin cậy từ 10% đến 90%]
-• Định hướng quyết định: [Tổng kết câu chốt chiến lược sắc sảo nhất cho nhà đầu tư]
-"""
-
-    candidate_models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
-
-    for model_name in candidate_models:
-        for attempt in range(2):
-            try:
-                response = gemini_client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-                full_text = response.text.strip()
-                
-                if "⚡ 5. TỔNG HỢP ĐIỂM CỘNG" in full_text:
-                    parts = full_text.split("⚡ 5. TỔNG HỢP ĐIỂM CỘNG")
-                    part1 = parts[0].strip()
-                    part2 = "⚡ 5. TỔNG HỢP ĐIỂM CỘNG" + parts[1].strip()
-                    return part1, part2, None
-                else:
-                    return full_text, "", None
-            except Exception as e:
-                err_str = str(e)
-                if "503" in err_str or "UNAVAILABLE" in err_str:
-                    time.sleep(1)
-                    continue
-                else:
-                    break
-
-    return None, None, "Hệ thống Google AI hiện đang quá tải ở tất cả các cụm máy chủ, vui lòng thử lại sau vài giây!"
+    return prompt_text
 
 
 # ==========================================
-# 3. HÀM PHÂN TÍCH CHUYÊN SÂU TÍCH HỢP GEMINI
+# 3. HÀM PHÂN TÍCH CHUYÊN SÂU TẠO LINK GEMINI GỬI VỀ TELEGRAM
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -383,12 +312,28 @@ def analyze_stock(symbol, resolution="D", count=250):
         "poc": poc, "val": val, "vah": vah, "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_width": bb_width
     }
 
-    text_part1, text_part2, ai_err = generate_ai_analysis_report(symbol, last, indicators_dict)
-    
-    if ai_err or not text_part1:
-        return None, None, None, None, f"Lỗi sinh báo cáo từ Gemini AI: {ai_err}"
+    # Tạo nội dung prompt tóm tắt số liệu
+    prompt_content = generate_stock_prompt_data(symbol, last, indicators_dict)
+    encoded_prompt = urllib.parse.quote(prompt_content)
+    gemini_web_url = f"https://aistudio.google.com/prompts/new_chat?text={encoded_prompt}"
+
+    # Thông điệp trả về Telegram
+    text_part1 = (
+        f"📊 **ĐÃ TỔNG HỢP SỐ LIỆU KỸ THUẬT: {symbol.upper()}**\n"
+        f"🗓️ Ngày: {indicators_dict['date']} | Giá hiện tại: {fmt(close)}\n\n"
+        f"📌 **CÁC CHỈ SỐ ĐỊNH LƯỢNG CHÍNH:**\n"
+        f"• Xu hướng (SMA200): `{fmt(sma200)}` | RVOL: `{rvol:.2f}x`\n"
+        f"• Dòng tiền (CMF/MFI): `{cmf:.2f}` / `{mfi:.1f}`\n"
+        f"• Động lượng (RSI/StochRSI): `{rsi:.1f}` / `{stoch_rsi:.1f}`\n"
+        f"• Ichimoku: `{ichi_status}`\n"
+        f"• Volume Profile (POC/VAL/VAH): `{fmt(poc)}` / `{fmt(val)}` / `{fmt(vah)}`\n\n"
+        f"👉 Bấm vào nút bên dưới để mở trực tiếp trang web Gemini trên Chrome, dán số liệu và nhận báo cáo đầy đủ!"
+    )
+
+    text_part2 = f"🔗 **LINK MỞ TRANG WEB GEMINI TRÊN CHROME:**\n[Bấm vào đây để phân tích mã {symbol.upper()} trên Gemini AI]({gemini_web_url})"
 
     keyboard = [
+        [InlineKeyboardButton("🌐 Mở Gemini AI trên Chrome", url=gemini_web_url)],
         [
             InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
             InlineKeyboardButton("💡 Giải thích Ichimoku", callback_data="help_rsi"),
@@ -400,6 +345,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Vẽ biểu đồ kỹ thuật đính kèm
     fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
@@ -407,7 +353,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     ax.plot(df["time"], df["SMA200"], label="SMA200", color="red", linestyle=":", alpha=0.7)
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
     ax.axhline(val, color="red", linestyle="--", label=f"VAL (Kháng cự): {fmt(val)}", alpha=0.6)
-    ax.set_title(f"Phân Tích Chuyên Sâu AI - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
+    ax.set_title(f"Phân Tích Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -655,9 +601,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
         ACTIVE_CHAT_IDS.add(chat_id)
         welcome_text = (
-            "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM (POWERED BY GEMINI AI)!**\n\n"
+            "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
             "📌 *Bấm trực tiếp vào các ô bên dưới để copy cú pháp:* \n\n"
-            "1️⃣ **Phân tích chi tiết mã cổ phiếu (AI phân tích):**\n"
+            "1️⃣ **Phân tích chi tiết mã cổ phiếu:**\n"
             "`VHM`  *(hoặc nhập mã bất kỳ như HPG, PNJ, TCB)*\n\n"
             "2️⃣ **Lưu giá mua, cắt lỗ & khối lượng:**\n"
             "`/setbuy VHM 63.0 62.0 1500`  *(Mã, Giá mua, SL, Khối lượng)*\n\n"
@@ -871,14 +817,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|")
         if len(parts) == 3:
             symbol, resolution, count = parts[0], parts[1], int(parts[2])
-            await query.edit_message_text(text=f"🤖 Gemini AI đang tổng hợp số liệu và phân tích chuyên sâu cho {symbol}...")
+            await query.edit_message_text(text=f"⏳ Đang tổng hợp số liệu kỹ thuật cho {symbol}...")
 
             def background_task():
                 return analyze_stock(symbol, resolution=resolution, count=count)
 
             future = executor.submit(background_task)
             try:
-                text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=25)
+                text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=15)
                 if err:
                     await query.message.reply_text(f"❌ Lỗi phân tích mã {symbol}:\n{err}")
                 else:
@@ -894,13 +840,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 6. HTTP SERVER & SELF-PING (CHỐNG NGỦ ĐÔNG)
+# 6. HTTP SERVER & CHỐNG NGỦ ĐÔNG
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Gemini AI is running live!")
+        self.wfile.write(b"Quant Trading Bot with Gemini Web Link is running live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -921,16 +867,14 @@ def self_ping_thread():
 
 
 if __name__ == "__main__":
-    # Khởi chạy HTTP Server nhẹ để chống ngủ đông trên Render
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=self_ping_thread, daemon=True).start()
 
-    print("🤖 Đang khởi tạo kết nối Telegram Bot kết hợp Gemini AI...")
+    print("🤖 Đang khởi tạo kết nối Telegram Bot...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_error_handler(global_error_handler)
 
-    # Khởi chạy luồng quét ngầm và cảnh báo
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
@@ -942,5 +886,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System (Gemini-Powered) đã sẵn sàng hoạt động 24/7!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng hoạt động ổn định 24/7!")
     app.run_polling(drop_pending_updates=True)
