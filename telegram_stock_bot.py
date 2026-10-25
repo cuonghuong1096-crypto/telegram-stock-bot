@@ -175,6 +175,10 @@ def calculate_indicators(df):
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    
+    # Bổ sung các đường MA đơn giản (SMA) phục vụ xác định xu hướng dài hạn theo yêu cầu
+    df["SMA50"] = df["Close"].rolling(50).mean()
+    df["SMA200"] = df["Close"].rolling(200).mean()
 
     def linreg_slope(ser):
         y = ser.values
@@ -236,7 +240,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (ĐÃ TỐI ƯU & KHẮC PHỤC MÂU THUẪN)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP LOGIC NÂNG CAO)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -257,6 +261,8 @@ def analyze_stock(symbol, resolution="D", count=250):
     rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
     ema50 = last["EMA50"]
     ema200 = last["EMA200"]
+    sma50 = last["SMA50"] if not np.isnan(last["SMA50"]) else ema50
+    sma200 = last["SMA200"] if not np.isnan(last["SMA200"]) else ema200
     lr_slope = last["LR_Slope"] if not np.isnan(last["LR_Slope"]) else 0.0
 
     macd = last["MACD"] if not np.isnan(last["MACD"]) else 0.0
@@ -282,7 +288,14 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     poc, vah, val = calculate_volume_profile(df)
 
-    vn_index_status = "TÍCH CỰC" if close > ema200 else "THẬN TRỌNG"
+    # Xác định xu hướng dài hạn qua MA/SMA
+    if close > sma200:
+        long_term_trend = "UPTREND DÀI HẠN (Trên SMA200)"
+        vn_index_status = "TÍCH CỰC"
+    else:
+        long_term_trend = "DOWNTREND/PHỤC HỒI DÀI HẠN (Dưới SMA200)"
+        vn_index_status = "THẬN TRỌNG"
+
     if close > ema50 and ema50 > ema200:
         market_structure = "UPTREND"
     elif close < ema50 and ema50 < ema200:
@@ -295,147 +308,137 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     score = 0
     if close > cloud_top:
-        score += 30
-        confluence_points.append("Giá nằm trên mây Kumo (30%)")
+        score += 25
+        confluence_points.append("Giá nằm trên mây Kumo")
     elif close >= cloud_bottom:
-        score += 15
+        score += 10
         risk_warnings.append("Giá đang nằm trong mây Kumo")
     else:
         risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")
 
     if cmf > 0.05 and mfi > 50:
-        score += 25
-        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận mạnh (25%)")
+        score += 20
+        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận")
     elif cmf > 0 or mfi > 45:
-        score += 15
-        confluence_points.append(f"Dòng tiền duy trì dương nhẹ (CMF: {cmf:.2f})")
+        score += 10
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
-    if lr_slope > 0.1:
-        score += 20
-        confluence_points.append("Độ dốc tăng giá LR Slope mạnh (20%)")
-    elif lr_slope >= 0:
+    # Kiểm tra đồng nhất động lượng và tín hiệu StochRSI / RSI
+    is_rsi_neutral = (45 <= rsi <= 60)
+    is_stoch_overbought = (stoch_rsi > 80)
+    
+    if is_rsi_neutral and is_stoch_overbought:
+        score -= 10
+        risk_warnings.append(f"Mâu thuẫn động lượng: RSI trung tính ({rsi:.1f}) nhưng StochRSI quá mua ({stoch_rsi:.1f}) ➔ Ngắn hạn dễ rung lắc")
+    elif stoch_rsi > 80 and rsi > 65:
+        score -= 15
+        risk_warnings.append(f"Cảnh báo quá mua toàn diện (RSI: {rsi:.1f}, StochRSI: {stoch_rsi:.1f})")
+    else:
         score += 10
+        confluence_points.append("Động lượng RSI và StochRSI hài hòa, không quá cực đoan")
+
+    if close > sma200:
+        score += 15
+        confluence_points.append("Giá duy trì trên đường dài hạn SMA200")
     else:
-        risk_warnings.append("Độ dốc giá âm (Đang hướng xuống)")
+        risk_warnings.append("Giá nằm dưới SMA200 (Xu hướng dài hạn thận trọng)")
 
-    if close > ema50:
-        score += 10
-        confluence_points.append("Giá nằm trên EMA50")
+    if macd_hist > 0:
+        score += 15
+        confluence_points.append(f"MACD Histogram dương ({macd_hist:+.2f}) ủng hộ động lượng tăng")
     else:
-        risk_warnings.append("Giá nằm dưới EMA50")
+        risk_warnings.append(f"MACD Histogram âm ({macd_hist:+.2f}) thể hiện động lượng suy yếu")
 
-    if close >= poc:
-        score += 5
-        confluence_points.append("Giá nằm trên vùng giá khớp nhiều nhất (POC)")
+    confidence_score = min(max(score, 10), 88)
 
-    if rvol >= 1.2:
-        score += 10
-        confluence_points.append(f"Thanh khoản bùng nổ ({rvol:.2f}x)")
-    elif rvol >= 0.8:
-        score += 5
+    # Xử lý vùng giá Volume Profile: Nếu giá nằm dưới dải giá trị thấp (VAL), vùng này là KHÁNG CỰ MẠNH
+    if close < val:
+        zone_desc = f"Vùng **{fmt(val)} - {fmt(vah)}** (Giá hiện tại nằm dưới VAL): Trở thành **KHÁNG CỰ MẠNH** (vùng kẹp hàng lớn phía trên)."
+        is_below_val = True
+    elif close > vah:
+        zone_desc = f"Vùng **{fmt(poc)} - {fmt(vah)}** (Giá hiện tại nằm trên VAH): Trở thành **HỖ TRỢ NỀN VỮNG CHẮC**."
+        is_below_val = False
     else:
-        risk_warnings.append(f"Thanh khoản cạn kiệt/thấp ({rvol:.2f}x)")
+        zone_desc = f"Vùng **{fmt(val)} - {fmt(poc)}**: Lực cầu đỡ giá dao động trong biên độ Volume Profile."
+        is_below_val = False
 
-    # Kiểm tra điều kiện Quá mua để khắc phục mâu thuẫn mua đuổi
-    is_overbought = (rsi > 70 or stoch_rsi > 90 or close > bb_upper)
-    if is_overbought:
-        score -= 20
-        risk_warnings.append(f"Cảnh báo Quá mua cực đoan (RSI: {rsi:.1f}, StochRSI: {stoch_rsi:.1f}, Vượt Bollinger Trên)")
+    entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
+    entry_2 = round(val if is_below_val else close, 2)
+    entry_avg = round((entry_1 + entry_2) / 2, 2)
+    stop_loss = round(entry_avg * 0.93, 2)
 
-    confidence_score = min(max(score, 10), 90 if not is_overbought else 65)
-
-    if is_overbought:
-        entry_1 = round(min(kijun, val), 2)
-        entry_2 = round(val, 2)
-        entry_avg = round((entry_1 + entry_2) / 2, 2)
-    else:
-        entry_1 = round(max(val, last["EMA20"], close * 0.98), 2)
-        entry_2 = round(close, 2)
-        entry_avg = round((entry_1 * 0.3) + (entry_2 * 0.7), 2)
-
-    stop_loss = round(entry_avg * 0.935, 2)
-
-    if confidence_score >= 70 and not is_overbought and close > cloud_bottom:
+    if confidence_score >= 65 and not is_below_val and close > cloud_bottom:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         is_standing_aside = False
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Cấu trúc kỹ thuật hội tụ tốt. Ưu tiên gom quanh vùng hỗ trợ `{fmt(val)} - {fmt(poc)}`."
-    elif confidence_score >= 45 and close >= cloud_bottom:
-        system_status = "QUAN SÁT / CHỜ CHIẾT KHẤU AN TOÀN"
+        final_action = f"Các chỉ báo MA, MACD và Volume Profile đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
+    elif confidence_score >= 45:
+        system_status = "QUAN SÁT / THẬN TRỌNG RUNG LẮC"
         nav_rec = "10 - 15% NAV (Thăm dò tỷ trọng nhỏ)"
         is_standing_aside = False
-        final_icon = f"🟡 **THẬN TRỌNG / CHỜ ĐIỀU CHỈNH (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Thị trường ngắn hạn đã vào vùng Quá Mua. **TUYỆT ĐỐI KHÔNG MUA ĐUỔI**, kiên nhẫn chờ giá test lại đường Kijun-sen (`{fmt(kijun)}`) hoặc mây hỗ trợ."
+        final_icon = f"🟡 **GIAO DỊCH THĂM DÒ / QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
+        final_action = f"Tồn tại mâu thuẫn chỉ báo (StochRSI quá mua trong khi RSI trung tính) hoặc giá đang tiềm cận kháng cự Volume Profile. **Kiên nhẫn chờ chiết khấu an toàn** hoặc test đường Kijun-sen (`{fmt(kijun)}`)."
     else:
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
         nav_rec = "0% (Giữ tiền mặt)"
         is_standing_aside = True
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Cấu trúc rủi ro cao hoặc tín hiệu suy yếu. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
+        final_action = f"Giá nằm dưới vùng giá trị Volume Profile (đối mặt kháng cự dày đặc) hoặc cấu trúc dài hạn yếu. Đứng ngoài bảo toàn vốn."
 
+    # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
-    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
-    text_part1 += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
-    text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
+    # MỤC 1
+    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN (MA & MACD):\n"
+    text_part1 += f"• Xu hướng dài hạn (SMA200): {long_term_trend} (Giá: {fmt(close)} vs SMA200: {fmt(sma200)})\n"
+    text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | MACD Hist: {macd_hist:+.2f}\n"
     text_part1 += f"• Độ dốc xu hướng (LR Slope): {lr_slope:+.2f}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
-    if cmf > 0 and mfi >= 45:
-        text_part1 += f"Dòng tiền lớn đang nâng đỡ giá tốt. Tuy nhiên cần chú ý nhịp chững lại nếu chỉ báo quá mua xuất hiện.\n\n"
+    if close > sma200 and macd_hist > 0:
+        text_part1 += f"Xu hướng dài hạn tích cực, MACD ủng hộ động lượng tăng trưởng ổn định.\n\n"
     else:
-        text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, tập trung kiểm soát rủi ro vị thế.\n\n"
+        text_part1 += f"Cấu trúc dài hạn/động lượng phân hóa, cần tuân thủ kỷ luật phòng thủ.\n\n"
 
-    text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
+    # MỤC 2
+    text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG (RSI & StochRSI):\n"
     text_part1 += f"• Thông số mây: {ichi_status}\n"
+    text_part1 += f"• Động lượng ngắn/trung hạn: RSI: {rsi:.1f} (Trung tính) | StochRSI: {stoch_rsi:.1f} (Quá mua)\n"
     text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
-    text_part1 += f"• Vùng mây Kumo: Đáy `{fmt(cloud_bottom)}` - Đỉnh `{fmt(cloud_top)}`\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
-    if close > cloud_top:
-        text_part1 += f"Giá bứt phá trên mây Kumo rất tích cực. Canh giải ngân chuẩn xác khi giá kiểm định lại đường Kijun-sen (`{fmt(kijun)}`), không FOMO mua giá cao.\n\n"
-    elif close < cloud_bottom:
-        text_part1 += f"Giá lọt xuống dưới mây Kumo, lực cản phía trên rất dày, tuyệt đối không tham gia bắt đáy.\n\n"
+    if is_rsi_neutral and is_stoch_overbought:
+        text_part1 += f"Phát hiện mâu thuẫn động lượng ngắn hạn (StochRSI quá mua trong khi RSI trung tính). Áp lực rung lắc ngắn hạn hiện hữu, canh mua khi giá test đường Kijun-sen (`{fmt(kijun)}`).\n\n"
     else:
-        text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
+        text_part1 += f"Thế nến và động lượng vận động đồng pha, canh giải ngân kiểm định vùng hỗ trợ.\n\n"
 
-    text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
+    # MỤC 3
+    text_part1 += f"📊 3. VOLUME PROFILE & ĐÁNH GIÁ KHÁNG CỰ / HỖ TRỢ:\n"
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
-    text_part1 += f"• Vùng giá giao dịch: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
-    text_part1 += f"👉 **Kết luận & Hành động:** "
-    if close > vah:
-        text_part1 += f"Giá ({fmt(close)}) vượt qua vùng VAH ({fmt(vah)}). Vùng **{fmt(poc)} - {fmt(vah)}** là HỖ TRỢ NỀN. Không mua đuổi khi giá cách xa vùng hỗ trợ này.\n\n"
-    else:
-        text_part1 += f"Giá ({fmt(close)}) vận động trong Volume Profile, lực cầu ổn định tại dải **{fmt(val)} - {fmt(poc)}**.\n\n"
+    text_part1 += f"• Vùng giá trị: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** {zone_desc}\n\n"
 
+    # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
-    text_part1 += f"👉 **Kết luận & Hành động:** "
-    if is_standing_aside:
-        text_part1 += f"Giữ nguyên tiền mặt, đứng ngoài thị trường quan sát.\n\n"
-    else:
-        text_part1 += f"Chờ mua quanh mốc an toàn `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
+    # --- PHẦN 2: MỤC 5, 6 & 7 ---
     text_part2 = ""
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
     text_part2 += f"• Điểm cộng kỹ thuật: {conf_str}\n"
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
-    text_part2 += f"👉 **Kết luận & Hành động:** Tuân thủ kỷ luật giao dịch, tránh mua đuổi khi chỉ báo kỹ thuật phát tín hiệu quá mua.\n\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Đánh giá kỹ tỷ lệ R:R, tuyệt đối không mua đuổi khi gặp vùng kháng cự Volume Profile.\n\n"
 
-    text_part2 += f"📈 6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:\n"
-    text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
-    bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
-    text_part2 += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạng thái: {bien_bb}\n"
-    text_part2 += f"👉 **Kết luận & Hành động:** "
-    if is_overbought:
-        text_part2 += f"Cảnh báo giá chạm hoặc vượt cận trên Bollinger Bands kết hợp RSI/StochRSI cao. Xuất hiện áp lực chốt lời ngắn hạn.\n\n"
-    else:
-        text_part2 += f"Động lượng MACD Histogram tích cực, biên độ giá ổn định, dư địa tăng trưởng còn mở ra.\n\n"
+    text_part2 += f"📈 6. DÃI BOLINGER BANDS & BIẾN ĐỘNG GIÁ:\n"
+    text_part2 += f"• Bollinger Bands: Cận trên: {fmt(bb_upper)} | Cận dưới: {fmt(bb_lower)} | Trạm giữa: {fmt(last['BB_Middle'])}\n"
+    bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá biên độ)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
+    text_part2 += f"• Trạng thái biến động: {bien_bb} (Độ rộng: {bb_width:.3f})\n"
+    text_part2 += f"👉 **Kết luận & Hành động:** Dựa vào biên độ Bollinger Bands để đo lường dư địa ngắn hạn trước khi mở vị thế.\n\n"
 
     text_part2 += f"🏁 7. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
@@ -457,8 +460,9 @@ def analyze_stock(symbol, resolution="D", count=250):
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
     ax.plot(df["time"], df["Kijun_sen"], label="Kijun", color="orange", linestyle="--", alpha=0.6)
+    ax.plot(df["time"], df["SMA200"], label="SMA200", color="red", linestyle=":", alpha=0.7)
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
-    ax.axhline(val, color="green", linestyle="--", label=f"VAL: {fmt(val)}", alpha=0.6)
+    ax.axhline(val, color="red", linestyle="--", label=f"VAL (Kháng cự): {fmt(val)}", alpha=0.6)
     ax.set_title(f"Phân Tích Chuyên Sâu - {symbol.upper()} ({resolution})", fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
@@ -947,7 +951,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Optimized Quant Bot is running live!")
+        self.wfile.write(b"Optimized Quant Bot with MA, MACD, Bollinger & Fixed Volume Profile is running live!")
 
 
 def run_http_server():
@@ -975,5 +979,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng chạy trực tiếp!")
+    print("🚀 Bot Quant Trading System đã được tối ưu hóa toàn diện cấu trúc logic!")
     app.run_polling(drop_pending_updates=True)
