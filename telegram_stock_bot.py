@@ -247,9 +247,9 @@ def calculate_volume_profile(df, bins=20):
 # 2. HÀM TẠO PROMPT VÀ GỌI GEMINI API
 # ==========================================
 def generate_ai_analysis_report(symbol, last, indicators_dict):
-    """Gửi toàn bộ số liệu kỹ thuật sang Gemini để AI viết báo cáo chuẩn chuyên gia"""
+    """Gửi toàn bộ số liệu kỹ thuật sang Gemini với cơ chế Retry & Fallback model khi bị quá tải 503"""
     if not gemini_client:
-        return None, "Chưa cấu hình GEMINI_API_KEY trong biến môi trường!"
+        return None, None, "Chưa cấu hình GEMINI_API_KEY trong biến môi trường!"
 
     prompt = f"""
 Bạn là một chuyên gia phân tích kỹ thuật chứng khoán Việt Nam hàng đầu (Quant Trader). Dựa trên các dữ liệu định lượng chính xác được cung cấp bên dưới của mã cổ phiếu {symbol.upper()}, hãy viết một báo cáo phân tích chuyên sâu gồm đúng 7 mục cấu trúc bằng tiếng Việt theo định dạng Markdown.
@@ -304,26 +304,37 @@ HÃY VIẾT BÁO CÁO THEO ĐÚNG CẤU TRÚC 7 MỤC SAU (Trình bày súc tíc
 • Định hướng quyết định: [Tổng kết câu chốt chiến lược sắc sảo nhất cho nhà đầu tư]
 """
 
-    try:
-        response = gemini_client.models.generate_content(
-            model='gemini-3.8-flash',  # <--- Sửa thành tên này
-            contents=prompt,
-        )
-        full_text = response.text.strip()
-        
-        # Chia nhỏ text phản hồi thành phần 1 và phần 2 để giữ nguyên cấu trúc gửi 2 tin nhắn của bot
-        if "⚡ 5. TỔNG HỢP ĐIỂM CỘNG" in full_text:
-            parts = full_text.split("⚡ 5. TỔNG HỢP ĐIỂM CỘNG")
-            part1 = parts[0].strip()
-            part2 = "⚡ 5. TỔNG HỢP ĐIỂM CỘNG" + parts[1].strip()
-            return part1, part2, None
-        else:
-            # Fallback nếu AI trả về gộp
-            return full_text, "", None
+    # Danh sách các model theo thứ tự ưu tiên (Tự chuyển sang model tiếp theo nếu quá tải 503)
+    candidate_models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
 
-    except Exception as e:
-        return None, None, f"Lỗi gọi Gemini API: {str(e)}"
+    for model_name in candidate_models:
+        for attempt in range(2):  # Thử lại tối đa 2 lần với mỗi model nếu bị 503
+            try:
+                response = gemini_client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                full_text = response.text.strip()
+                
+                if "⚡ 5. TỔNG HỢP ĐIỂM CỘNG" in full_text:
+                    parts = full_text.split("⚡ 5. TỔNG HỢP ĐIỂM CỘNG")
+                    part1 = parts[0].strip()
+                    part2 = "⚡ 5. TỔNG HỢP ĐIỂM CỘNG" + parts[1].strip()
+                    return part1, part2, None
+                else:
+                    return full_text, "", None
 
+            except Exception as e:
+                err_str = str(e)
+                # Nếu bị lỗi 503 quá tải, chờ 1 giây rồi tự thử lại hoặc nhảy model khác
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    time.sleep(1)
+                    continue
+                else:
+                    # Lỗi khác thì bỏ qua model này thử model dự phòng
+                    break
+
+    return None, None, "Hệ thống Google AI hiện đang quá tải ở tất cả các cụm máy chủ, vui lòng thử lại sau vài giây!"
 
 # ==========================================
 # 3. HÀM PHÂN TÍCH CHUYÊN SÂU TÍCH HỢP GEMINI
