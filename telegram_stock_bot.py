@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
-from google import genai  # Thư viện mới của Google GenAI
+from google import genai  # Thư viện Google GenAI
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -244,10 +244,9 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM TẠO PROMPT VÀ GỌI GEMINI API
+# 2. HÀM TẠO PROMPT VÀ GỌI GEMINI API (CÓ FALLBACK & RETRY)
 # ==========================================
 def generate_ai_analysis_report(symbol, last, indicators_dict):
-    """Gửi toàn bộ số liệu kỹ thuật sang Gemini với cơ chế Retry & Fallback model khi bị quá tải 503"""
     if not gemini_client:
         return None, None, "Chưa cấu hình GEMINI_API_KEY trong biến môi trường!"
 
@@ -304,11 +303,10 @@ HÃY VIẾT BÁO CÁO THEO ĐÚNG CẤU TRÚC 7 MỤC SAU (Trình bày súc tíc
 • Định hướng quyết định: [Tổng kết câu chốt chiến lược sắc sảo nhất cho nhà đầu tư]
 """
 
-    # Danh sách các model theo thứ tự ưu tiên (Tự chuyển sang model tiếp theo nếu quá tải 503)
     candidate_models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash']
 
     for model_name in candidate_models:
-        for attempt in range(2):  # Thử lại tối đa 2 lần với mỗi model nếu bị 503
+        for attempt in range(2):
             try:
                 response = gemini_client.models.generate_content(
                     model=model_name,
@@ -323,18 +321,16 @@ HÃY VIẾT BÁO CÁO THEO ĐÚNG CẤU TRÚC 7 MỤC SAU (Trình bày súc tíc
                     return part1, part2, None
                 else:
                     return full_text, "", None
-
             except Exception as e:
                 err_str = str(e)
-                # Nếu bị lỗi 503 quá tải, chờ 1 giây rồi tự thử lại hoặc nhảy model khác
                 if "503" in err_str or "UNAVAILABLE" in err_str:
                     time.sleep(1)
                     continue
                 else:
-                    # Lỗi khác thì bỏ qua model này thử model dự phòng
                     break
 
     return None, None, "Hệ thống Google AI hiện đang quá tải ở tất cả các cụm máy chủ, vui lòng thử lại sau vài giây!"
+
 
 # ==========================================
 # 3. HÀM PHÂN TÍCH CHUYÊN SÂU TÍCH HỢP GEMINI
@@ -379,30 +375,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
     bb_width = last["BB_Width"] if not np.isnan(last["BB_Width"]) else 0.1
 
-    # Đóng gói dữ liệu định lượng vào dictionary
     indicators_dict = {
         "date": last["time"].strftime('%Y-%m-%d'),
-        "close": close,
-        "sma200": sma200,
-        "cmf": cmf,
-        "mfi": mfi,
-        "rvol": rvol,
-        "macd_hist": macd_hist,
-        "lr_slope": lr_slope,
-        "ichi_status": ichi_status,
-        "tenkan": tenkan,
-        "kijun": kijun,
-        "rsi": rsi,
-        "stoch_rsi": stoch_rsi,
-        "poc": poc,
-        "val": val,
-        "vah": vah,
-        "bb_upper": bb_upper,
-        "bb_lower": bb_lower,
-        "bb_width": bb_width
+        "close": close, "sma200": sma200, "cmf": cmf, "mfi": mfi, "rvol": rvol,
+        "macd_hist": macd_hist, "lr_slope": lr_slope, "ichi_status": ichi_status,
+        "tenkan": tenkan, "kijun": kijun, "rsi": rsi, "stoch_rsi": stoch_rsi,
+        "poc": poc, "val": val, "vah": vah, "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_width": bb_width
     }
 
-    # Gọi Gemini API để sinh báo cáo phân tích thông minh
     text_part1, text_part2, ai_err = generate_ai_analysis_report(symbol, last, indicators_dict)
     
     if ai_err or not text_part1:
@@ -420,7 +400,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Vẽ biểu đồ kỹ thuật đính kèm
     fig, ax = plt.subplots(figsize=(8, 5), dpi=100)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.6)
@@ -921,7 +900,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Gemini-Powered Quant Bot is running live!")
+        self.wfile.write(b"Quant Bot with Gemini AI is running live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -929,12 +908,11 @@ def run_http_server():
     server.serve_forever()
 
 def self_ping_thread():
-    """Tự động ping chính URL của ứng dụng trên Render mỗi 4 phút để chống ngủ đông"""
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not app_url:
         return
     while True:
-        time.sleep(240)  # 4 phút ping 1 lần
+        time.sleep(240)
         try:
             requests.get(app_url, timeout=10)
             logging.info("Self-ping successful to keep server alive.")
@@ -943,10 +921,8 @@ def self_ping_thread():
 
 
 if __name__ == "__main__":
-    # Khởi chạy HTTP Server trên cổng 8080
+    # Khởi chạy HTTP Server nhẹ để chống ngủ đông trên Render
     threading.Thread(target=run_http_server, daemon=True).start()
-
-    # Khởi chạy luồng tự động Ping chống ngủ đông
     threading.Thread(target=self_ping_thread, daemon=True).start()
 
     print("🤖 Đang khởi tạo kết nối Telegram Bot kết hợp Gemini AI...")
