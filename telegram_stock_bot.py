@@ -238,7 +238,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP 4 LOGIC THÔNG MINH)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP ĐẦY ĐỦ CÁC LOGIC NÂNG CAO)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -288,15 +288,14 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     if close > sma200:
         long_term_trend = "UPTREND DÀI HẠN (Trên SMA200)"
-        vn_index_status = "TÍCH CỰC"
     else:
         long_term_trend = "DOWNTREND/PHỤC HỒI DÀI HẠN (Dưới SMA200)"
-        vn_index_status = "THẬN TRỌNG"
 
     confluence_points = []
     risk_warnings = []
 
     score = 0
+    # 1. Điểm Ichimoku Cloud
     if close > cloud_top:
         score += 25
         confluence_points.append("Giá nằm trên mây Kumo")
@@ -306,26 +305,29 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")
 
-    # LOGIC NÂNG CAO 2: ĐỊNH VỊ DÒNG TIỀN THÔNG MINH (SMART MONEY VS HOT MONEY)
+    # 2. LOGIC NÂNG CAO: ĐỊNH VỊ DÒNG TIỀN THÔNG MINH (SMART MONEY VS HOT MONEY)
     if cmf > 0.05 and mfi > 50:
         score += 20
         confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận tích lũy")
     elif rvol > 1.5 and cmf < 0:
-        score -= 10
+        score -= 15
         risk_warnings.append(f"Cảnh báo Dòng tiền đầu cơ (Hot Money): RVOL cao ({rvol:.2f}x) nhưng CMF âm ({cmf:.2f}) -> Dấu hiệu phân phối / nhỏ lẻ cọ xát.")
     elif cmf > 0 or mfi > 45:
         score += 10
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
-    # LOGIC NÂNG CAO 1: BỘ LỌC BẪY GIÁ (TRAP FILTER) & QUÁ MUA TOÀN DIỆN
+    # 3. LOGIC NÂNG CAO: BỘ LỌC BẪY GIÁ (TRAP FILTER) & PHÂN KỲ ĐỘNG LƯỢNG
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
     is_bear_trap = (rsi > 65 and stoch_rsi < 20)
     is_overbought_full = (stoch_rsi > 90 and rsi > 70)
 
     if is_bull_trap:
-        score -= 20
+        score -= 25
         risk_warnings.append(f"⚡ Phát hiện Bẫy giá (Bull Trap): RSI yếu ({rsi:.1f}) nhưng StochRSI quá mua ({stoch_rsi:.1f}) -> Nhịp hồi kỹ thuật dụ cầu rủi ro.")
+    elif is_bear_trap:
+        score += 10
+        confluence_points.append(f"⚡ Phát hiện Rũ bỏ (Bear Trap): RSI mạnh ({rsi:.1f}) nhưng StochRSI ép quá bán ({stoch_rsi:.1f}) -> Tín hiệu cướp hàng.")
     elif is_overbought_full:
         score -= 15
         risk_warnings.append(f"⚠️ Cảnh báo Quá mua toàn diện (RSI: {rsi:.1f}, StochRSI: {stoch_rsi:.1f}) -> Dư địa ngắn hạn cạn kiệt, rủi ro điều chỉnh cao.")
@@ -333,6 +335,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         score += 10
         confluence_points.append("Động lượng hài hòa, không quá cực đoan")
 
+    # 4. Điểm xu hướng SMA200 & MACD
     if close > sma200:
         score += 15
         confluence_points.append("Giá duy trì trên đường dài hạn SMA200")
@@ -347,7 +350,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     confidence_score = min(max(score, 10), 88)
 
-    # LOGIC NÂNG CAO 3: ĐỊNH VỊ VÙNG VOLUME PROFILE CHÍNH XÁC
+    # 5. LOGIC NÂNG CAO: ĐỊNH VỊ VÙNG VOLUME PROFILE CHÍNH XÁC
     is_below_val = (close < val)
     if is_below_val:
         zone_desc = f"Vùng **{fmt(val)} - {fmt(vah)}** (Giá hiện tại nằm dưới VAL): Trở thành **KHÁNG CỰ MẠNH** (vùng kẹp hàng lớn phía trên)."
@@ -358,8 +361,8 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         zone_desc = f"Vùng **{fmt(val)} - {fmt(poc)}**: Vùng nhạy cảm sát biên dưới Volume Profile."
 
-    # QUẢN TRỊ RỦI RO & PHÂN BỔ NAV
-    if confidence_score >= 65 and not is_below_val and close > cloud_bottom and not is_overbought_full:
+    # 6. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV
+    if confidence_score >= 65 and not is_below_val and close > cloud_bottom and not is_overbought_full and not is_bull_trap:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
@@ -371,7 +374,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         stop_loss = round(entry_avg * 0.93, 2)
         action_note = f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`."
         
-    elif confidence_score >= 45 and not is_bull_trap:
+    elif confidence_score >= 45 and not is_bull_trap and cmf >= -0.2:
         system_status = "QUAN SÁT / THẬN TRỌNG RUNG LẮC"
         nav_rec = "10 - 15% NAV (Thăm dò tỷ trọng nhỏ)"
         final_icon = f"🟡 **GIAO DỊCH THĂM DÒ / QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
@@ -386,14 +389,15 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
         nav_rec = "0% (Giữ tiền mặt)"
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Thị trường đối mặt rủi ro quá mua toàn diện hoặc bẫy giá tăng trưởng. Đứng ngoài bảo toàn vốn."
+        final_action = f"Thị trường đối mặt rủi ro dòng tiền rút, bẫy giá hoặc nằm dưới vùng giá trị Volume Profile. Đứng ngoài bảo toàn vốn."
         action_note = f"Tuyệt đối không giải ngân mua mới. Canh các nhịp hồi kỹ thuật để cơ cấu danh mục, bảo toàn dòng tiền mặt."
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
 
-    if is_below_val and cmf < 0:
-        sec5_action = "⚠️ **Kịch bản Rủi ro dòng tiền rút:** Giá nằm dưới vùng giá trị thấp (VAL) kết hợp CMF âm cho thấy bên bán đang chiếm ưu thế hoàn toàn. Tuyệt đối không bắt đáy sớm, ưu tiên quản trị tiền mặt."
+    # LOGIC NÂNG CAO: PHÂN LOẠI KỊCH BẢN CHÍNH XÁC TẠI MỤC 5
+    if (is_below_val and cmf < 0) or cmf < -0.20 or close < cloud_bottom:
+        sec5_action = "⚠️ **Kịch bản Rủi ro dòng tiền rút:** Cấu trúc xu hướng suy yếu hoặc CMF âm nặng cho thấy bên bán đang chiếm ưu thế hoàn toàn. Tuyệt đối không bắt đáy sớm, ưu tiên quản trị tiền mặt."
     elif is_bull_trap:
         sec5_action = "⚡ **Kịch bản Bẫy giá ngắn hạn (Bull Trap):** Động lượng StochRSI quá mua trong khi RSI thực tế rất yếu, rủi ro điều chỉnh mạnh kiểm định lại hỗ trợ dưới."
     elif is_overbought_full:
@@ -418,14 +422,16 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Cấu trúc dài hạn/động lượng phân hóa, cần tuân thủ kỷ luật phòng thủ.\n\n"
 
-    # MỤC 2 (ĐÃ TÍCH HỢP LOGIC NHẬN DIỆN BẪY GIÁ CHUẨN XÁC)
+    # MỤC 2 (ĐỒNG BỘ NỘI DUNG VỚI TRẠNG THÁI QUẢN TRỊ RỦI RO)
     text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG (RSI & StochRSI):\n"
     text_part1 += f"• Thông số mây: {ichi_status}\n"
     text_part1 += f"• Động lượng ngắn/trung hạn: RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
     text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** "
-    if is_bull_trap:
-        text_part1 += f"Phát hiện bẫy giá (Bull Trap). Nhịp hồi kỹ thuật rủi ro cao, tuyệt đối không mua đuổi bắt đáy.\n\n"
+    if system_status == "ĐỨNG NGOÀI (BẢO TOÀN VỐN)":
+        text_part1 += f"Thế nến yếu hoặc động lượng cảnh báo bẫy giá. Tiếp tục quan sát, tuyệt đối không mở vị thế bắt đáy.\n\n"
+    elif is_bull_trap:
+        text_part1 += f"Phát hiện bẫy giá (Bull Trap). Nhịp hồi kỹ thuật rủi ro cao, không mua đuổi bắt đáy.\n\n"
     elif is_overbought_full:
         text_part1 += f"Động lượng quá mua toàn diện, ưu tiên quan sát bảo toàn vị thế, không mở mua mới.\n\n"
     else:
@@ -970,7 +976,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Dynamic Quant Bot with Smart Logic Rules is running live!")
+        self.wfile.write(b"Dynamic Quant Bot with Ultra Smart Rules is running live!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1015,5 +1021,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng với bộ logic thông minh hoàn chỉnh!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng với bộ logic thông minh tối ưu hoàn chỉnh!")
     app.run_polling(drop_pending_updates=True)
