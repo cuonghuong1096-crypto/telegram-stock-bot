@@ -338,18 +338,15 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Thanh khoản cạn kiệt/thấp ({rvol:.2f}x)")
 
-    # --- KIỂM TRA ĐIỀU KIỆN QUÁ MUA (OVERBOUGHT) ĐỂ KHẮC PHỤC MÂU THUẪN MUA ĐUỔI ---
+    # Kiểm tra điều kiện Quá mua để khắc phục mâu thuẫn mua đuổi
     is_overbought = (rsi > 70 or stoch_rsi > 90 or close > bb_upper)
     if is_overbought:
         score -= 20
         risk_warnings.append(f"Cảnh báo Quá mua cực đoan (RSI: {rsi:.1f}, StochRSI: {stoch_rsi:.1f}, Vượt Bollinger Trên)")
 
-    # Giới hạn điểm số thực tế (Không dùng mốc 98% ảo nếu đang quá mua)
     confidence_score = min(max(score, 10), 90 if not is_overbought else 65)
 
-    # --- TỐI ƯU ĐIỂM GIẢI NGÂN & STOPLOSS (TRÁNH MÂU THUẪN) ---
     if is_overbought:
-        # Nếu quá mua, khuyến nghị đợi giá check lại hỗ trợ Kijun hoặc VAL thay vì mua đuổi giá hiện tại
         entry_1 = round(min(kijun, val), 2)
         entry_2 = round(val, 2)
         entry_avg = round((entry_1 + entry_2) / 2, 2)
@@ -360,7 +357,6 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     stop_loss = round(entry_avg * 0.935, 2)
 
-    # Đánh giá trạng thái hệ thống chuẩn xác dựa trên điểm số và trạng thái quá mua
     if confidence_score >= 70 and not is_overbought and close > cloud_bottom:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
@@ -372,7 +368,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         nav_rec = "10 - 15% NAV (Thăm dò tỷ trọng nhỏ)"
         is_standing_aside = False
         final_icon = f"🟡 **THẬN TRỌNG / CHỜ ĐIỀU CHỈNH (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Thị trường ngắn hạn đã vào vùng Quá Mua / Hưng phấn. **TUYỆT ĐỐI KHÔNG MUA ĐUỔI**, kiên nhẫn chờ giá test lại đường Kijun-sen (`{fmt(kijun)}`) hoặc mây hỗ trợ."
+        final_action = f"Thị trường ngắn hạn đã vào vùng Quá Mua. **TUYỆT ĐỐI KHÔNG MUA ĐUỔI**, kiên nhẫn chờ giá test lại đường Kijun-sen (`{fmt(kijun)}`) hoặc mây hỗ trợ."
     else:
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
         nav_rec = "0% (Giữ tiền mặt)"
@@ -380,11 +376,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Cấu trúc rủi ro cao hoặc tín hiệu suy yếu. Đứng ngoài bảo toàn 100% vốn chờ nhịp chiết khấu an toàn hơn."
 
-    # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
-    # MỤC 1
     text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n"
     text_part1 += f"• Thông số: VN-Index ({vn_index_status}) | Cấu trúc: {market_structure}\n"
     text_part1 += f"• Chỉ báo: CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x | RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n"
@@ -395,7 +389,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Dòng tiền và độ dốc xu hướng còn yếu, tập trung kiểm soát rủi ro vị thế.\n\n"
 
-    # MỤC 2
     text_part1 += f"☁️ 2. CHỈ BÁO ICHIMOKU & ĐỘNG LƯỢNG:\n"
     text_part1 += f"• Thông số mây: {ichi_status}\n"
     text_part1 += f"• Đường cơ sở: Tenkan-sen: {fmt(tenkan)} | Kijun-sen: {fmt(kijun)}\n"
@@ -408,7 +401,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giá biến động đi ngang trong mây, dao động biên độ hẹp, kiên nhẫn chờ tín hiệu thoát mây Kumo (`{fmt(cloud_top)}`).\n\n"
 
-    # MỤC 3
     text_part1 += f"📊 3. VOLUME PROFILE & CÂN ĐỐI KHỐI LƯỢNG:\n"
     text_part1 += f"• Thông số: POC (Khớp nhiều nhất): {fmt(poc)}\n"
     text_part1 += f"• Vùng giá giao dịch: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
@@ -418,7 +410,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Giá ({fmt(close)}) vận động trong Volume Profile, lực cầu ổn định tại dải **{fmt(val)} - {fmt(poc)}**.\n\n"
 
-    # MỤC 4
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
@@ -428,9 +419,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part1 += f"Chờ mua quanh mốc an toàn `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
 
-    # --- PHẦN 2: MỤC 5, 6 & 7 ---
     text_part2 = ""
-    # MỤC 5
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa xuất hiện tín hiệu hội tụ đủ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
@@ -438,7 +427,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo rủi ro: {warn_str}\n"
     text_part2 += f"👉 **Kết luận & Hành động:** Tuân thủ kỷ luật giao dịch, tránh mua đuổi khi chỉ báo kỹ thuật phát tín hiệu quá mua.\n\n"
 
-    # MỤC 6
     text_part2 += f"📈 6. ĐỘNG LƯỢNG & QUÁ MUA/QUÁ BÁN BỔ SUNG:\n"
     text_part2 += f"• MACD: Line: {macd:.2f} | Signal: {macd_signal:.2f} | Hist: {macd_hist:+.2f}\n"
     bien_bb = "Thắt cổ chai (Squeeze - Chuẩn bị bứt phá)" if bb_width < 0.05 else "Biên độ ổn định / Mở rộng"
@@ -449,7 +437,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         text_part2 += f"Động lượng MACD Histogram tích cực, biên độ giá ổn định, dư địa tăng trưởng còn mở ra.\n\n"
 
-    # MỤC 7
     text_part2 += f"🏁 7. TỔNG KẾT CHIẾN LƯỢC TỔNG HỢP:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng quyết định: {final_action}"
@@ -988,5 +975,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã được tối ưu hóa toàn diện!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng chạy trực tiếp!")
     app.run_polling(drop_pending_updates=True)
