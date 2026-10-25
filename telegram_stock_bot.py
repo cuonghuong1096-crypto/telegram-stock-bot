@@ -190,7 +190,7 @@ def calculate_indicators(df):
     df["Tenkan_sen"] = (nine_high + nine_low) / 2
 
     twenty_six_high = df["High"].rolling(window=26).max()
-    twenty_six_low = df["High"].rolling(window=26).min()
+    twenty_six_low = df["Low"].rolling(window=26).min()
     df["Kijun_sen"] = (twenty_six_high + twenty_six_low) / 2
 
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
@@ -238,7 +238,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (CHUẨN HÓA LOGIC MỚI)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -354,37 +354,47 @@ def analyze_stock(symbol, resolution="D", count=250):
     elif close > vah:
         zone_desc = f"Vùng **{fmt(poc)} - {fmt(vah)}** (Giá hiện tại nằm trên VAH): Trở thành **HỖ TRỢ NỀN VỮNG CHẮC**."
     else:
-        zone_desc = f"Vùng **{fmt(val)} - {fmt(poc)}**: Lực cầu đỡ giá dao động trong biên độ Volume Profile."
+        zone_desc = f"Vùng **{fmt(val)} - {fmt(poc)}**: Vùng nhạy cảm sát biên dưới Volume Profile."
 
-    entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
-    entry_2 = round(val if is_below_val else close, 2)
-    entry_avg = round((entry_1 + entry_2) / 2, 2)
-    stop_loss = round(entry_avg * 0.93, 2)
-
+    # --- CHUẨN HÓA LOGIC QUẢN TRỊ RỦI RO (QUY TẮC CHỐNG NGƯỢC GIÁ STOPLOSS) ---
     if confidence_score >= 65 and not is_below_val and close > cloud_bottom:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         is_standing_aside = False
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
+        
+        entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
+        entry_2 = round(val if is_below_val else close, 2)
+        entry_avg = round((entry_1 + entry_2) / 2, 2)
+        stop_loss = round(entry_avg * 0.93, 2) # Stoploss luôn nằm dưới giá hiện tại khi ở vị thế mua
+        action_note = f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`."
+        
     elif confidence_score >= 45:
         system_status = "QUAN SÁT / THẬN TRỌNG RUNG LẮC"
         nav_rec = "10 - 15% NAV (Thăm dò tỷ trọng nhỏ)"
         is_standing_aside = False
         final_icon = f"🟡 **GIAO DỊCH THĂM DÒ / QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Tồn tại mâu thuẫn chỉ báo hoặc kháng cự Volume Profile. **Kiên nhẫn chờ chiết khấu an toàn** hoặc test đường Kijun-sen (`{fmt(kijun)}`)."
+        
+        entry_1 = round(close * 0.97, 2)
+        entry_2 = round(close, 2)
+        entry_avg = round((entry_1 + entry_2) / 2, 2)
+        stop_loss = round(entry_avg * 0.93, 2)
+        action_note = f"Thăm dò tỷ trọng nhỏ quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, quản trị rủi ro chặt với Stoploss tại `{fmt(stop_loss)}`."
     else:
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
         nav_rec = "0% (Giữ tiền mặt)"
         is_standing_aside = True
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
         final_action = f"Giá nằm dưới vùng giá trị Volume Profile (đối mặt kháng cự dày đặc). Đứng ngoài bảo toàn vốn."
+        # Khi đứng ngoài / downtrend dài hạn, không đưa ra vùng giải ngân và điểm mua mâu thuẫn
+        action_note = f"Tuyệt đối không giải ngân mua mới. Canh các nhịp hồi kỹ thuật để cơ cấu danh mục, bảo toàn dòng tiền mặt."
 
     # --- ĐỘNG NẠP LOGIC PHẦN 5: ĐA DẠNG HÓA KỊCH BẢN PHÂN TÍCH TỪNG TRƯỜNG HỢP ---
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ mạnh"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
 
-    # Tạo đa dạng trường hợp kết luận cho phần 5 dựa trên thực tế chỉ báo tổng hợp
     if is_below_val and cmf < 0:
         sec5_action = "⚠️ **Kịch bản Rủi ro dòng tiền rút:** Giá nằm dưới vùng giá trị thấp (VAL) kết hợp CMF âm cho thấy bên bán đang chiếm ưu thế hoàn toàn. Tuyệt đối không bắt đáy sớm, ưu tiên quản trị tiền mặt."
     elif is_rsi_neutral and is_stoch_overbought:
@@ -394,7 +404,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Thị trường chưa có xu hướng rõ ràng, tín hiệu điểm cộng và rủi ro đan xen. Cần tuân thủ kỷ luật giao dịch, tránh mua đuổi bằng mọi giá."
 
-    # --- PHẦN 1: MỤC 1 ĐẾN MỤC 4 ---
+    # --- XÂY DỰNG BẢN TIN PHẦN 1 & PHẦN 2 ---
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -426,13 +436,13 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Vùng giá trị: VAL: {fmt(val)} | VAH: {fmt(vah)}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {zone_desc}\n\n"
 
-    # MỤC 4
+    # MỤC 4 (ĐÃ ĐỒNG BỘ CHẶT CHẼ TRẠNG THÁI NAV VÀ HÀNH ĐỘNG - CHỐNG MÂU THUẪN)
     text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & PHÂN BỔ NAV:\n"
     text_part1 += f"• Trạng thái khuyến nghị: {system_status}\n"
     text_part1 += f"• Tỷ trọng phân bổ NAV: {nav_rec}\n"
-    text_part1 += f"👉 **Kết luận & Hành động:** Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, cài đặt Stoploss bắt buộc tại mốc `{fmt(stop_loss)}`.\n\n"
+    text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
 
-    # --- PHẦN 2: MỤC 5, 6 & 7 (ĐÃ TÙY CHỈNH MỤC 5 LINH HOẠT, ĐA DẠNG) ---
+    # PHẦN 2
     text_part2 = ""
     text_part2 += f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     text_part2 += f"• Điểm cộng kỹ thuật: {conf_str}\n"
@@ -956,7 +966,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Dynamic Quant Bot with Multi-Case Section 5 is running live!")
+        self.wfile.write(b"Dynamic Quant Bot with Unified Logic Rules is running live!")
 
 
 def run_http_server():
@@ -984,5 +994,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật logic phần 5 đa dạng trường hợp!")
+    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật các quy tắc logic chuẩn hóa!")
     app.run_polling(drop_pending_updates=True)
