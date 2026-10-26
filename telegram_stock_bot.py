@@ -296,7 +296,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ & TÍCH HỢP BẪY GIÁ
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -384,30 +384,29 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
-    # ==========================================
-    # TÍCH HỢP NHẬN DIỆN TOÀN DIỆN CÁC LOẠI BẪY GIÁ
-    # ==========================================
+    # XÁC ĐỊNH CÁC LOẠI BẪY GIÁ CHUYÊN SÂU
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
     is_bear_trap = (rsi > 65 and stoch_rsi < 20)
-    is_overbought_full = (stoch_rsi > 90 and rsi > 70)
     is_exhaustion_trap = (lr_slope > 0 and macd_hist < 0)
+    is_overbought_full = (stoch_rsi > 90 and rsi > 70)
 
+    trap_list = []
     if is_bull_trap:
         score -= 25
-        risk_warnings.append("⚡ [BẪY TĂNG GIẢ - BULL TRAP]: Kéo giá ảo, xung lực ngắn hạn suy yếu rủi ro cao.")
+        trap_list.append("⚡ [BẪY TĂNG GIẢ - BULL TRAP]: Kéo giá ảo, xung lực ngắn hạn suy yếu.")
     if is_bear_trap:
         score += 10
-        confluence_points.append("⚡ [BẪY GIẢM GIẢ - BEAR TRAP / SHAKEOUT]: Nhịp đạp rũ bỏ kỹ thuật để gom hàng.")
+        trap_list.append("⚡ [BẪY GIẢM GIẢ - BEAR TRAP / SHAKEOUT]: Nhịp đạp rũ bỏ kỹ thuật để gom hàng.")
     if is_exhaustion_trap:
         score -= 10
-        risk_warnings.append("⚠️ [BẪY KIỆT SỨC - EXHAUSTION TRAP]: Giá rướn tăng nhưng Histogram MACD đã suy yếu.")
+        trap_list.append("⚠️ [BẪY KIỆT SỨC - EXHAUSTION TRAP]: Giá rướn tăng nhưng Histogram MACD suy yếu.")
     if is_overbought_full:
         score -= 15
-        risk_warnings.append("⚠️ Cảnh báo Quá mua toàn diện")
+        trap_list.append("⚠️ [QUÁ MUA TOÀN DIỆN]: Rủi ro hưng phấn cực độ.")
 
-    if not is_bull_trap and not is_bear_trap and not is_exhaustion_trap and not is_overbought_full:
-        score += 10
-        confluence_points.append("Động lượng hài hòa, không quá cực đoan")
+    if not trap_list:
+        trap_list.append("🛡️ Không phát hiện cấu trúc bẫy giá nguy hiểm đáng kể.")
+    trap_desc = " | ".join(trap_list)
 
     if close > sma200:
         score += 15
@@ -478,6 +477,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Tín hiệu đan xen, tuân thủ kỷ luật."
 
+    # Xây dựng các phần báo cáo hiển thị chi tiết
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -499,15 +499,20 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Khuyến nghị: {system_status} | NAV: {nav_rec}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
 
-    text_part2 = f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO (QUÉT BẪY GIÁ):\n"
+    # THÊM MỤC 5: NHẬN DIỆN BẪY GIÁ TRONG PHÂN TÍCH CHI TIẾT
+    text_part2 = f"⚡ 5. NHẬN DIỆN BẪY GIÁ (MARKET TRAPS):\n"
+    text_part2 += f"• Đánh giá: {trap_desc}\n"
+    text_part2 += f"👉 **Lời khuyên chuyên gia:** Luôn kiểm chứng khối lượng và lực cầu cuối phiên để tránh sập bẫy tạo lập.\n\n"
+
+    text_part2 += f"⚡ 6. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     text_part2 += f"• Điểm cộng: {conf_str}\n"
-    text_part2 += f"• Cảnh báo & Bẫy giá: {warn_str}\n"
+    text_part2 += f"• Cảnh báo: {warn_str}\n"
     text_part2 += f"👉 **Kết luận:** {sec5_action}\n\n"
 
-    text_part2 += f"📈 6. DÃI BOLINGER BANDS:\n"
+    text_part2 += f"📈 7. DÃI BOLINGER BANDS:\n"
     text_part2 += f"• Trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Độ rộng: {bb_width:.3f}\n\n"
 
-    text_part2 += f"🏁 7. TỔNG KẾT CHIẾN LƯỢC:\n"
+    text_part2 += f"🏁 8. TỔNG KẾT CHIẾN LƯỢC:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng: {final_action}"
 
@@ -571,13 +576,16 @@ def run_market_screener():
         ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
         vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else volume
         
+        # 1. LỌC THANH KHOẢN TỐI THIỂU: Giá trị giao dịch trung bình 20 phiên >= 5 Tỷ VNĐ
         avg_trading_value = vol_sma20 * close * 1000
         if avg_trading_value < 5_000_000_000:
             continue
             
+        # 2. CHỐNG BREAKOUT GIẢ (CỤT ĐẦU): Giá đóng cửa nằm ở nửa trên biên độ ngày
         price_range = high - low
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
+        # 3. TIÊU CHÍ DÒNG TIỀN & XU HƯỚNG CHUẨN
         if rvol >= 1.25 and cmf > 0.03 and close > ema50 and adx >= 20 and is_solid_candle:
             score = (rvol * 2.5) + (cmf * 6) + (adx * 0.15)
             results.append({
@@ -600,6 +608,7 @@ def background_scheduler_thread(application):
         now = datetime.datetime.now()
         today_date = now.date()
 
+        # 1. GIÁM SÁT REAL-TIME ĐA MỐC GIÁ CHO MỖI MÃ
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -625,6 +634,7 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
+        # 2. BẢN TIN TỰ ĐỘNG DÒNG TIỀN LÚC 14:15 HÀNG NGÀY
         if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -639,6 +649,7 @@ def background_scheduler_thread(application):
                             pass
             time.sleep(70)
 
+        # 3. TỰ ĐỘNG TỔNG HỢP & ĐẨY BÁO CÁO SAU KHI ĐÓNG CỬA (LÚC 15:00 HÀNG NGÀY)
         if now.weekday() < 5 and now.hour == 15 and now.minute == 0:
             if sent_daily_report_today != today_date and USER_PORTFOLIOS:
                 sent_daily_report_today = today_date
@@ -771,7 +782,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "5️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Bot tự động quét bẫy giá (Bull/Bear/Exhaustion Trap) và gửi báo cáo cuối phiên lúc **15:00 hàng ngày**!"
+        "📌 **Tính năng mới:** Bot tích hợp nhận diện **Bẫy giá (Market Traps)** vào báo cáo phân tích chi tiết!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1050,5 +1061,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tích hợp bộ lọc bẫy giá chuyên sâu!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng với bộ lọc dòng tiền & nhận diện Bẫy giá!")
     app.run_polling(drop_pending_updates=True)
+
