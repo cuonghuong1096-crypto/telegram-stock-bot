@@ -556,7 +556,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST
+# 3. MODULE SCAN, SMART-BUY & BACKTEST (TỐI ƯU ĐA LUỒNG)
 # ==========================================
 def run_market_screener():
     results = []
@@ -599,18 +599,17 @@ def run_market_screener():
     return results[:8]
 
 
-def run_smart_buy_screener():
-    buy_recommendations = []
-    for symbol in WATCHLIST_SCAN:
+def process_single_stock_for_autobuy(symbol):
+    """Hàm phụ trợ phân tích một mã độc lập để chạy đa luồng siêu tốc"""
+    try:
         df, err = fetch_stock_data(symbol, resolution="D", count=300)
         if err or df.empty or len(df) < 50:
-            continue
+            return None
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
         close = last["Close"]
         cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
         rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
         adx = last["ADX"] if not np.isnan(last["ADX"]) else 20.0
         macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
@@ -625,7 +624,7 @@ def run_smart_buy_screener():
         vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
         avg_trading_value = vol_sma20 * close * 1000
         if avg_trading_value < 5_000_000_000: 
-            continue
+            return None
 
         # Chấm điểm kỹ thuật chuẩn xác theo hệ thống chiến lược
         score = 50
@@ -658,7 +657,7 @@ def run_smart_buy_screener():
             entry_price = round(max(val, close * 0.98), 2)
             stop_loss = round(entry_price - (1.5 * atr), 2)
             
-            buy_recommendations.append({
+            return {
                 "symbol": symbol,
                 "close": close,
                 "score": score,
@@ -666,7 +665,21 @@ def run_smart_buy_screener():
                 "rvol": rvol,
                 "entry": entry_price,
                 "stop_loss": stop_loss
-            })
+            }
+    except Exception:
+        pass
+    return None
+
+
+def run_smart_buy_screener():
+    buy_recommendations = []
+    # Quét song song 10 mã một lúc bằng ThreadPoolExecutor giúp giảm thời gian chờ tối đa
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
+        for future in futures:
+            result = future.result()
+            if result:
+                buy_recommendations.append(result)
 
     buy_recommendations = sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)
     return buy_recommendations[:5]
@@ -865,7 +878,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Đã bổ sung nút bấm và lệnh `/autobuy` giúp chọn lọc điểm mua giải ngân tối ưu!"
+        "📌 **Tính năng mới:** Đã bổ sung nút bấm và lệnh `/autobuy` chạy đa luồng siêu tốc giúp chọn lọc điểm mua giải ngân tối ưu!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -874,7 +887,6 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
     
-    # Kiểm tra xem gọi từ tin nhắn lệnh hay từ callback query
     if update.message:
         msg = await update.message.reply_text("🤖 **Đang phân tích đa khung & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
     else:
@@ -1218,7 +1230,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Smart Auto-Buy Screener is running!")
+        self.wfile.write(b"Quant Bot with Fast Multi-Threaded Auto-Buy is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1259,5 +1271,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tích hợp bộ lọc thông minh /autobuy!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tối ưu đa luồng cho /autobuy!")
     app.run_polling(drop_pending_updates=True)
