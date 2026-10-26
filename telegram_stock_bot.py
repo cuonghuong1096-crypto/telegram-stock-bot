@@ -296,7 +296,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ & TÍCH HỢP BẪY GIÁ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -384,20 +384,28 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
+    # ==========================================
+    # TÍCH HỢP NHẬN DIỆN TOÀN DIỆN CÁC LOẠI BẪY GIÁ
+    # ==========================================
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
     is_bear_trap = (rsi > 65 and stoch_rsi < 20)
     is_overbought_full = (stoch_rsi > 90 and rsi > 70)
+    is_exhaustion_trap = (lr_slope > 0 and macd_hist < 0)
 
     if is_bull_trap:
         score -= 25
-        risk_warnings.append(f"⚡ Phát hiện Bẫy giá (Bull Trap)")
-    elif is_bear_trap:
+        risk_warnings.append("⚡ [BẪY TĂNG GIẢ - BULL TRAP]: Kéo giá ảo, xung lực ngắn hạn suy yếu rủi ro cao.")
+    if is_bear_trap:
         score += 10
-        confluence_points.append(f"⚡ Phát hiện Rũ bỏ (Bear Trap)")
-    elif is_overbought_full:
+        confluence_points.append("⚡ [BẪY GIẢM GIẢ - BEAR TRAP / SHAKEOUT]: Nhịp đạp rũ bỏ kỹ thuật để gom hàng.")
+    if is_exhaustion_trap:
+        score -= 10
+        risk_warnings.append("⚠️ [BẪY KIỆT SỨC - EXHAUSTION TRAP]: Giá rướn tăng nhưng Histogram MACD đã suy yếu.")
+    if is_overbought_full:
         score -= 15
-        risk_warnings.append(f"⚠️ Cảnh báo Quá mua toàn diện")
-    else:
+        risk_warnings.append("⚠️ Cảnh báo Quá mua toàn diện")
+
+    if not is_bull_trap and not is_bear_trap and not is_exhaustion_trap and not is_overbought_full:
         score += 10
         confluence_points.append("Động lượng hài hòa, không quá cực đoan")
 
@@ -491,9 +499,9 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Khuyến nghị: {system_status} | NAV: {nav_rec}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
 
-    text_part2 = f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
+    text_part2 = f"⚡ 5. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO (QUÉT BẪY GIÁ):\n"
     text_part2 += f"• Điểm cộng: {conf_str}\n"
-    text_part2 += f"• Cảnh báo: {warn_str}\n"
+    text_part2 += f"• Cảnh báo & Bẫy giá: {warn_str}\n"
     text_part2 += f"👉 **Kết luận:** {sec5_action}\n\n"
 
     text_part2 += f"📈 6. DÃI BOLINGER BANDS:\n"
@@ -557,10 +565,21 @@ def run_market_screener():
         cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
         adx = last["ADX"] if not np.isnan(last["ADX"]) else 20.0
         close = last["Close"]
+        high = last["High"]
+        low = last["Low"]
+        volume = last["Volume"]
         ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
+        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else volume
         
-        if rvol >= 1.25 and cmf > 0.02 and close > ema50 and adx >= 20:
-            score = (rvol * 2) + (cmf * 5) + (adx * 0.1)
+        avg_trading_value = vol_sma20 * close * 1000
+        if avg_trading_value < 5_000_000_000:
+            continue
+            
+        price_range = high - low
+        is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
+
+        if rvol >= 1.25 and cmf > 0.03 and close > ema50 and adx >= 20 and is_solid_candle:
+            score = (rvol * 2.5) + (cmf * 6) + (adx * 0.15)
             results.append({
                 "symbol": symbol,
                 "close": close,
@@ -581,7 +600,6 @@ def background_scheduler_thread(application):
         now = datetime.datetime.now()
         today_date = now.date()
 
-        # 1. GIÁM SÁT REAL-TIME ĐA MỐC GIÁ CHO MỖI MÃ
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -607,7 +625,6 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
-        # 2. BẢN TIN TỰ ĐỘNG DÒNG TIỀN LÚC 14:15 HÀNG NGÀY
         if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -622,7 +639,6 @@ def background_scheduler_thread(application):
                             pass
             time.sleep(70)
 
-        # 3. TỰ ĐỘNG TỔNG HỢP & ĐẨY BÁO CÁO SAU KHI ĐÓNG CỬA (LÚC 15:00 HÀNG NGÀY)
         if now.weekday() < 5 and now.hour == 15 and now.minute == 0:
             if sent_daily_report_today != today_date and USER_PORTFOLIOS:
                 sent_daily_report_today = today_date
@@ -667,7 +683,7 @@ def background_scheduler_thread(application):
                         except Exception:
                             pass
                 
-                time.sleep(70) # Tránh lặp lại trong phút 15:00
+                time.sleep(70)
         
         time.sleep(30)
 
@@ -755,7 +771,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "5️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Bot sẽ tự động đẩy báo cáo tổng kết danh mục vào **15:00 hàng ngày** sau khi đóng cửa phiên giao dịch!"
+        "📌 **Tính năng mới:** Bot tự động quét bẫy giá (Bull/Bear/Exhaustion Trap) và gửi báo cáo cuối phiên lúc **15:00 hàng ngày**!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -996,7 +1012,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Auto Daily Closing Report is running!")
+        self.wfile.write(b"Quant Bot with Trap Detection & Optimized Screener is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1034,5 +1050,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tính năng tự động báo cáo cuối phiên!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tích hợp bộ lọc bẫy giá chuyên sâu!")
     app.run_polling(drop_pending_updates=True)
