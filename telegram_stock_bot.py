@@ -41,7 +41,7 @@ logging.basicConfig(
 WATCHLIST_SCAN = [
     "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
-    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG"
+    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG", "BSR"
 ]
 
 ACTIVE_CHAT_IDS = set()
@@ -384,7 +384,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
-    # XÁC ĐỊNH CÁC LOẠI BẪY GIÁ CHUYÊN SÂU
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
     is_bear_trap = (rsi > 65 and stoch_rsi < 20)
     is_exhaustion_trap = (lr_slope > 0 and macd_hist < 0)
@@ -477,7 +476,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Tín hiệu đan xen, tuân thủ kỷ luật."
 
-    # Xây dựng các phần báo cáo hiển thị chi tiết
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n\n"
 
@@ -499,7 +497,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Khuyến nghị: {system_status} | NAV: {nav_rec}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
 
-    # MỤC 5: NHẬN DIỆN BẪY GIÁ TRONG PHÂN TÍCH CHI TIẾT
     text_part2 = f"⚡ 5. NHẬN DIỆN BẪY GIÁ (MARKET TRAPS):\n"
     text_part2 += f"• Đánh giá: {trap_desc}\n"
     text_part2 += f"👉 **Lời khuyên chuyên gia:** Luôn kiểm chứng khối lượng và lực cầu cuối phiên để tránh sập bẫy tạo lập.\n\n"
@@ -525,7 +522,8 @@ def analyze_stock(symbol, resolution="D", count=250):
             InlineKeyboardButton("📈 1W", callback_data=f"{symbol}|W|250"),
         ],
         [
-            InlineKeyboardButton("📂 Xem Toàn Bộ Mức Cài Đặt", callback_data="show_all_settings"),
+            InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("📂 Cài Đặt / Portfolio", callback_data="show_all_settings"),
         ],
         [
             InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
@@ -558,7 +556,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN & BACKTEST & REALTIME ALERTS
+# 3. MODULE SCAN, SMART-BUY & BACKTEST
 # ==========================================
 def run_market_screener():
     results = []
@@ -579,16 +577,13 @@ def run_market_screener():
         ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
         vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else volume
         
-        # 1. LỌC THANH KHOẢN TỐI THIỂU: Giá trị giao dịch trung bình 20 phiên >= 5 Tỷ VNĐ
         avg_trading_value = vol_sma20 * close * 1000
         if avg_trading_value < 5_000_000_000:
             continue
             
-        # 2. CHỐNG BREAKOUT GIẢ (CỤT ĐẦU): Giá đóng cửa nằm ở nửa trên biên độ ngày
         price_range = high - low
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
-        # 3. TIÊU CHÍ DÒNG TIỀN & XU HƯỚNG CHUẨN
         if rvol >= 1.25 and cmf > 0.03 and close > ema50 and adx >= 20 and is_solid_candle:
             score = (rvol * 2.5) + (cmf * 6) + (adx * 0.15)
             results.append({
@@ -604,6 +599,79 @@ def run_market_screener():
     return results[:8]
 
 
+def run_smart_buy_screener():
+    buy_recommendations = []
+    for symbol in WATCHLIST_SCAN:
+        df, err = fetch_stock_data(symbol, resolution="D", count=300)
+        if err or df.empty or len(df) < 50:
+            continue
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        close = last["Close"]
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        adx = last["ADX"] if not np.isnan(last["ADX"]) else 20.0
+        macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+        rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
+        stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
+        
+        span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
+        span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
+        cloud_top = max(span_a, span_b)
+        cloud_bottom = min(span_a, span_b)
+        
+        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
+        avg_trading_value = vol_sma20 * close * 1000
+        if avg_trading_value < 5_000_000_000: 
+            continue
+
+        # Chấm điểm kỹ thuật chuẩn xác theo hệ thống chiến lược
+        score = 50
+        if close > cloud_top:
+            score += 20
+        elif close >= cloud_bottom:
+            score += 10
+        else:
+            score -= 15
+
+        if cmf > 0.03:
+            score += 15
+        if rvol > 1.1:
+            score += 10
+        if macd_hist > 0:
+            score += 15
+        if adx >= 20:
+            score += 10
+
+        # Kiểm tra bẫy giá giả
+        is_bull_trap = (rsi < 40 and stoch_rsi > 80)
+        if is_bull_trap:
+            score -= 30
+
+        # Lọc các mã đạt chuẩn giải ngân an toàn (Score >= 65)
+        if score >= 65 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap:
+            atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
+            poc, vah, val = calculate_volume_profile(df)
+            
+            entry_price = round(max(val, close * 0.98), 2)
+            stop_loss = round(entry_price - (1.5 * atr), 2)
+            
+            buy_recommendations.append({
+                "symbol": symbol,
+                "close": close,
+                "score": score,
+                "cmf": cmf,
+                "rvol": rvol,
+                "entry": entry_price,
+                "stop_loss": stop_loss
+            })
+
+    buy_recommendations = sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)
+    return buy_recommendations[:5]
+
+
 def background_scheduler_thread(application):
     sent_daily_report_today = None
 
@@ -611,7 +679,6 @@ def background_scheduler_thread(application):
         now = datetime.datetime.now()
         today_date = now.date()
 
-        # 1. GIÁM SÁT REAL-TIME ĐA MỐC GIÁ (CANH MUA & STOP LOSS TÁCH BIỆT)
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -619,7 +686,6 @@ def background_scheduler_thread(application):
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         
-                        # A. Kiểm tra cảnh báo Canh Mua
                         buy_prices = pos.get("buy_alert_prices", [])
                         for buy_price in buy_prices:
                             buy_trigger_key = f"{chat_id}_{symbol}_buy_{buy_price}_{today_date}"
@@ -636,7 +702,6 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
-                        # B. Kiểm tra cảnh báo Stop Loss (Cắt lỗ)
                         stop_prices = pos.get("stop_alert_prices", [])
                         for stop_price in stop_prices:
                             stop_trigger_key = f"{chat_id}_{symbol}_stop_{stop_price}_{today_date}"
@@ -653,7 +718,6 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
-        # 2. BẢN TIN TỰ ĐỘNG DÒNG TIỀN LÚC 14:15 HÀNG NGÀY
         if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -668,7 +732,6 @@ def background_scheduler_thread(application):
                             pass
             time.sleep(70)
 
-        # 3. TỰ ĐỘNG TỔNG HỢP & ĐẨY BÁO CÁO SAU KHI ĐÓNG CỬA (LÚC 15:00 HÀNG NGÀY)
         if now.weekday() < 5 and now.hour == 15 and now.minute == 0:
             if sent_daily_report_today != today_date and USER_PORTFOLIOS:
                 sent_daily_report_today = today_date
@@ -679,7 +742,6 @@ def background_scheduler_thread(application):
                         
                     report_text = f"📊 **BÁO CÁO TỔNG KẾT CUỐI PHIÊN GIAO DỊCH** ({now.strftime('%d/%m/%Y')})\n"
                     report_text += "------------------------------------\n"
-                    
                     total_pnl_vnd = 0
                     has_data = False
                     
@@ -791,20 +853,56 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
-        "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `PLX`)\n\n"
-        "2️⃣ **Cài đặt canh MUA (Real-Time):**\n"
-        "`/setbuy PLX 36.2 35.5 1000` *(Mã, Giá vốn, Giá canh mua, Khối lượng)*\n\n"
-        "3️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
-        "`/setstop PLX 33.5` *(Mã, Giá cắt lỗ cần cảnh báo)*\n\n"
-        "4️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
+        "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `BSR`)\n\n"
+        "2️⃣ **🤖 Lọc mã có điểm mua chuẩn xác (`/autobuy`):** Tự động quét và chọn lọc mã đủ điều kiện giải ngân an toàn.\n\n"
+        "3️⃣ **Cài đặt canh MUA (Real-Time):**\n"
+        "`/setbuy BSR 29.4 28.5 1000` *(Mã, Giá vốn, Giá canh mua, Khối lượng)*\n\n"
+        "4️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
+        "`/setstop BSR 27.9` *(Mã, Giá cắt lỗ cần cảnh báo)*\n\n"
+        "5️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
         "`/portfolio` hoặc `/listall`\n\n"
-        "5️⃣ **Quét dòng tiền & Backtest:**\n"
+        "6️⃣ **Quét dòng tiền & Backtest:**\n"
         "`/scan` | `/backtest VHM`\n\n"
-        "6️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
-        "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Tách biệt rõ ràng mốc canh Mua và mốc Stop Loss, kèm nút **Xem Toàn Bộ Mức Cài Đặt** ngay dưới biểu đồ!"
+        "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
+        "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
+        "📌 **Tính năng mới:** Đã bổ sung nút bấm và lệnh `/autobuy` giúp chọn lọc điểm mua giải ngân tối ưu!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+
+async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    # Kiểm tra xem gọi từ tin nhắn lệnh hay từ callback query
+    if update.message:
+        msg = await update.message.reply_text("🤖 **Đang phân tích đa khung & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🤖 **Đang phân tích đa khung & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
+
+    try:
+        picks = run_smart_buy_screener()
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại thị trường chưa có mã nào đạt đủ tiêu chuẩn khắt khe để giải ngân an toàn.\n\n💡 *Khuyên nghị: Đứng ngoài bảo toàn vốn (NAV 0%)!*")
+            return
+            
+        text = "🎯 **DANH SÁCH CỔ PHIẾU ĐẠT ĐIỂM MUA AN TOÀN (AUTO-BUY)**\n"
+        text += "====================================\n\n"
+        
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** (Độ tin cậy: `{item['score']}%`)\n"
+            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
+            text += f"   • Dòng tiền CMF: `{item['cmf']:.2f}` | RVOL: `{item['rvol']:.2f}x`\n"
+            text += f"   • 🎯 **Vùng giải ngân chuẩn**: Khoảng `{item['entry']}k`\n"
+            text += f"   • 🛡️ **Stoploss tham chiếu**: `{item['stop_loss']}k`\n"
+            text += f"   • Lệnh cài canh mua nhanh: `/setbuy {item['symbol']} {item['close']} {item['entry']} 1000`\n"
+            text += "------------------------------------\n"
+            
+        text += "\n💡 *Bạn có thể bấm trực tiếp lệnh `/setbuy` được gợi ý bên trên để bot tự động giám sát real-time!*"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc auto-buy: {str(e)}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -954,7 +1052,6 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_all_settings_func(update_or_query, context, chat_id):
-    """Hàm phụ trợ hiển thị toàn bộ chi tiết mã và các mốc cảnh báo đã cài"""
     if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
         text = "📂 Danh mục theo dõi của bạn hiện đang trống.\n👉 Sử dụng `/setbuy` hoặc `/setstop` để bắt đầu cài đặt."
     else:
@@ -1050,7 +1147,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, PLX, HPG)!")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, BSR, HPG)!")
         return
 
     keyboard = [
@@ -1073,6 +1170,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+
+    if data == "run_autobuy_callback":
+        await autobuy_command(update, context)
+        return
 
     if data == "show_all_settings":
         chat_id = query.message.chat_id
@@ -1117,7 +1218,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Separated Buy & Stop Loss Alerts is running!")
+        self.wfile.write(b"Quant Bot with Smart Auto-Buy Screener is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1147,6 +1248,7 @@ if __name__ == "__main__":
     threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
 
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
@@ -1157,5 +1259,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tích hợp Menu Xem Cài Đặt và Lệnh /listall!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tích hợp bộ lọc thông minh /autobuy!")
     app.run_polling(drop_pending_updates=True)
