@@ -38,10 +38,25 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+# Đã bổ sung toàn bộ các mã từ các danh mục hình ảnh (Đầu tư công, Bất động sản, Ngân hàng, Chứng khoán, Bán lẻ, Viễn thông, Thủy sản/May mặc, Dầu khí, Vận tải, Vật liệu...)
 WATCHLIST_SCAN = [
+    # Nhóm gốc & Ngân hàng
     "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
-    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG", "BSR"
+    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG", "BSR",
+    # Đầu tư công & Xây dựng & Vật liệu
+    "CTD", "HHV", "LCG", "HT1", "VCG", "CII", "L14", "VGS", "KBC", "PDR", 
+    "CEO", "DXG", "TCH", "NVL", "VPL", "HDG", "NTL", "HDC", "KSB", "MSR",
+    # Chứng khoán & Tài chính khác
+    "VND", "SHS", "VIX", "HCM", "CTS", "ORS",
+    # Bán lẻ & Tiêu dùng & Công nghệ
+    "FPT", "MCH", "PET", "VTP", "CTR", "GEE",
+    # Thủy sản, May mặc, Cao su
+    "VGT", "TNG", "GVR", "ANV", "VHC",
+    # Dầu khí
+    "PVS", "PVB", "PVD", "GAS", "PLX",
+    # Vận tải
+    "HAH", "VJC", "VSC"
 ]
 
 ACTIVE_CHAT_IDS = set()
@@ -878,7 +893,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Đã bổ sung nút bấm và lệnh `/autobuy` chạy đa luồng siêu tốc giúp chọn lọc điểm mua giải ngân tối ưu!"
+        "📌 **Tính năng mới:** Đã bổ sung toàn bộ danh mục mã cá nhân từ hình ảnh vào hệ thống quét tự động đa luồng!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1271,5 +1286,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tối ưu đa luồng cho /autobuy!")
+    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật danh mục đầy đủ!")
     app.run_polling(drop_pending_updates=True)
