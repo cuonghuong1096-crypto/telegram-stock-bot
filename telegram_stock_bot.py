@@ -499,7 +499,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Khuyến nghị: {system_status} | NAV: {nav_rec}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
 
-    # THÊM MỤC 5: NHẬN DIỆN BẪY GIÁ TRONG PHÂN TÍCH CHI TIẾT
+    # MỤC 5: NHẬN DIỆN BẪY GIÁ TRONG PHÂN TÍCH CHI TIẾT
     text_part2 = f"⚡ 5. NHẬN DIỆN BẪY GIÁ (MARKET TRAPS):\n"
     text_part2 += f"• Đánh giá: {trap_desc}\n"
     text_part2 += f"👉 **Lời khuyên chuyên gia:** Luôn kiểm chứng khối lượng và lực cầu cuối phiên để tránh sập bẫy tạo lập.\n\n"
@@ -608,7 +608,7 @@ def background_scheduler_thread(application):
         now = datetime.datetime.now()
         today_date = now.date()
 
-        # 1. GIÁM SÁT REAL-TIME ĐA MỐC GIÁ CHO MỖI MÃ
+        # 1. GIÁM SÁT REAL-TIME ĐA MỐC GIÁ (CANH MUA & STOP LOSS TÁCH BIỆT)
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -616,18 +616,34 @@ def background_scheduler_thread(application):
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         
-                        prices_to_check = pos.get("alert_prices", [pos.get("alert_price", pos["entry"])])
-
-                        for alert_price in prices_to_check:
-                            alert_key_trigger = f"{chat_id}_{symbol}_trigger_{alert_price}_{today_date}"
-
-                            if current_price <= alert_price and alert_key_trigger not in ALERTED_TODAY:
-                                ALERTED_TODAY.add(alert_key_trigger)
+                        # A. Kiểm tra cảnh báo Canh Mua
+                        buy_prices = pos.get("buy_alert_prices", [])
+                        for buy_price in buy_prices:
+                            buy_trigger_key = f"{chat_id}_{symbol}_buy_{buy_price}_{today_date}"
+                            if current_price <= buy_price and buy_trigger_key not in ALERTED_TODAY:
+                                ALERTED_TODAY.add(buy_trigger_key)
                                 alert_text = (
-                                    f"🚨 **CẢNH BÁO REAL-TIME: CHẠM MỐC CÀI ĐẶT `{alert_price}k`!** 🚨\n\n"
+                                    f"🎯 **CẢNH BÁO CANH MUA: ĐÃ CHẠM MỐC `{buy_price}k`!** 🎯\n\n"
                                     f"• Mã cổ phiếu: **{symbol.upper()}**\n"
-                                    f"• **Giá hiện tại trên Chart**: `{current_price:.2f}k` 📉\n\n"
-                                    f"👉 Đã chạm đúng mốc giá bạn yêu cầu trong danh sách!"
+                                    f"• **Giá hiện tại**: `{current_price:.2f}k` 📉\n\n"
+                                    f"👉 Giá đã về vùng canh mua đã thiết lập!"
+                                )
+                                try:
+                                    application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
+                                except Exception:
+                                    pass
+
+                        # B. Kiểm tra cảnh báo Stop Loss (Cắt lỗ)
+                        stop_prices = pos.get("stop_alert_prices", [])
+                        for stop_price in stop_prices:
+                            stop_trigger_key = f"{chat_id}_{symbol}_stop_{stop_price}_{today_date}"
+                            if current_price <= stop_price and stop_trigger_key not in ALERTED_TODAY:
+                                ALERTED_TODAY.add(stop_trigger_key)
+                                alert_text = (
+                                    f"🚨 **CẢNH BÁO STOP LOSS: GIÁ ĐÃ RƠI XUỐNG DƯỚI `{stop_price}k`!** 🚨\n\n"
+                                    f"• Mã cổ phiếu: **{symbol.upper()}**\n"
+                                    f"• **Giá hiện tại**: `{current_price:.2f}k` 📉\n\n"
+                                    f"👉 Đã chạm hoặc thủng mốc cắt lỗ an toàn. Hãy xem xét xử lý!"
                                 )
                                 try:
                                     application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
@@ -773,16 +789,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `PLX`)\n\n"
-        "2️⃣ **Cài đặt cảnh báo giá Real-Time (Hỗ trợ nhiều mốc giá):**\n"
-        "`/setbuy PLX 35.9 35.8 1500`  *(Mã, Giá mua, Giá cảnh báo, Khối lượng)*\n"
-        "*(Bạn có thể gõ thêm lần nữa để thêm mốc giá khác cho cùng một mã)*\n\n"
-        "3️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
+        "2️⃣ **Cài đặt canh MUA (Real-Time):**\n"
+        "`/setbuy PLX 36.2 35.5 1000` *(Mã, Giá vốn, Giá canh mua, Khối lượng)*\n\n"
+        "3️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
+        "`/setstop PLX 33.5` *(Mã, Giá cắt lỗ cần cảnh báo)*\n\n"
+        "4️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
         "`/portfolio`\n\n"
-        "4️⃣ **Quét dòng tiền & Backtest:**\n"
+        "5️⃣ **Quét dòng tiền & Backtest:**\n"
         "`/scan` | `/backtest VHM`\n\n"
-        "5️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
+        "6️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Bot tích hợp nhận diện **Bẫy giá (Market Traps)** vào báo cáo phân tích chi tiết!"
+        "📌 **Tính năng mới:** Tách biệt rõ ràng mốc canh Mua và mốc Stop Loss, kết hợp nhận diện **Bẫy giá**!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -790,10 +807,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
-    if len(args) < 2:
+    if len(args) < 3:
         await update.message.reply_text(
             "⚠️ Sai cú pháp!\n\n"
-            "Ví dụ: `/setbuy PLX 35.9 35.8 1500`",
+            "Ví dụ canh mua: `/setbuy PLX 36.2 35.5 1000`\n"
+            "*(Định dạng: /setbuy <Mã> <Giá_vốn> <Giá_canh_mua> <Khối_lượng>)*",
             parse_mode="Markdown"
         )
         return
@@ -801,22 +819,8 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = args[0].upper().strip()
     try:
         entry_price = float(args[1])
-        
-        if len(args) >= 4:
-            alert_price = float(args[2])
-            qty = int(args[3])
-        elif len(args) == 3:
-            val_arg3 = float(args[2])
-            if val_arg3 < 100:
-                alert_price = val_arg3
-                qty = 1000
-            else:
-                alert_price = entry_price
-                qty = int(args[2])
-        else:
-            alert_price = entry_price
-            qty = 1000
-            
+        buy_alert_price = float(args[2])
+        qty = int(args[3]) if len(args) >= 4 else 1000
     except ValueError:
         await update.message.reply_text("❌ Các tham số giá và khối lượng phải là số hợp lệ!")
         return
@@ -824,41 +828,86 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in USER_PORTFOLIOS:
         USER_PORTFOLIOS[chat_id] = {}
 
-    if symbol in USER_PORTFOLIOS[chat_id]:
-        if "alert_prices" not in USER_PORTFOLIOS[chat_id][symbol]:
-            old_p = USER_PORTFOLIOS[chat_id][symbol].get("alert_price", entry_price)
-            USER_PORTFOLIOS[chat_id][symbol]["alert_prices"] = [old_p]
-        if alert_price not in USER_PORTFOLIOS[chat_id][symbol]["alert_prices"]:
-            USER_PORTFOLIOS[chat_id][symbol]["alert_prices"].append(alert_price)
-    else:
+    if symbol not in USER_PORTFOLIOS[chat_id]:
         USER_PORTFOLIOS[chat_id][symbol] = {
             "entry": entry_price,
-            "alert_prices": [alert_price],
-            "qty": qty
+            "qty": qty,
+            "buy_alert_prices": [],
+            "stop_alert_prices": []
         }
+    
+    # Cập nhật thông tin cơ bản nếu thay đổi
+    USER_PORTFOLIOS[chat_id][symbol]["entry"] = entry_price
+    USER_PORTFOLIOS[chat_id][symbol]["qty"] = qty
+
+    if "buy_alert_prices" not in USER_PORTFOLIOS[chat_id][symbol]:
+        USER_PORTFOLIOS[chat_id][symbol]["buy_alert_prices"] = []
+
+    if buy_alert_price not in USER_PORTFOLIOS[chat_id][symbol]["buy_alert_prices"]:
+        USER_PORTFOLIOS[chat_id][symbol]["buy_alert_prices"].append(buy_alert_price)
 
     save_portfolios()
 
-    list_prices_str = ", ".join([f"{p}k" for p in USER_PORTFOLIOS[chat_id][symbol]["alert_prices"]])
+    list_buys_str = ", ".join([f"{p}k" for p in USER_PORTFOLIOS[chat_id][symbol]["buy_alert_prices"]])
 
     await update.message.reply_text(
-        f"✅ Đã thiết lập/thêm mốc giám sát Real-Time thành công:\n"
+        f"✅ Đã thiết lập vùng **CANH MUA** thành công:\n"
         f"• Mã cổ phiếu: **{symbol}**\n"
         f"• Giá vốn: `{entry_price}k` | Khối lượng: {qty} cổ\n"
-        f"• **Các mốc giá đang canh**: `{list_prices_str}`\n\n"
-        f"🤖 Dữ liệu đã được lưu bền vững. Bot sẽ hú còi khi giá chạm bất kỳ mốc nào!",
+        f"• 🎯 **Các mốc giá canh mua**: `{list_buys_str}`\n\n"
+        f"🤖 Bot sẽ thông báo ngay khi giá thị trường chạm/giảm về các mốc này!",
         parse_mode="Markdown"
     )
 
-    df, err = fetch_stock_data(symbol, resolution="1", count=10)
-    if not err and not df.empty:
-        current_price = df.iloc[-1]["Close"]
-        if current_price <= alert_price:
-            await update.message.reply_text(
-                f"🚨 **CẢNH BÁO REAL-TIME: GIÁ HIỆN TẠI ĐÃ DƯỚI MỐC CÀI ĐẶT `{alert_price}k`!**\n"
-                f"• Giá hiện tại thị trường: `{current_price:.2f}k` 📉",
-                parse_mode="Markdown"
-            )
+
+async def setstop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "⚠️ Sai cú pháp!\n\n"
+            "Ví dụ cắt lỗ: `/setstop PLX 33.5`\n"
+            "*(Định dạng: /setstop <Mã> <Giá_cắt_lỗ>)*",
+            parse_mode="Markdown"
+        )
+        return
+
+    symbol = args[0].upper().strip()
+    try:
+        stop_price = float(args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Mốc giá cắt lỗ phải là số hợp lệ!")
+        return
+
+    if chat_id not in USER_PORTFOLIOS:
+        USER_PORTFOLIOS[chat_id] = {}
+
+    if symbol not in USER_PORTFOLIOS[chat_id]:
+        # Nếu mã chưa tồn tại trong portfolio, khởi tạo mặc định
+        USER_PORTFOLIOS[chat_id][symbol] = {
+            "entry": stop_price,
+            "qty": 1000,
+            "buy_alert_prices": [],
+            "stop_alert_prices": []
+        }
+
+    if "stop_alert_prices" not in USER_PORTFOLIOS[chat_id][symbol]:
+        USER_PORTFOLIOS[chat_id][symbol]["stop_alert_prices"] = []
+
+    if stop_price not in USER_PORTFOLIOS[chat_id][symbol]["stop_alert_prices"]:
+        USER_PORTFOLIOS[chat_id][symbol]["stop_alert_prices"].append(stop_price)
+
+    save_portfolios()
+
+    list_stops_str = ", ".join([f"{p}k" for p in USER_PORTFOLIOS[chat_id][symbol]["stop_alert_prices"]])
+
+    await update.message.reply_text(
+        f"✅ Đã thiết lập vùng **STOP LOSS (CẮT LỖ)** thành công:\n"
+        f"• Mã cổ phiếu: **{symbol}**\n"
+        f"• 🛡️ **Các mốc giá cảnh báo cắt lỗ**: `{list_stops_str}`\n\n"
+        f"🤖 Bot sẽ hú còi cảnh báo ngay khi giá rủi ro chạm hoặc thủng mốc này!",
+        parse_mode="Markdown"
+    )
 
 
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -866,12 +915,12 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
         await update.message.reply_text(
             "📂 Danh mục của bạn đang trống.\n"
-            "👉 Dùng lệnh `/setbuy PLX 35.9 35.8 1500` để thêm mã và mốc giá cần canh.",
+            "👉 Dùng `/setbuy` để canh mua hoặc `/setstop` để cài đặt cắt lỗ.",
             parse_mode="Markdown"
         )
         return
 
-    text = "📂 **DANH MỤC ĐẦU TƯ & GIÁM SÁT REAL-TIME**\n\n"
+    text = "📂 **DANH MỤC ĐẦU TƯ & GIÁM SÁT REAL-TIME (TÁCH BIỆT MUA & CẮT LỖ)**\n\n"
     for symbol, pos in USER_PORTFOLIOS[chat_id].items():
         df, err = fetch_stock_data(symbol, resolution="1", count=10)
         if not err and not df.empty:
@@ -879,8 +928,11 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qty = pos.get("qty", 1000)
             entry = pos["entry"]
             
-            prices_list = pos.get("alert_prices", [pos.get("alert_price", entry)])
-            list_prices_str = ", ".join([f"{p}k" for p in prices_list])
+            buy_list = pos.get("buy_alert_prices", [])
+            stop_list = pos.get("stop_alert_prices", [])
+            
+            buy_str = ", ".join([f"{p}k" for p in buy_list]) if buy_list else "Chưa cài"
+            stop_str = ", ".join([f"{p}k" for p in stop_list]) if stop_list else "Chưa cài"
             
             pnl_pct = ((current_price - entry) / entry) * 100
             pnl_vnd = (current_price - entry) * qty
@@ -889,7 +941,8 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"🔹 **Mã: {symbol.upper()}** ({qty} cổ)\n"
             text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.2f}k`\n"
             text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n"
-            text += f"  • 🎯 **Các mốc canh báo**: `{list_prices_str}`\n"
+            text += f"  • 🎯 **Canh Mua**: `{buy_str}`\n"
+            text += f"  • 🛡️ **Stop Loss**: `{stop_str}`\n"
             text += f"  • Lệnh gỡ bỏ: `/reset {symbol}`\n"
             text += "------------------------------------\n"
         else:
@@ -990,7 +1043,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá.",
             "help_rsi": "💡 **Giải thích Ichimoku & ADX:**\n• Xác định xu hướng, độ mạnh của dòng tiền.",
             "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC, VAL, VAH:** Các vùng hỗ trợ & kháng cự tổ chức.",
-            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng lệnh `/setbuy PLX 35.9 35.8 1500` để theo dõi chuẩn xác mốc giá cảnh báo real-time."
+            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng lệnh `/setbuy` để canh mua và `/setstop` để cài đặt stop loss riêng biệt."
         }
         await query.message.reply_text(explanations.get(data, "Đang cập nhật..."), parse_mode="Markdown")
         return
@@ -1023,7 +1076,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Trap Detection & Optimized Screener is running!")
+        self.wfile.write(b"Quant Bot with Separated Buy & Stop Loss Alerts is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1056,11 +1109,11 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
+    app.add_handler(CommandHandler("setstop", setstop_command))
     app.add_handler(CommandHandler("portfolio", portfolio_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng với bộ lọc dòng tiền & nhận diện Bẫy giá!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tách biệt lệnh Canh Mua và Stop Loss!")
     app.run_polling(drop_pending_updates=True)
-
