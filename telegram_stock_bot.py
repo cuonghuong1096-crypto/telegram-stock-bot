@@ -1,5 +1,6 @@
 import datetime
 import io
+import json
 import logging
 import os
 import threading
@@ -44,32 +45,53 @@ WATCHLIST_SCAN = [
 ]
 
 ACTIVE_CHAT_IDS = set()
-USER_PORTFOLIOS = {}
 ALERTED_TODAY = set()
+
+# ==========================================
+# QUẢN LÝ LƯU TRỮ DỮ LIỆU BỀN VỮNG (JSON)
+# ==========================================
+PORTFOLIO_FILE = "user_portfolios.json"
+
+def load_portfolios():
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logging.error(f"Lỗi đọc file portfolio: {e}")
+    return {}
+
+def save_portfolios():
+    try:
+        with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
+            json.dump(USER_PORTFOLIOS, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Lỗi ghi file portfolio: {e}")
+
+USER_PORTFOLIOS = load_portfolios()
 
 executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TỰ ĐỘNG QUY ĐỔI COUNT & RESAMPLE KHUNG W)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
-    # TỰ ĐỘNG QUY ĐỔI SỐ LƯỢNG NẾN (COUNT) THEO KHUNG THỜI GIAN
     if resolution in ["1", "5", "15", "30", "60"]:
         res_param = resolution
-        count = max(count, 450)  # Phủ 450+ nến cho khung phút
+        count = max(count, 450)
         start_time = end_time - (count * int(resolution) * 60 * 4)
     elif resolution == "W":
-        # Khung tuần: Gọi khung Ngày (D) với 1000 phiên rồi resample thành tuần để tránh lỗi API
         res_param = "D"
         count = 1000 
         start_time = end_time - (count * 86400 * 3)
     else:
         res_param = "D"
-        count = max(count, 300)  # Đảm bảo tối thiểu 300 nến cho khung D (SMA200 & Volume Profile)
+        count = max(count, 300)
         start_time = end_time - (count * 86400 * 3)
 
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
@@ -127,7 +149,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
 
-    # NẾU LÀ KHUNG TUẦN (W): TỰ ĐỘNG GOM NHÓM (RESAMPLE) TỪ DỮ LIỆU NẾN NGÀY (D)
     if resolution == "W":
         df_raw.set_index("time", inplace=True)
         df_weekly = df_raw.resample("W").agg({
@@ -168,14 +189,12 @@ def calculate_indicators(df):
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
 
-    # Tích hợp ATR (14 phiên)
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["ATR"] = true_range.rolling(14).mean()
 
-    # Tích hợp ADX (14 phiên)
     plus_dm = df["High"].diff()
     minus_dm = df["Low"].diff()
     plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
@@ -277,7 +296,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (GIỮ NGUYÊN MẪU TRÌNH BÀY)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -305,8 +324,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
     adx = last["ADX"] if not np.isnan(last["ADX"]) else 25.0
 
-    macd = last["MACD"] if not np.isnan(last["MACD"]) else 0.0
-    macd_signal = last["MACD_Signal"] if not np.isnan(last["MACD_Signal"]) else 0.0
     macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
     bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
     bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
@@ -525,7 +542,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN & BACKTEST & REALTIME ALERTS (GIÁM SÁT ĐA MỐC GIÁ REALTIME)
+# 3. MODULE SCAN & BACKTEST & REALTIME ALERTS
 # ==========================================
 def run_market_screener():
     results = []
@@ -558,10 +575,13 @@ def run_market_screener():
 
 
 def background_scheduler_thread(application):
+    sent_daily_report_today = None
+
     while True:
         now = datetime.datetime.now()
-        
-        # 1. KIỂM TRA & BÁO ĐỘNG REAL-TIME CHO NHIỀU MỐC GIÁ CỦA TỪNG MÃ
+        today_date = now.date()
+
+        # 1. GIÁM SÁT REAL-TIME ĐA MỐC GIÁ CHO MỖI MÃ
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -569,11 +589,10 @@ def background_scheduler_thread(application):
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         
-                        # Lấy danh sách các mốc giá cần canh (hỗ trợ đa mốc)
                         prices_to_check = pos.get("alert_prices", [pos.get("alert_price", pos["entry"])])
 
                         for alert_price in prices_to_check:
-                            alert_key_trigger = f"{chat_id}_{symbol}_trigger_{alert_price}_{datetime.date.today()}"
+                            alert_key_trigger = f"{chat_id}_{symbol}_trigger_{alert_price}_{today_date}"
 
                             if current_price <= alert_price and alert_key_trigger not in ALERTED_TODAY:
                                 ALERTED_TODAY.add(alert_key_trigger)
@@ -581,14 +600,14 @@ def background_scheduler_thread(application):
                                     f"🚨 **CẢNH BÁO REAL-TIME: CHẠM MỐC CÀI ĐẶT `{alert_price}k`!** 🚨\n\n"
                                     f"• Mã cổ phiếu: **{symbol.upper()}**\n"
                                     f"• **Giá hiện tại trên Chart**: `{current_price:.2f}k` 📉\n\n"
-                                    f"👉 Giá đã biến động chạm hoặc tụt xuống mốc bạn yêu cầu!"
+                                    f"👉 Đã chạm đúng mốc giá bạn yêu cầu trong danh sách!"
                                 )
                                 try:
                                     application.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
                                 except Exception:
                                     pass
 
-        # 2. BẢN TIN TỰ ĐỘNG LÚC 14:15 HÀNG NGÀY
+        # 2. BẢN TIN TỰ ĐỘNG DÒNG TIỀN LÚC 14:15 HÀNG NGÀY
         if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -602,8 +621,55 @@ def background_scheduler_thread(application):
                         except Exception:
                             pass
             time.sleep(70)
+
+        # 3. TỰ ĐỘNG TỔNG HỢP & ĐẨY BÁO CÁO SAU KHI ĐÓNG CỬA (LÚC 15:00 HÀNG NGÀY)
+        if now.weekday() < 5 and now.hour == 15 and now.minute == 0:
+            if sent_daily_report_today != today_date and USER_PORTFOLIOS:
+                sent_daily_report_today = today_date
+                
+                for chat_id, portfolio in USER_PORTFOLIOS.items():
+                    if not portfolio:
+                        continue
+                        
+                    report_text = f"📊 **BÁO CÁO TỔNG KẾT CUỐI PHIÊN GIAO DỊCH** ({now.strftime('%d/%m/%Y')})\n"
+                    report_text += "------------------------------------\n"
+                    
+                    total_pnl_vnd = 0
+                    has_data = False
+                    
+                    for symbol, pos in portfolio.items():
+                        df, err = fetch_stock_data(symbol, resolution="D", count=5)
+                        if not err and not df.empty:
+                            has_data = True
+                            current_price = df.iloc[-1]["Close"]
+                            qty = pos.get("qty", 1000)
+                            entry = pos["entry"]
+                            
+                            pnl_pct = ((current_price - entry) / entry) * 100
+                            pnl_vnd = (current_price - entry) * qty
+                            total_pnl_vnd += pnl_vnd
+                            status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
+
+                            report_text += f"🔹 **{symbol.upper()}** ({qty} cổ)\n"
+                            report_text += f"  • Giá vốn: `{entry}k` | Đóng cửa: `{current_price:.2f}k`\n"
+                            report_text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n\n"
+                        else:
+                            report_text += f"🔹 **{symbol.upper()}**: Không lấy được dữ liệu chốt phiên.\n\n"
+                            
+                    if has_data:
+                        overall_status = "🟢 LÃI TỔNG" if total_pnl_vnd >= 0 else "🔴 LỖ TỔNG"
+                        report_text += "------------------------------------\n"
+                        report_text += f"💰 **LỢI NHUẬN TỔNG DANH MỤC**: `{total_pnl_vnd:+,.0f} VNĐ` [{overall_status}]\n"
+                        report_text += "🤖 Hệ thống đã lưu trữ trạng thái. Chúc bạn một buổi chiều an lành!"
+                        
+                        try:
+                            application.bot.send_message(chat_id=chat_id, text=report_text, parse_mode="Markdown")
+                        except Exception:
+                            pass
+                
+                time.sleep(70) # Tránh lặp lại trong phút 15:00
         
-        time.sleep(30)  # Quét liên tục mỗi 30 giây
+        time.sleep(30)
 
 
 def run_strategy_backtest(symbol):
@@ -680,15 +746,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `PLX`)\n\n"
-        "2️⃣ **Cài đặt nhiều mốc giá Real-Time (Có thể gõ nhiều lần cho 1 mã):**\n"
-        "`/setbuy PLX 35.9 35.8 1500`  *(Mã, Giá vốn, Mốc canh báo, Khối lượng)*\n"
-        "`/setbuy PLX 35.9 35.5 1500`  *(Thêm mốc canh báo thứ 2 cho cùng mã PLX)*\n\n"
+        "2️⃣ **Cài đặt cảnh báo giá Real-Time (Hỗ trợ nhiều mốc giá):**\n"
+        "`/setbuy PLX 35.9 35.8 1500`  *(Mã, Giá mua, Giá cảnh báo, Khối lượng)*\n"
+        "*(Bạn có thể gõ thêm lần nữa để thêm mốc giá khác cho cùng một mã)*\n\n"
         "3️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
         "`/portfolio`\n\n"
         "4️⃣ **Quét dòng tiền & Backtest:**\n"
         "`/scan` | `/backtest VHM`\n\n"
         "5️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
-        "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*"
+        "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
+        "📌 **Tính năng mới:** Bot sẽ tự động đẩy báo cáo tổng kết danh mục vào **15:00 hàng ngày** sau khi đóng cửa phiên giao dịch!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -730,16 +797,12 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in USER_PORTFOLIOS:
         USER_PORTFOLIOS[chat_id] = {}
 
-    # Hỗ trợ thêm nhiều mốc giá cho cùng 1 mã cổ phiếu
     if symbol in USER_PORTFOLIOS[chat_id]:
         if "alert_prices" not in USER_PORTFOLIOS[chat_id][symbol]:
-            old_price = USER_PORTFOLIOS[chat_id][symbol].get("alert_price", entry_price)
-            USER_PORTFOLIOS[chat_id][symbol]["alert_prices"] = [old_price]
-        
+            old_p = USER_PORTFOLIOS[chat_id][symbol].get("alert_price", entry_price)
+            USER_PORTFOLIOS[chat_id][symbol]["alert_prices"] = [old_p]
         if alert_price not in USER_PORTFOLIOS[chat_id][symbol]["alert_prices"]:
             USER_PORTFOLIOS[chat_id][symbol]["alert_prices"].append(alert_price)
-            
-        USER_PORTFOLIOS[chat_id][symbol]["qty"] = qty
     else:
         USER_PORTFOLIOS[chat_id][symbol] = {
             "entry": entry_price,
@@ -747,29 +810,28 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "qty": qty
         }
 
+    save_portfolios()
+
     list_prices_str = ", ".join([f"{p}k" for p in USER_PORTFOLIOS[chat_id][symbol]["alert_prices"]])
 
     await update.message.reply_text(
-        f"✅ Đã thêm mốc giám sát Real-Time thành công:\n"
+        f"✅ Đã thiết lập/thêm mốc giám sát Real-Time thành công:\n"
         f"• Mã cổ phiếu: **{symbol}**\n"
         f"• Giá vốn: `{entry_price}k` | Khối lượng: {qty} cổ\n"
         f"• **Các mốc giá đang canh**: `{list_prices_str}`\n\n"
-        f"🤖 Bot sẽ hú còi ngay khi giá chạm bất kỳ mốc nào trong danh sách!",
+        f"🤖 Dữ liệu đã được lưu bền vững. Bot sẽ hú còi khi giá chạm bất kỳ mốc nào!",
         parse_mode="Markdown"
     )
 
-    # CHECK NGAY LẬP TỨC KHUNG 1 PHÚT KHI VỪA SET
     df, err = fetch_stock_data(symbol, resolution="1", count=10)
     if not err and not df.empty:
         current_price = df.iloc[-1]["Close"]
         if current_price <= alert_price:
-            alert_text = (
-                f"🚨 **CẢNH BÁO REAL-TIME: GIÁ HIỆN TẠI ĐÃ DƯỚI MỐC CÀI ĐẶT `{alert_price}k`!** 🚨\n\n"
-                f"• Mã cổ phiếu: **{symbol.upper()}**\n"
-                f"• **Giá hiện tại thị trường**: `{current_price:.2f}k` 📉\n\n"
-                f"👉 Giá hiện tại đã thấp hơn mốc cài đặt này!"
+            await update.message.reply_text(
+                f"🚨 **CẢNH BÁO REAL-TIME: GIÁ HIỆN TẠI ĐÃ DƯỚI MỐC CÀI ĐẶT `{alert_price}k`!**\n"
+                f"• Giá hiện tại thị trường: `{current_price:.2f}k` 📉",
+                parse_mode="Markdown"
             )
-            await update.message.reply_text(alert_text, parse_mode="Markdown")
 
 
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -782,15 +844,16 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = "📂 **DANH MỤC ĐẦU TƯ & GIÁM SÁT ĐA MỐC REAL-TIME**\n\n"
+    text = "📂 **DANH MỤC ĐẦU TƯ & GIÁM SÁT REAL-TIME**\n\n"
     for symbol, pos in USER_PORTFOLIOS[chat_id].items():
         df, err = fetch_stock_data(symbol, resolution="1", count=10)
         if not err and not df.empty:
             current_price = df.iloc[-1]["Close"]
             qty = pos.get("qty", 1000)
             entry = pos["entry"]
-            prices_to_check = pos.get("alert_prices", [pos.get("alert_price", entry)])
-            list_prices_str = ", ".join([f"{p}k" for p in prices_to_check])
+            
+            prices_list = pos.get("alert_prices", [pos.get("alert_price", entry)])
+            list_prices_str = ", ".join([f"{p}k" for p in prices_list])
             
             pnl_pct = ((current_price - entry) / entry) * 100
             pnl_vnd = (current_price - entry) * qty
@@ -799,7 +862,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"🔹 **Mã: {symbol.upper()}** ({qty} cổ)\n"
             text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.2f}k`\n"
             text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n"
-            text += f"  • 🎯 **Các mốc giá đang canh**: `{list_prices_str}`\n"
+            text += f"  • 🎯 **Các mốc canh báo**: `{list_prices_str}`\n"
             text += f"  • Lệnh gỡ bỏ: `/reset {symbol}`\n"
             text += "------------------------------------\n"
         else:
@@ -820,9 +883,11 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in USER_PORTFOLIOS:
         if target == "ALL":
             USER_PORTFOLIOS[chat_id] = {}
+            save_portfolios()
             await update.message.reply_text("🗑️ Đã xóa toàn bộ danh mục theo dõi của bạn.")
         elif target in USER_PORTFOLIOS[chat_id]:
             del USER_PORTFOLIOS[chat_id][target]
+            save_portfolios()
             await update.message.reply_text(f"🗑️ Đã gỡ bỏ mã **{target}** khỏi danh mục theo dõi.", parse_mode="Markdown")
         else:
             await update.message.reply_text(f"⚠️ Không tìm thấy mã **{target}** trong danh mục.", parse_mode="Markdown")
@@ -931,7 +996,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Multi-Price Alert is running!")
+        self.wfile.write(b"Quant Bot with Auto Daily Closing Report is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -969,5 +1034,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng hoàn chỉnh!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tính năng tự động báo cáo cuối phiên!")
     app.run_polling(drop_pending_updates=True)
