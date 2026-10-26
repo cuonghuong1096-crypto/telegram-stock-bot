@@ -89,13 +89,13 @@ executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (BỔ SUNG PHÂN KỲ & SQUEEZE)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TỐI ƯU KHUNG 1H, 1D, 1W)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
     end_time = int(datetime.datetime.now().timestamp())
 
-    if resolution in ["1", "5", "15", "30", "60"]:
+    if resolution in ["60"]:
         res_param = resolution
         count = max(count, 450)
         start_time = end_time - (count * int(resolution) * 60 * 4)
@@ -203,10 +203,10 @@ def calculate_indicators(df):
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
 
-    # 1. Bổ sung phát hiện Tích lũy nền chặt (Bollinger Squeeze)
+    # 1. Phát hiện Tích lũy nền chặt (Bollinger Squeeze)
     df["BB_Squeeze"] = df["BB_Width"] <= df["BB_Width"].rolling(50).quantile(0.20)
 
-    # 2. Bổ sung phát hiện Phân kỳ RSI (Âm & Dương)
+    # 2. Phát hiện Phân kỳ RSI (Âm & Dương)
     price_max_now = df["Close"].iloc[-1]
     price_max_prev = df["Close"].iloc[-20:-5].max() if len(df) >= 20 else price_max_now
     rsi_now = df["RSI"].iloc[-1]
@@ -325,7 +325,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP TÍN HIỆU MỚI)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -418,7 +418,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
-    # Xử lý các tín hiệu nâng cao mới
     if is_bb_squeeze:
         score += 10
         confluence_points.append("⚡ [NỀN TÍCH LŨY SIẾT CHẶT BB]: Dải Bollinger siết hẹp, chuẩn bị bùng nổ xu hướng")
@@ -554,7 +553,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo: {warn_str}\n"
     text_part2 += f"👉 **Kết luận:** {sec5_action}\n\n"
 
-    # Đã sửa lỗi cú pháp định dạng chuỗi Squeeze Nền tại đây
     squeeze_display = "🟢 Có" if is_bb_squeeze else "🔴 Không"
     text_part2 += f"📈 7. DÃI BOLINGER BANDS & TÍCH LŨY SQUEEZE:\n"
     text_part2 += f"• Trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Độ rộng: {bb_width:.3f} | Squeeze Nền: {squeeze_display}\n\n"
@@ -563,13 +561,12 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng: {final_action}"
 
+    # CẬP NHẬT GIAO DIỆN NÚT BẤM CHỈ GIỮ LẠI BỘ 3 CHUẨN: 1H, 1D, 1W
     keyboard = [
         [
-            InlineKeyboardButton("📅 1D", callback_data=f"{symbol}|D|300"),
-            InlineKeyboardButton("⏱️ 15m", callback_data=f"{symbol}|15|450"),
-            InlineKeyboardButton("⏱️ 30m", callback_data=f"{symbol}|30|450"),
-            InlineKeyboardButton("⏱️ 1H", callback_data=f"{symbol}|60|450"),
-            InlineKeyboardButton("📈 1W", callback_data=f"{symbol}|W|250"),
+            InlineKeyboardButton("⏱️ Khung 1H (Giờ)", callback_data=f"{symbol}|60|450"),
+            InlineKeyboardButton("📅 Khung 1D (Ngày)", callback_data=f"{symbol}|D|300"),
+            InlineKeyboardButton("📈 Khung 1W (Tuần)", callback_data=f"{symbol}|W|250"),
         ],
         [
             InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
@@ -606,7 +603,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC THỊ TRƯỜNG CHUNG)
+# 3. MODULE SCAN, SMART-BUY & BACKTEST (LUỒNG TỰ ĐỘNG CHUẨN KHUNG D)
 # ==========================================
 def check_market_trend_general():
     try:
@@ -625,6 +622,7 @@ def check_market_trend_general():
 def run_market_screener():
     results = []
     for symbol in WATCHLIST_SCAN:
+        # LUỒNG TỰ ĐỘNG QUÉT: Áp dụng chuẩn khung D (Daily)
         df, err = fetch_stock_data(symbol, resolution="D", count=300)
         if err or df.empty or len(df) < 50:
             continue
@@ -665,6 +663,7 @@ def run_market_screener():
 
 def process_single_stock_for_autobuy(symbol):
     try:
+        # LUỒNG TỰ ĐỘNG AUTO-BUY: Áp dụng chuẩn khung D (Daily)
         df, err = fetch_stock_data(symbol, resolution="D", count=300)
         if err or df.empty or len(df) < 50:
             return None
@@ -760,7 +759,7 @@ def background_scheduler_thread(application):
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
-                    df, err = fetch_stock_data(symbol, resolution="1", count=10)
+                    df, err = fetch_stock_data(symbol, resolution="60", count=10)
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         
@@ -943,7 +942,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Đã tích hợp đầy đủ Phân kỳ RSI, Nền tích lũy Squeeze và lọc bẫy giá nâng cao!"
+        "📌 **Tính năng tối ưu:** Đã tinh gọn khung thời gian chuẩn chiến lược (`1H`, `1D`, `1W`)!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -953,10 +952,10 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     
     if update.message:
-        msg = await update.message.reply_text("🤖 **Đang phân tích đa khung & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
+        msg = await update.message.reply_text("🤖 **Đang phân tích khung ngày & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
     else:
         query = update.callback_query
-        msg = await query.message.reply_text("🤖 **Đang phân tích đa khung & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
+        msg = await query.message.reply_text("🤖 **Đang phân tích khung ngày & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
 
     try:
         picks = run_smart_buy_screener()
@@ -1098,7 +1097,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "📂 **DANH MỤC ĐẦU TƯ & GIÁM SÁT REAL-TIME (TÁCH BIỆT MUA & CẮT LỖ)**\n\n"
     for symbol, pos in USER_PORTFOLIOS[chat_id].items():
-        df, err = fetch_stock_data(symbol, resolution="1", count=10)
+        df, err = fetch_stock_data(symbol, resolution="60", count=10)
         if not err and not df.empty:
             current_price = df.iloc[-1]["Close"]
             qty = pos.get("qty", 1000)
@@ -1188,14 +1187,14 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    msg = await update.message.reply_text("🔍 Đang quét dòng tiền toàn thị trường... ⏳")
+    msg = await update.message.reply_text("🔍 Đang quét dòng tiền toàn thị trường (Khung Ngày)... ⏳")
     try:
         top_stocks = run_market_screener()
         if not top_stocks:
             await msg.edit_text("⚠️ Hiện tại không có mã nào thỏa mãn tiêu chí.")
             return
             
-        text = "🚀 TOP CỔ PHIẾU DÒNG TIỀN TỔ CHỨC THU GOM\n\n"
+        text = "🚀 TOP CỔ PHIẾU DÒNG TIỀN TỔ CHỨC THU GOM (KHUNG D)\n\n"
         for idx, item in enumerate(top_stocks, 1):
             text += f"{idx}. {item['symbol']} | Giá: {item['close']:.1f}k | RVOL: {item['rvol']:.2f}x\n"
         await msg.edit_text(text)
@@ -1229,11 +1228,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [
-            InlineKeyboardButton("📅 1D", callback_data=f"{text}|D|300"),
-            InlineKeyboardButton("⏱️ 15m", callback_data=f"{text}|15|450"),
-            InlineKeyboardButton("⏱️ 30m", callback_data=f"{text}|30|450"),
-            InlineKeyboardButton("⏱️ 1H", callback_data=f"{text}|60|450"),
-            InlineKeyboardButton("📈 1W", callback_data=f"{text}|W|250"),
+            InlineKeyboardButton("⏱️ Khung 1H (Giờ)", callback_data=f"{text}|60|450"),
+            InlineKeyboardButton("📅 Khung 1D (Ngày)", callback_data=f"{text}|D|300"),
+            InlineKeyboardButton("📈 Khung 1W (Tuần)", callback_data=f"{text}|W|250"),
         ],
     ]
     await update.message.reply_text(
@@ -1295,7 +1292,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Advanced Divergence & Squeeze Analysis is running!")
+        self.wfile.write(b"Quant Bot with Optimized Timeframes (1H, 1D, 1W) is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1336,5 +1333,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật phiên bản nâng cao chuyên sâu!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tối ưu bộ khung thời gian chuyên nghiệp!")
     app.run_polling(drop_pending_updates=True)
