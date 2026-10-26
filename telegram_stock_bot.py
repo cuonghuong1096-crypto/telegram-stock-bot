@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import matplotlib
@@ -85,11 +85,11 @@ def save_portfolios():
 
 USER_PORTFOLIOS = load_portfolios()
 
-executor = ThreadPoolExecutor(max_workers=8)
+executor = ThreadPoolExecutor(max_workers=16)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TỐI ƯU KHUNG 1H, 1D, 1W)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TỐI ƯU TỐC ĐỘ)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -97,16 +97,16 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
     if resolution in ["60"]:
         res_param = resolution
-        count = max(count, 450)
-        start_time = end_time - (count * int(resolution) * 60 * 4)
+        count = max(count, 300)
+        start_time = end_time - (count * int(resolution) * 60 * 3)
     elif resolution == "W":
         res_param = "D"
-        count = 1000 
-        start_time = end_time - (count * 86400 * 3)
+        count = 600 
+        start_time = end_time - (count * 86400 * 2)
     else:
         res_param = "D"
-        count = max(count, 300)
-        start_time = end_time - (count * 86400 * 3)
+        count = max(count, 200) # Giảm nhẹ số lượng nến lịch sử lấy về để tăng tốc độ xử lý nhanh hơn
+        start_time = end_time - (count * 86400 * 2)
 
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
@@ -115,7 +115,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-API-KEY": TCBS_API_KEY,
         }
-        res = requests.get(tcbs_url, headers=headers, timeout=3)
+        res = requests.get(tcbs_url, headers=headers, timeout=2) # Tối ưu timeout rút gọn xuống 2s
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -141,7 +141,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
                 "User-Agent": "Mozilla/5.0",
                 "Referer": "https://dchart.vndirect.com.vn/",
             }
-            res = requests.get(url, headers=headers, timeout=3)
+            res = requests.get(url, headers=headers, timeout=2)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
@@ -203,10 +203,8 @@ def calculate_indicators(df):
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
 
-    # 1. Phát hiện Tích lũy nền chặt (Bollinger Squeeze)
     df["BB_Squeeze"] = df["BB_Width"] <= df["BB_Width"].rolling(50).quantile(0.20)
 
-    # 2. Phát hiện Phân kỳ RSI (Âm & Dương)
     price_max_now = df["Close"].iloc[-1]
     price_max_prev = df["Close"].iloc[-20:-5].max() if len(df) >= 20 else price_max_now
     rsi_now = df["RSI"].iloc[-1]
@@ -561,7 +559,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
     text_part2 += f"• Định hướng: {final_action}"
 
-    # CẬP NHẬT GIAO DIỆN NÚT BẤM CHỈ GIỮ LẠI BỘ 3 CHUẨN: 1H, 1D, 1W
     keyboard = [
         [
             InlineKeyboardButton("⏱️ Khung 1H (Giờ)", callback_data=f"{symbol}|60|450"),
@@ -603,7 +600,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST (LUỒNG TỰ ĐỘNG CHUẨN KHUNG D)
+# 3. MODULE SCAN, SMART-BUY & BACKTEST (TĂNG TỐC ĐỘ SONG SONG)
 # ==========================================
 def check_market_trend_general():
     try:
@@ -621,11 +618,10 @@ def check_market_trend_general():
 
 def run_market_screener():
     results = []
-    for symbol in WATCHLIST_SCAN:
-        # LUỒNG TỰ ĐỘNG QUÉT: Áp dụng chuẩn khung D (Daily)
-        df, err = fetch_stock_data(symbol, resolution="D", count=300)
+    def scan_one(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=200)
         if err or df.empty or len(df) < 50:
-            continue
+            return None
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
@@ -641,21 +637,29 @@ def run_market_screener():
         
         avg_trading_value = vol_sma20 * close * 1000
         if avg_trading_value < 5_000_000_000:
-            continue
+            return None
             
         price_range = high - low
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
         if rvol >= 1.25 and cmf > 0.03 and close > ema50 and adx >= 20 and is_solid_candle:
             score = (rvol * 2.5) + (cmf * 6) + (adx * 0.15)
-            results.append({
+            return {
                 "symbol": symbol,
                 "close": close,
                 "rvol": rvol,
                 "cmf": cmf,
                 "adx": adx,
                 "score": score
-            })
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_one, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
             
     results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results[:8]
@@ -663,8 +667,7 @@ def run_market_screener():
 
 def process_single_stock_for_autobuy(symbol):
     try:
-        # LUỒNG TỰ ĐỘNG AUTO-BUY: Áp dụng chuẩn khung D (Daily)
-        df, err = fetch_stock_data(symbol, resolution="D", count=300)
+        df, err = fetch_stock_data(symbol, resolution="D", count=200)
         if err or df.empty or len(df) < 50:
             return None
         df = calculate_indicators(df)
@@ -738,9 +741,10 @@ def process_single_stock_for_autobuy(symbol):
 
 def run_smart_buy_screener():
     buy_recommendations = []
-    with ThreadPoolExecutor(max_workers=10) as pool:
+    # Tăng tốc độ bằng cách đẩy số luồng tối đa lên 20 luồng chạy song song
+    with ThreadPoolExecutor(max_workers=20) as pool:
         futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
-        for future in futures:
+        for future in as_completed(futures):
             result = future.result()
             if result:
                 buy_recommendations.append(result)
@@ -942,7 +946,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng tối ưu:** Đã tinh gọn khung thời gian chuẩn chiến lược (`1H`, `1D`, `1W`)!"
+        "📌 **Tính năng tối ưu:** Đã siêu tốc hóa bộ lọc `/autobuy` bằng hệ thống đa luồng song song!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -952,10 +956,10 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     
     if update.message:
-        msg = await update.message.reply_text("🤖 **Đang phân tích khung ngày & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
+        msg = await update.message.reply_text("🤖 **Đang quét siêu tốc toàn bộ danh mục cổ phiếu...** ⚡")
     else:
         query = update.callback_query
-        msg = await query.message.reply_text("🤖 **Đang phân tích khung ngày & lọc các mã đạt điểm mua chuẩn xác...** ⏳")
+        msg = await query.message.reply_text("🤖 **Đang quét siêu tốc toàn bộ danh mục cổ phiếu...** ⚡")
 
     try:
         picks = run_smart_buy_screener()
@@ -1187,7 +1191,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    msg = await update.message.reply_text("🔍 Đang quét dòng tiền toàn thị trường (Khung Ngày)... ⏳")
+    msg = await update.message.reply_text("🔍 Đang quét siêu tốc dòng tiền toàn thị trường... ⚡")
     try:
         top_stocks = run_market_screener()
         if not top_stocks:
@@ -1292,7 +1296,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Optimized Timeframes (1H, 1D, 1W) is running!")
+        self.wfile.write(b"Quant Bot with Hyper-Speed Autobuy Screener is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1333,5 +1337,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tối ưu bộ khung thời gian chuyên nghiệp!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng với tốc độ siêu tốc!")
     app.run_polling(drop_pending_updates=True)
