@@ -561,11 +561,11 @@ def background_scheduler_thread(application):
     while True:
         now = datetime.datetime.now()
         
-        # 1. KIỂM TRA & BÁO ĐỘNG REAL-TIME CHÍNH XÁC MỐC GIÁ NGƯỜI DÙNG ĐẶT
+        # 1. KIỂM TRA & BÁO ĐỘNG REAL-TIME CHÍNH XÁC MỐC GIÁ NGƯỜI DÙNG ĐẶT (QUÉT KHUNG NẾN 1 PHÚT)
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
-                    df, err = fetch_stock_data(symbol, resolution="D", count=15)
+                    df, err = fetch_stock_data(symbol, resolution="1", count=10)
                     if not err and not df.empty:
                         current_price = df.iloc[-1]["Close"]
                         entry_price = pos["entry"]
@@ -580,7 +580,7 @@ def background_scheduler_thread(application):
                                 f"🚨 **CẢNH BÁO REAL-TIME: GIÁ CHẠM MỐC ĐẶT RA!** 🚨\n\n"
                                 f"• Mã cổ phiếu: **{symbol.upper()}**\n"
                                 f"• Mốc giá bạn cài đặt: `{alert_price}k`\n"
-                                f"• **Giá hiện tại trên Chart**: `{current_price:.1f}k` 📉\n\n"
+                                f"• **Giá hiện tại trên Chart**: `{current_price:.2f}k` 📉\n\n"
                                 f"👉 Giá đã biến động đúng mốc bạn yêu cầu, kiểm tra bảng giá ngay!"
                             )
                             try:
@@ -589,7 +589,7 @@ def background_scheduler_thread(application):
                                 pass
 
         # 2. BẢN TIN TỰ ĐỘNG LÚC 14:15 HÀNG NGÀY
-        if now.hour == 14 and now.minute == 15:
+        if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
                 if top_stocks:
@@ -603,7 +603,7 @@ def background_scheduler_thread(application):
                             pass
             time.sleep(70)
         
-        time.sleep(30)  # Quét liên tục mỗi 30 giây để bắt sát giá real-time
+        time.sleep(30)  # Quét liên tục mỗi 30 giây
 
 
 def run_strategy_backtest(symbol):
@@ -711,14 +711,12 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         entry_price = float(args[1])
         
-        # Phân tích linh hoạt tham số thứ 3 (là giá cảnh báo hay khối lượng)
         if len(args) >= 4:
             alert_price = float(args[2])
             qty = int(args[3])
         elif len(args) == 3:
-            # Kiểm tra xem tham số thứ 3 là giá cảnh báo hay khối lượng (dựa vào độ lớn của số)
             val_arg3 = float(args[2])
-            if val_arg3 < 100:  # Thường giá cổ phiếu < 100, khối lượng thường >= 100
+            if val_arg3 < 100:
                 alert_price = val_arg3
                 qty = 1000
             else:
@@ -746,9 +744,23 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Mã cổ phiếu: **{symbol}**\n"
         f"• Giá mua: `{entry_price}k` | Khối lượng: {qty} cổ\n"
         f"• **Mốc giá cảnh báo đặt ra**: `{alert_price}k`\n\n"
-        f"🤖 Bot đang chạy ngầm kiểm tra. Sẽ hú còi báo động ngay lập tức khi giá trên chart chạm hoặc tụt xuống mức `{alert_price}k`!",
+        f"🤖 Bot đang chạy ngầm kiểm tra giá thị trường...",
         parse_mode="Markdown"
     )
+
+    # CHECK NGAY LẬP TỨC KHUNG 1 PHÚT KHI VỪA SET
+    df, err = fetch_stock_data(symbol, resolution="1", count=10)
+    if not err and not df.empty:
+        current_price = df.iloc[-1]["Close"]
+        if current_price <= alert_price:
+            alert_text = (
+                f"🚨 **CẢNH BÁO REAL-TIME: GIÁ HIỆN TẠI ĐÃ DƯỚI MỐC CÀI ĐẶT!** 🚨\n\n"
+                f"• Mã cổ phiếu: **{symbol.upper()}**\n"
+                f"• Mốc giá bạn đặt: `{alert_price}k`\n"
+                f"• **Giá hiện tại thị trường**: `{current_price:.2f}k` 📉\n\n"
+                f"👉 Giá hiện tại đã thấp hơn mốc cài đặt, hãy kiểm tra lại vị thế!"
+            )
+            await update.message.reply_text(alert_text, parse_mode="Markdown")
 
 
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -763,7 +775,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = "📂 **DANH MỤC ĐẦU TƯ & GIÁM SÁT REAL-TIME**\n\n"
     for symbol, pos in USER_PORTFOLIOS[chat_id].items():
-        df, err = fetch_stock_data(symbol, resolution="D", count=30)
+        df, err = fetch_stock_data(symbol, resolution="1", count=10)
         if not err and not df.empty:
             current_price = df.iloc[-1]["Close"]
             qty = pos.get("qty", 1000)
@@ -775,7 +787,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
 
             text += f"🔹 **Mã: {symbol.upper()}** ({qty} cổ)\n"
-            text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.1f}k`\n"
+            text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.2f}k`\n"
             text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n"
             text += f"  • 🎯 **Mốc giá canh báo**: `{alert_price}k`\n"
             text += f"  • Lệnh gỡ bỏ: `/reset {symbol}`\n"
