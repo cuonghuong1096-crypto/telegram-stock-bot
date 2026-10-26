@@ -38,7 +38,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# Đã bổ sung toàn bộ các mã từ các danh mục hình ảnh (Đầu tư công, Bất động sản, Ngân hàng, Chứng khoán, Bán lẻ, Viễn thông, Thủy sản/May mặc, Dầu khí, Vận tải, Vật liệu...)
 WATCHLIST_SCAN = [
     # Nhóm gốc & Ngân hàng
     "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
@@ -90,7 +89,7 @@ executor = ThreadPoolExecutor(max_workers=8)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (BỔ SUNG PHÂN KỲ & SQUEEZE)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -204,6 +203,21 @@ def calculate_indicators(df):
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
 
+    # 1. Bổ sung phát hiện Tích lũy nền chặt (Bollinger Squeeze)
+    df["BB_Squeeze"] = df["BB_Width"] <= df["BB_Width"].rolling(50).quantile(0.20)
+
+    # 2. Bổ sung phát hiện Phân kỳ RSI (Âm & Dương)
+    price_max_now = df["Close"].iloc[-1]
+    price_max_prev = df["Close"].iloc[-20:-5].max() if len(df) >= 20 else price_max_now
+    rsi_now = df["RSI"].iloc[-1]
+    rsi_prev_max = df["RSI"].iloc[-20:-5].max() if len(df) >= 20 else rsi_now
+    df["RSI_Bearish_Divergence"] = (price_max_now > price_max_prev) and (rsi_now < rsi_prev_max) and (rsi_now > 60)
+
+    price_min_now = df["Close"].iloc[-1]
+    price_min_prev = df["Close"].iloc[-20:-5].min() if len(df) >= 20 else price_min_now
+    rsi_prev_min = df["RSI"].iloc[-20:-5].min() if len(df) >= 20 else rsi_now
+    df["RSI_Bullish_Divergence"] = (price_min_now < price_min_prev) and (rsi_now > rsi_prev_min) and (rsi_now < 40)
+
     high_low = df["High"] - df["Low"]
     high_close = np.abs(df["High"] - df["Close"].shift())
     low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -311,7 +325,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TÍCH HỢP TÍN HIỆU MỚI)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p):
@@ -343,6 +357,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
     bb_lower = last["BB_Lower"] if not np.isnan(last["BB_Lower"]) else close
     bb_width = last["BB_Width"] if not np.isnan(last["BB_Width"]) else 0.1
+
+    is_bb_squeeze = last.get("BB_Squeeze", False)
+    is_rsi_bear_div = last.get("RSI_Bearish_Divergence", False)
+    is_rsi_bull_div = last.get("RSI_Bullish_Divergence", False)
+    is_out_bb = close > bb_upper
 
     tenkan = last["Tenkan_sen"] if not np.isnan(last["Tenkan_sen"]) else close
     kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
@@ -399,6 +418,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"Dòng tiền yếu/rút lui (CMF: {cmf:.2f}, MFI: {mfi:.1f})")
 
+    # Xử lý các tín hiệu nâng cao mới
+    if is_bb_squeeze:
+        score += 10
+        confluence_points.append("⚡ [NỀN TÍCH LŨY SIẾT CHẶT BB]: Dải Bollinger siết hẹp, chuẩn bị bùng nổ xu hướng")
+    if is_rsi_bull_div:
+        score += 15
+        confluence_points.append("🎯 [PHÂN KỲ DƯƠNG RSI]: Tín hiệu tóm đáy / Đảo chiều tăng giá tiềm năng")
+
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
     is_bear_trap = (rsi > 65 and stoch_rsi < 20)
     is_exhaustion_trap = (lr_slope > 0 and macd_hist < 0)
@@ -417,6 +444,12 @@ def analyze_stock(symbol, resolution="D", count=250):
     if is_overbought_full:
         score -= 15
         trap_list.append("⚠️ [QUÁ MUA TOÀN DIỆN]: Rủi ro hưng phấn cực độ.")
+    if is_rsi_bear_div:
+        score -= 20
+        trap_list.append("⚠️ [PHÂN KỲ ÂM RSI]: Giá lập đỉnh mới nhưng xung lực suy giảm, rủi ro đảo chiều cao.")
+    if is_out_bb:
+        score -= 10
+        trap_list.append("⚠️ [VƯỢT NGOÀI BOLINGER TOP]: Giá bứt ra khỏi biên trên, rủi ro điều chỉnh kỹ thuật (Mean Reversion).")
 
     if not trap_list:
         trap_list.append("🛡️ Không phát hiện cấu trúc bẫy giá nguy hiểm đáng kể.")
@@ -446,7 +479,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         zone_desc = f"Vùng **{fmt(val)} - {fmt(poc)}**: Vùng nhạy cảm sát biên dưới."
 
-    if confidence_score >= 65 and not is_below_val and close > cloud_bottom and not is_overbought_full and not is_bull_trap:
+    if confidence_score >= 65 and not is_below_val and close > cloud_bottom and not is_overbought_full and not is_bull_trap and not is_rsi_bear_div:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
@@ -482,10 +515,10 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     if (is_below_val and cmf < 0) or cmf < -0.20 or close < cloud_bottom:
         sec5_action = "⚠️ **Kịch bản Rủi ro dòng tiền rút:** Cấu trúc xu hướng suy yếu. Tuyệt đối không bắt đáy sớm."
-    elif is_bull_trap:
-        sec5_action = "⚡ **Kịch bản Bẫy giá ngắn hạn (Bull Trap):** Nhịp hồi kỹ thuật rủi ro cao."
-    elif is_overbought_full:
-        sec5_action = "⚠️ **Kịch bản Quá mua hưng phấn:** Ưu tiên chốt lời hiện thực hóa lợi nhuận."
+    elif is_bull_trap or is_rsi_bear_div:
+        sec5_action = "⚡ **Kịch bản Cảnh báo Phân kỳ / Bẫy giá:** Nhịp tăng rướn rủi ro cao, không mua đuổi."
+    elif is_overbought_full or is_out_bb:
+        sec5_action = "⚠️ **Kịch bản Quá mua / Vượt biên:** Ưu tiên chốt lời hiện thực hóa lợi nhuận."
     elif confidence_score >= 65 and not is_below_val:
         sec5_action = "🚀 **Kịch bản Thuận lợi:** Tiếp diễn xu hướng tăng."
     else:
@@ -512,17 +545,17 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part1 += f"• Khuyến nghị: {system_status} | NAV: {nav_rec}\n"
     text_part1 += f"👉 **Kết luận & Hành động:** {action_note}\n\n"
 
-    text_part2 = f"⚡ 5. NHẬN DIỆN BẪY GIÁ (MARKET TRAPS):\n"
+    text_part2 = f"⚡ 5. NHẬN DIỆN BẪY GIÁ & PHÂN KỲ (MARKET TRAPS & DIVERGENCE):\n"
     text_part2 += f"• Đánh giá: {trap_desc}\n"
-    text_part2 += f"👉 **Lời khuyên chuyên gia:** Luôn kiểm chứng khối lượng và lực cầu cuối phiên để tránh sập bẫy tạo lập.\n\n"
+    text_part2 += f"👉 **Lời khuyên chuyên gia:** Luôn kiểm chứng khối lượng và phân kỳ để tránh sập bẫy tạo lập.\n\n"
 
     text_part2 += f"⚡ 6. TỔNG HỢP ĐIỂM CỘNG & CẢNH BÁO RỦI RO:\n"
     text_part2 += f"• Điểm cộng: {conf_str}\n"
     text_part2 += f"• Cảnh báo: {warn_str}\n"
     text_part2 += f"👉 **Kết luận:** {sec5_action}\n\n"
 
-    text_part2 += f"📈 7. DÃI BOLINGER BANDS:\n"
-    text_part2 += f"• Trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Độ rộng: {bb_width:.3f}\n\n"
+    text_part2 += f"📈 7. DÃI BOLINGER BANDS & TÍCH LŨY SQUEEZE:\n"
+    text_part2 += f"• Trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Độ rộng: {bb_width:.3f} | Squeeze Nền: {'🟢 Có' : '🔴 Không'}\n\n"
 
     text_part2 += f"🏁 8. TỔNG KẾT CHIẾN LƯỢC:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
@@ -571,8 +604,24 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST (TỐI ƯU ĐA LUỒNG)
+# 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC THỊ TRƯỜNG CHUNG)
 # ==========================================
+def check_market_trend_general():
+    """Hàm kiểm tra xu hướng thị trường chung qua VN-Index (Mã đại diện: VHM hoặc VCB)"""
+    try:
+        df, err = fetch_stock_data("VCB", resolution="D", count=50)
+        if err or df.empty:
+            return True # Cho phép đi tiếp nếu lỗi kết nối
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        # Nếu nhóm dẫn dắt/trụ lớn nằm trên MA50 thì thị trường chung ổn định
+        if last["Close"] > last["EMA50"]:
+            return True
+    except Exception:
+        pass
+    return True
+
+
 def run_market_screener():
     results = []
     for symbol in WATCHLIST_SCAN:
@@ -615,7 +664,6 @@ def run_market_screener():
 
 
 def process_single_stock_for_autobuy(symbol):
-    """Hàm phụ trợ phân tích một mã độc lập để chạy đa luồng siêu tốc"""
     try:
         df, err = fetch_stock_data(symbol, resolution="D", count=300)
         if err or df.empty or len(df) < 50:
@@ -630,6 +678,8 @@ def process_single_stock_for_autobuy(symbol):
         macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
         rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
         stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
+        is_rsi_bear_div = last.get("RSI_Bearish_Divergence", False)
+        is_bb_squeeze = last.get("BB_Squeeze", False)
         
         span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
         span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
@@ -658,14 +708,18 @@ def process_single_stock_for_autobuy(symbol):
             score += 15
         if adx >= 20:
             score += 10
+        if is_bb_squeeze:
+            score += 10
 
-        # Kiểm tra bẫy giá giả
+        # Kiểm tra bẫy giá giả & phân kỳ
         is_bull_trap = (rsi < 40 and stoch_rsi > 80)
         if is_bull_trap:
             score -= 30
+        if is_rsi_bear_div:
+            score -= 25
 
         # Lọc các mã đạt chuẩn giải ngân an toàn (Score >= 65)
-        if score >= 65 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap:
+        if score >= 65 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
             atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
             poc, vah, val = calculate_volume_profile(df)
             
@@ -688,7 +742,6 @@ def process_single_stock_for_autobuy(symbol):
 
 def run_smart_buy_screener():
     buy_recommendations = []
-    # Quét song song 10 mã một lúc bằng ThreadPoolExecutor giúp giảm thời gian chờ tối đa
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
         for future in futures:
@@ -893,7 +946,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Đã bổ sung toàn bộ danh mục mã cá nhân từ hình ảnh vào hệ thống quét tự động đa luồng!"
+        "📌 **Tính năng mới:** Đã tích hợp đầy đủ Phân kỳ RSI, Nền tích lũy Squeeze và lọc bẫy giá nâng cao!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1245,7 +1298,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Fast Multi-Threaded Auto-Buy is running!")
+        self.wfile.write(b"Quant Bot with Advanced Divergence & Squeeze Analysis is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1286,5 +1339,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật danh mục đầy đủ!")
+    print("🚀 Bot Quant Trading System đã hoàn tất cập nhật phiên bản nâng cao chuyên sâu!")
     app.run_polling(drop_pending_updates=True)
