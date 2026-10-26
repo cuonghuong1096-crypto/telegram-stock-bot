@@ -525,6 +525,9 @@ def analyze_stock(symbol, resolution="D", count=250):
             InlineKeyboardButton("📈 1W", callback_data=f"{symbol}|W|250"),
         ],
         [
+            InlineKeyboardButton("📂 Xem Toàn Bộ Mức Cài Đặt", callback_data="show_all_settings"),
+        ],
+        [
             InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
             InlineKeyboardButton("💡 Giải thích Ichimoku", callback_data="help_rsi"),
         ],
@@ -794,12 +797,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
         "`/setstop PLX 33.5` *(Mã, Giá cắt lỗ cần cảnh báo)*\n\n"
         "4️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
-        "`/portfolio`\n\n"
+        "`/portfolio` hoặc `/listall`\n\n"
         "5️⃣ **Quét dòng tiền & Backtest:**\n"
         "`/scan` | `/backtest VHM`\n\n"
         "6️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset PLX`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới:** Tách biệt rõ ràng mốc canh Mua và mốc Stop Loss, kết hợp nhận diện **Bẫy giá**!"
+        "📌 **Tính năng mới:** Tách biệt rõ ràng mốc canh Mua và mốc Stop Loss, kèm nút **Xem Toàn Bộ Mức Cài Đặt** ngay dưới biểu đồ!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -836,7 +839,6 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "stop_alert_prices": []
         }
     
-    # Cập nhật thông tin cơ bản nếu thay đổi
     USER_PORTFOLIOS[chat_id][symbol]["entry"] = entry_price
     USER_PORTFOLIOS[chat_id][symbol]["qty"] = qty
 
@@ -883,7 +885,6 @@ async def setstop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         USER_PORTFOLIOS[chat_id] = {}
 
     if symbol not in USER_PORTFOLIOS[chat_id]:
-        # Nếu mã chưa tồn tại trong portfolio, khởi tạo mặc định
         USER_PORTFOLIOS[chat_id][symbol] = {
             "entry": stop_price,
             "qty": 1000,
@@ -948,8 +949,43 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text += f"🔹 **{symbol.upper()}**: Không lấy được dữ liệu.\n"
 
-    text += "\n💡 Dùng `/reset <MÃ>` để xóa mã cụ thể, hoặc `/reset ALL` để xóa sạch."
+    text += "\n💡 Dùng lệnh `/listall` để xem tổng quan nhanh hoặc `/reset <MÃ>` để xóa."
     await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def show_all_settings_func(update_or_query, context, chat_id):
+    """Hàm phụ trợ hiển thị toàn bộ chi tiết mã và các mốc cảnh báo đã cài"""
+    if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
+        text = "📂 Danh mục theo dõi của bạn hiện đang trống.\n👉 Sử dụng `/setbuy` hoặc `/setstop` để bắt đầu cài đặt."
+    else:
+        text = "📋 **TỔNG HỢP TOÀN BỘ MÃ & MỐC CÀI ĐẶT CANH MUA / STOP LOSS**\n\n"
+        for idx, (symbol, pos) in enumerate(USER_PORTFOLIOS[chat_id].items(), 1):
+            entry = pos.get("entry", 0)
+            qty = pos.get("qty", 1000)
+            buy_list = pos.get("buy_alert_prices", [])
+            stop_list = pos.get("stop_alert_prices", [])
+            
+            buy_str = ", ".join([f"{p}k" for p in buy_list]) if buy_list else "Chưa cài"
+            stop_str = ", ".join([f"{p}k" for p in stop_list]) if stop_list else "Chưa cài"
+            
+            text += f"{idx}. 🔹 **Mã: {symbol.upper()}**\n"
+            text += f"   • Giá vốn: `{entry}k` | Khối lượng: `{qty}`\n"
+            text += f"   • 🎯 **Mốc Canh Mua**: `{buy_str}`\n"
+            text += f"   • 🛡️ **Mốc Stop Loss**: `{stop_str}`\n"
+            text += f"   • 🗑️ Lệnh xóa: `/reset {symbol}`\n"
+            text += "------------------------------------\n"
+        
+        text += "\n💡 *Bot đang giám sát real-time 24/7 các mốc này!*"
+
+    if hasattr(update_or_query, "message") and update_or_query.message:
+        await update_or_query.message.reply_text(text, parse_mode="Markdown")
+    else:
+        await update_or_query.edit_message_text(text, parse_mode="Markdown")
+
+
+async def listall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    await show_all_settings_func(update, context, chat_id)
 
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1038,6 +1074,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    if data == "show_all_settings":
+        chat_id = query.message.chat_id
+        await show_all_settings_func(query, context, chat_id)
+        return
+
     if data.startswith("help_"):
         explanations = {
             "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá.",
@@ -1111,9 +1152,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("setbuy", setbuy_command))
     app.add_handler(CommandHandler("setstop", setstop_command))
     app.add_handler(CommandHandler("portfolio", portfolio_command))
+    app.add_handler(CommandHandler("listall", listall_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã hoàn tất tách biệt lệnh Canh Mua và Stop Loss!")
+    print("🚀 Bot Quant Trading System đã hoàn tất tích hợp Menu Xem Cài Đặt và Lệnh /listall!")
     app.run_polling(drop_pending_updates=True)
