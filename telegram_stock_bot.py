@@ -554,8 +554,10 @@ def analyze_stock(symbol, resolution="D", count=250):
     text_part2 += f"• Cảnh báo: {warn_str}\n"
     text_part2 += f"👉 **Kết luận:** {sec5_action}\n\n"
 
+    # Đã sửa lỗi cú pháp định dạng chuỗi Squeeze Nền tại đây
+    squeeze_display = "🟢 Có" if is_bb_squeeze else "🔴 Không"
     text_part2 += f"📈 7. DÃI BOLINGER BANDS & TÍCH LŨY SQUEEZE:\n"
-    text_part2 += f"• Trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Độ rộng: {bb_width:.3f} | Squeeze Nền: {'🟢 Có' : '🔴 Không'}\n\n"
+    text_part2 += f"• Trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Độ rộng: {bb_width:.3f} | Squeeze Nền: {squeeze_display}\n\n"
 
     text_part2 += f"🏁 8. TỔNG KẾT CHIẾN LƯỢC:\n"
     text_part2 += f"• Khuyến nghị: {final_icon}\n"
@@ -607,14 +609,12 @@ def analyze_stock(symbol, resolution="D", count=250):
 # 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC THỊ TRƯỜNG CHUNG)
 # ==========================================
 def check_market_trend_general():
-    """Hàm kiểm tra xu hướng thị trường chung qua VN-Index (Mã đại diện: VHM hoặc VCB)"""
     try:
         df, err = fetch_stock_data("VCB", resolution="D", count=50)
         if err or df.empty:
-            return True # Cho phép đi tiếp nếu lỗi kết nối
+            return True
         df = calculate_indicators(df)
         last = df.iloc[-1]
-        # Nếu nhóm dẫn dắt/trụ lớn nằm trên MA50 thì thị trường chung ổn định
         if last["Close"] > last["EMA50"]:
             return True
     except Exception:
@@ -691,7 +691,6 @@ def process_single_stock_for_autobuy(symbol):
         if avg_trading_value < 5_000_000_000: 
             return None
 
-        # Chấm điểm kỹ thuật chuẩn xác theo hệ thống chiến lược
         score = 50
         if close > cloud_top:
             score += 20
@@ -711,14 +710,12 @@ def process_single_stock_for_autobuy(symbol):
         if is_bb_squeeze:
             score += 10
 
-        # Kiểm tra bẫy giá giả & phân kỳ
         is_bull_trap = (rsi < 40 and stoch_rsi > 80)
         if is_bull_trap:
             score -= 30
         if is_rsi_bear_div:
             score -= 25
 
-        # Lọc các mã đạt chuẩn giải ngân an toàn (Score >= 65)
         if score >= 65 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
             atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
             poc, vah, val = calculate_volume_profile(df)
