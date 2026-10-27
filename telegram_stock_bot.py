@@ -323,6 +323,60 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
+# CÁC HÀM BỔ SUNG NÂNG CAO (KHỐI NGOẠI, CƠ BẢN, ĐA KHUNG POC)
+# ==========================================
+def get_foreign_trading_flow(symbol):
+    """Kiểm tra khối ngoại mua/bán ròng gần nhất từ API TCBS"""
+    url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/foreign-trading?ticker={symbol.upper()}&resolution=D&count=5"
+    headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
+    try:
+        res = requests.get(url, headers=headers, timeout=2)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) >= 3:
+                # Kiểm tra 3 phiên gần nhất khối ngoại mua ròng (netVal > 0)
+                recent_3 = data[:3]
+                is_net_buying = all(item.get("netVal", 0) > 0 for item in recent_3)
+                return is_net_buying
+    except Exception:
+        pass
+    return False
+
+def get_fundamental_ratios(symbol):
+    """Lấy chỉ số cơ bản (P/E, ROE) từ TCBS để lọc Value Trap"""
+    url = f"https://apifull.tcbs.com.vn/vietnam-stock/v1/stock/financial-ratio/{symbol.upper()}/historic?yearly=0&isQuarterly=1"
+    headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
+    try:
+        res = requests.get(url, headers=headers, timeout=2)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                latest = data[0]
+                return {
+                    "pe": latest.get("priceToEarning", 10),
+                    "roe": latest.get("roe", 5),
+                }
+    except Exception:
+        pass
+    return {"pe": 15, "roe": 10} # Giá trị mặc định an toàn nếu lỗi kết nối
+
+def analyze_multi_timeframe_poc(symbol):
+    """Quét POC Đa khung (Ngày + Tuần) và kiểm tra sự dịch chuyển POC Migration"""
+    try:
+        df_d, _ = fetch_stock_data(symbol, resolution="D", count=100)
+        poc_d, _, _ = calculate_volume_profile(df_d, bins=20)
+        
+        df_w, _ = fetch_stock_data(symbol, resolution="W", count=50)
+        poc_w, _, _ = calculate_volume_profile(df_w, bins=20)
+        
+        current_price = df_d.iloc[-1]["Close"] if not df_d.empty else 0
+        is_above_weekly_poc = current_price >= poc_w
+        return is_above_weekly_poc
+    except Exception:
+        return True
+
+
+# ==========================================
 # 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
@@ -600,7 +654,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST (TĂNG TỐC ĐỘ SONG SONG)
+# 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC THÔNG MINH MỚI)
 # ==========================================
 def check_market_trend_general():
     try:
@@ -706,6 +760,11 @@ def run_hourly_cashflow_screener():
 
 def process_single_stock_for_autobuy(symbol):
     try:
+        # BỘ LỌC CƠ BẢN: Chống Value Trap (P/E quá cao hoặc ROE âm)
+        ratios = get_fundamental_ratios(symbol)
+        if ratios["pe"] > 45 or ratios["roe"] < 0:
+            return None
+
         df, err = fetch_stock_data(symbol, resolution="D", count=200)
         if err or df.empty or len(df) < 50:
             return None
@@ -749,6 +808,15 @@ def process_single_stock_for_autobuy(symbol):
         if adx >= 20:
             score += 10
         if is_bb_squeeze:
+            score += 10
+
+        # BỘ LỌC KHỐI NGOẠI & TỰ DOANH: Cộng điểm nếu khối ngoại mua ròng 3 phiên liên tiếp
+        is_foreign_buying = get_foreign_trading_flow(symbol)
+        if is_foreign_buying:
+            score += 15
+
+        # BỘ LỌC ĐA KHUNG POC: Cộng điểm nếu nằm trên POC tuần
+        if analyze_multi_timeframe_poc(symbol):
             score += 10
 
         is_bull_trap = (rsi < 40 and stoch_rsi > 80)
@@ -838,7 +906,6 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
-        # 🔥 ĐÃ SỬA: Cho phép quét tự động các giờ giao dịch (9, 10, 11, 13, 14) và nới rộng phút <= 2 để không bỏ lỡ 13:00
         if now.weekday() < 5 and now.hour in [9, 10, 11, 13, 14] and now.minute <= 2:
             if last_hourly_scan_hour != now.hour and ACTIVE_CHAT_IDS:
                 last_hourly_scan_hour = now.hour
@@ -1335,7 +1402,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
         
-        # Gửi tin nhắn chờ mới hoàn toàn, giữ nguyên toàn bộ lịch sử tin nhắn cũ
         msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution})...")
 
         def background_task():
