@@ -205,6 +205,9 @@ def calculate_indicators(df):
 
     df["BB_Squeeze"] = df["BB_Width"] <= df["BB_Width"].rolling(50).quantile(0.20)
 
+    # Đo độ biến động hẹp (Low Volatility / Sideway Base) trong 10-20 phiên gần nhất
+    df["Price_Range_Pct"] = (df["High"].rolling(10).max() - df["Low"].rolling(10).min()) / df["Close"]
+
     price_max_now = df["Close"].iloc[-1]
     price_max_prev = df["Close"].iloc[-20:-5].max() if len(df) >= 20 else price_max_now
     rsi_now = df["RSI"].iloc[-1]
@@ -326,7 +329,6 @@ def calculate_volume_profile(df, bins=20):
 # CÁC HÀM BỔ SUNG NÂNG CAO (KHỐI NGOẠI, CƠ BẢN, ĐA KHUNG POC)
 # ==========================================
 def get_foreign_trading_flow(symbol):
-    """Kiểm tra khối ngoại mua/bán ròng gần nhất từ API TCBS"""
     url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/foreign-trading?ticker={symbol.upper()}&resolution=D&count=5"
     headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
     try:
@@ -334,7 +336,6 @@ def get_foreign_trading_flow(symbol):
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) >= 3:
-                # Kiểm tra 3 phiên gần nhất khối ngoại mua ròng (netVal > 0)
                 recent_3 = data[:3]
                 is_net_buying = all(item.get("netVal", 0) > 0 for item in recent_3)
                 return is_net_buying
@@ -343,7 +344,6 @@ def get_foreign_trading_flow(symbol):
     return False
 
 def get_fundamental_ratios(symbol):
-    """Lấy chỉ số cơ bản (P/E, ROE) từ TCBS để lọc Value Trap"""
     url = f"https://apifull.tcbs.com.vn/vietnam-stock/v1/stock/financial-ratio/{symbol.upper()}/historic?yearly=0&isQuarterly=1"
     headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
     try:
@@ -358,10 +358,9 @@ def get_fundamental_ratios(symbol):
                 }
     except Exception:
         pass
-    return {"pe": 15, "roe": 10} # Giá trị mặc định an toàn nếu lỗi kết nối
+    return {"pe": 15, "roe": 10}
 
 def analyze_multi_timeframe_poc(symbol):
-    """Quét POC Đa khung (Ngày + Tuần) và kiểm tra sự dịch chuyển POC Migration"""
     try:
         df_d, _ = fetch_stock_data(symbol, resolution="D", count=100)
         poc_d, _, _ = calculate_volume_profile(df_d, bins=20)
@@ -625,11 +624,11 @@ def analyze_stock(symbol, resolution="D", count=250):
         ],
         [
             InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
-            InlineKeyboardButton("💡 Giải thích Ichimoku", callback_data="help_rsi"),
+            InlineKeyboardButton("💡 Giải thích Ichimoku/RSI", callback_data="help_rsi"),
         ],
         [
             InlineKeyboardButton("💡 Giải thích Volume Profile", callback_data="help_vp"),
-            InlineKeyboardButton("💡 Hướng dẫn Lệnh Cá Nhân", callback_data="help_portfolio"),
+            InlineKeyboardButton("💡 Giải thích Scan vs Autobuy", callback_data="help_scan_vs_autobuy"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -654,7 +653,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC THÔNG MINH MỚI)
+# 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC TÍCH LŨY SIẾT CHẶT & MUA TẠI NỀN)
 # ==========================================
 def check_market_trend_general():
     try:
@@ -688,6 +687,7 @@ def run_market_screener():
         volume = last["Volume"]
         ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
         vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else volume
+        price_range_pct = last.get("Price_Range_Pct", 0.1)
         
         avg_trading_value = vol_sma20 * close * 1000
         if avg_trading_value < 5_000_000_000:
@@ -696,8 +696,9 @@ def run_market_screener():
         price_range = high - low
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
-        if rvol >= 1.25 and cmf > 0.03 and close > ema50 and adx >= 20 and is_solid_candle:
-            score = (rvol * 2.5) + (cmf * 6) + (adx * 0.15)
+        # Tiêu chí: Tích lũy biên độ hẹp + Dòng tiền CMF dương + Khởi động bứt phá RVOL
+        if (rvol >= 1.2 or price_range_pct < 0.08) and cmf > 0.02 and close > ema50 and is_solid_candle:
+            score = (rvol * 2.5) + (cmf * 6) + (max(0, 0.1 - price_range_pct) * 20)
             return {
                 "symbol": symbol,
                 "close": close,
@@ -760,7 +761,6 @@ def run_hourly_cashflow_screener():
 
 def process_single_stock_for_autobuy(symbol):
     try:
-        # BỘ LỌC CƠ BẢN: Chống Value Trap (P/E quá cao hoặc ROE âm)
         ratios = get_fundamental_ratios(symbol)
         if ratios["pe"] > 45 or ratios["roe"] < 0:
             return None
@@ -780,6 +780,7 @@ def process_single_stock_for_autobuy(symbol):
         stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
         is_rsi_bear_div = last.get("RSI_Bearish_Divergence", False)
         is_bb_squeeze = last.get("BB_Squeeze", False)
+        price_range_pct = last.get("Price_Range_Pct", 0.1)
         
         span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
         span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
@@ -799,23 +800,19 @@ def process_single_stock_for_autobuy(symbol):
         else:
             score -= 15
 
-        if cmf > 0.03:
+        if cmf > 0.02:
             score += 15
-        if rvol > 1.1:
-            score += 10
+        if rvol > 1.1 or price_range_pct < 0.07:
+            score += 15  # Thưởng điểm cho mã có nền tích lũy siết chặt hoặc volume khởi động
         if macd_hist > 0:
-            score += 15
-        if adx >= 20:
             score += 10
         if is_bb_squeeze:
             score += 10
 
-        # BỘ LỌC KHỐI NGOẠI & TỰ DOANH: Cộng điểm nếu khối ngoại mua ròng 3 phiên liên tiếp
         is_foreign_buying = get_foreign_trading_flow(symbol)
         if is_foreign_buying:
             score += 15
 
-        # BỘ LỌC ĐA KHUNG POC: Cộng điểm nếu nằm trên POC tuần
         if analyze_multi_timeframe_poc(symbol):
             score += 10
 
@@ -825,7 +822,7 @@ def process_single_stock_for_autobuy(symbol):
         if is_rsi_bear_div:
             score -= 25
 
-        if score >= 65 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
+        if score >= 60 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
             atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
             poc, vah, val = calculate_volume_profile(df)
             
@@ -1008,7 +1005,7 @@ def run_strategy_backtest(symbol):
         ema50 = df["EMA50"].iloc[i]
         atr = df["ATR"].iloc[i]
         
-        if not np.isnan(rvol) and not np.isnan(cmf) and not np.isnan(adx) and rvol > 1.3 and cmf > 0.03 and close > ema50 and adx >= 20:
+        if not np.isnan(rvol) and not np.isnan(cmf) and not np.isnan(adx) and (rvol > 1.2 or df["Price_Range_Pct"].iloc[i] < 0.08) and cmf > 0.02 and close > ema50:
             entry_price = close
             stoploss_price = entry_price - (1.5 * atr) if not np.isnan(atr) else entry_price * 0.935
             target_price = entry_price + (1.5 * (entry_price - stoploss_price))
@@ -1046,7 +1043,7 @@ def run_strategy_backtest(symbol):
         return f"📊 KẾT QUẢ BACKTEST: {symbol}\n\nChưa xuất hiện điểm mua đạt tiêu chuẩn."
 
     win_rate = (wins / trades) * 100
-    report = f"📊 KẾT QUẢ BACKTEST CHIẾN LƯỢC (ATR & ADX): {symbol}\n"
+    report = f"📊 KẾT QUẢ BACKTEST CHIẾN LƯỢC (TÍCH LŨY NỀN & DÒNG TIỀN): {symbol}\n"
     report += f"• Tổng số lệnh: {trades} | Thắng: {wins} | Thua: {losses}\n"
     report += f"• Tỷ lệ thắng: {win_rate:.1f}% | Hiệu suất: {total_return:+.2f}%\n"
     return report
@@ -1065,7 +1062,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `BSR`)\n\n"
-        "2️⃣ **🤖 Lọc mã có điểm mua chuẩn xác (`/autobuy`):** Tự động quét và chọn lọc mã đủ điều kiện giải ngân an toàn.\n\n"
+        "2️⃣ **🤖 Lọc mã có điểm mua chuẩn xác (`/autobuy`):** \n"
+        "   • `/scan`: Giống như một chiếc **'radar dò dòng tiền'**, cho bạn biết mã nào đang hot, đang được chú ý.\n"
+        "   • `/autobuy`: Giống như một **'bộ lọc giải ngân chuẩn hóa'**, chắt lọc kỹ càng hơn từ các tín hiệu dòng tiền đó cộng thêm các màng lọc rủi ro để đưa ra điểm vào lệnh (Entry) và cắt lỗ cụ thể, sẵn sàng cho bạn cài lệnh giao dịch.\n\n"
         "3️⃣ **Cài đặt canh MUA (Real-Time):**\n"
         "`/setbuy BSR 29.4 28.5 1000` *(Mã, Giá vốn, Giá canh mua, Khối lượng)*\n\n"
         "4️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
@@ -1076,7 +1075,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng mới tích hợp:** Tự động gửi bản tin dòng tiền cô đọng **mỗi 1 tiếng** trong khung giờ giao dịch!"
+        "📌 **Tính năng nâng cấp:** Đã tích hợp bộ lọc phát hiện nền tích lũy biên độ hẹp và dòng tiền tổ chức trước thềm bùng nổ!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1086,10 +1085,10 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     
     if update.message:
-        msg = await update.message.reply_text("🤖 **Đang quét siêu tốc toàn bộ danh mục cổ phiếu...** ⚡")
+        msg = await update.message.reply_text("🤖 **Đang quét siêu tốc các mã siết nền tích lũy & bùng nổ dòng tiền...** ⚡")
     else:
         query = update.callback_query
-        msg = await query.message.reply_text("🤖 **Đang quét siêu tốc toàn bộ danh mục cổ phiếu...** ⚡")
+        msg = await query.message.reply_text("🤖 **Đang quét siêu tốc các mã siết nền tích lũy & bùng nổ dòng tiền...** ⚡")
 
     try:
         picks = run_smart_buy_screener()
@@ -1321,14 +1320,14 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    msg = await update.message.reply_text("🔍 Đang quét siêu tốc dòng tiền toàn thị trường... ⚡")
+    msg = await update.message.reply_text("🔍 Đang quét các mã siết nền giá & dòng tiền tích lũy... ⚡")
     try:
         top_stocks = run_market_screener()
         if not top_stocks:
             await msg.edit_text("⚠️ Hiện tại không có mã nào thỏa mãn tiêu chí.")
             return
             
-        text = "🚀 TOP CỔ PHIẾU DÒNG TIỀN TỔ CHỨC THU GOM (KHUNG D)\n\n"
+        text = "🚀 TOP CỔ PHIẾU SIẾT NỀN TÍCH LŨY & DÒNG TIỀN TỔ CHỨC (KHUNG D)\n\n"
         for idx, item in enumerate(top_stocks, 1):
             text += f"{idx}. {item['symbol']} | Giá: {item['close']:.1f}k | RVOL: {item['rvol']:.2f}x\n"
         await msg.edit_text(text)
@@ -1390,10 +1389,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("help_"):
         explanations = {
-            "help_cmf": "💡 **Giải thích CMF & MFI:**\n• **CMF:** Dòng tiền tích lũy/phân phối lớn.\n• **MFI:** Chỉ số dòng tiền kết hợp khối lượng và giá.",
-            "help_rsi": "💡 **Giải thích Ichimoku & ADX:**\n• Xác định xu hướng, độ mạnh của dòng tiền.",
-            "help_vp": "💡 **Giải thích Volume Profile:**\n• **POC, VAL, VAH:** Các vùng hỗ trợ & kháng cự tổ chức.",
-            "help_portfolio": "💡 **Hướng dẫn Danh mục:**\n• Dùng lệnh `/setbuy` để canh mua và `/setstop` để cài đặt stop loss riêng biệt."
+            "help_cmf": (
+                "💡 **GIẢI THÍCH CHỈ SỐ DÒNG TIỀN (CMF & MFI):**\n\n"
+                "• **CMF (Chaikin Money Flow):** Đo lường áp lực dòng tiền tích lũy hoặc phân phối trong một chu kỳ (mặc định 20 phiên). "
+                "C,MF > 0 cho thấy dòng tiền lớn (tổ chức/Smart Money) đang mua gom; CMF < 0 thể hiện dòng tiền rút ra.\n"
+                "• **MFI (Money Flow Index):** Chỉ số dòng tiền kết hợp cả khối lượng và giá (giống RSI có thêm Volume). MFI > 50 thể hiện dòng tiền vào mạnh, > 80 là quá mua."
+            ),
+            "help_rsi": (
+                "💡 **GIẢI THÍCH ICHIMOKU, ADX & RSI:**\n\n"
+                "• **Mây Kumo (Span A & Span B):** Đóng vai trò là vùng kháng cự/hỗ trợ động. Giá vượt mây là vào xu hướng tăng mạnh; dưới mây là xu hướng giảm.\n"
+                "• **ADX (Average Directional Index):** Đo độ mạnh của xu hướng. ADX > 25 cho thấy xu hướng hiện tại rất khỏe; ADX < 20 thị trường đi ngang hoặc lình xình.\n"
+                "• **RSI & StochRSI:** Đo lường xung lực động lượng ngắn hạn, phát hiện vùng quá mua/quá bán và các điểm phân kỳ đảo chiều."
+            ),
+            "help_vp": (
+                "💡 **GIẢI THÍCH VOLUME PROFILE (BIÊN ĐỘ KHỐI LƯỢNG):**\n\n"
+                "• **POC (Point of Control):** Mức giá có khối lượng giao dịch khớp lệnh lớn nhất trong khung thời gian (vùng cân bằng giá).\n"
+                "• **VAL & VAH (Value Area Low / High):** Biên dưới và biên trên của vùng chứa 70% tổng khối lượng giao dịch. "
+                "Giá nằm trên VAH thể hiện sức mạnh vượt trội; giá nằm dưới VAL là vùng kháng cự mạnh hoặc rủi ro phân phối."
+            ),
+            "help_scan_vs_autobuy": (
+                "💡 **PHÂN BIỆT `/scan` VÀ `/autobuy`:**\n\n"
+                "• `/scan`: Giống như một chiếc **'radar dò dòng tiền'**, cho bạn biết mã nào đang hot, đang có khối lượng đột biến (`RVOL`) và được thị trường chú ý.\n"
+                "• `/autobuy`: Giống như một **'bộ lọc giải ngân chuẩn hóa'**, chắt lọc kỹ càng hơn từ các tín hiệu dòng tiền đó cộng thêm các màng lọc rủi ro khắt khe (chống bẫy giá Bull Trap, lọc định giá P/E, kiểm tra mây Kumo, xác định biên độ an toàn ATR) để đưa ra điểm vào lệnh (Entry) và cắt lỗ (Stoploss) cụ thể, sẵn sàng cho bạn cài lệnh giao dịch."
+            ),
+            "help_portfolio": (
+                "💡 **HƯỚNG DẪN DANH MỤC & CẢNH BÁO REAL-TIME:**\n\n"
+                "• Dùng lệnh `/setbuy <Mã> <Giá_vốn> <Giá_canh_mua> <Khối_lượng>` để cài bot canh giá mua tự động.\n"
+                "• Dùng lệnh `/setstop <Mã> <Giá_cắt_lỗ>` để cài mốc cảnh báo cắt lỗ.\n"
+                "• Bot sẽ tự động quét liên tục 24/7 và hú còi thông báo về Telegram ngay khi giá khớp các mốc bạn đã thiết lập!"
+            )
         }
         await query.message.reply_text(explanations.get(data, "Đang cập nhật..."), parse_mode="Markdown")
         return
