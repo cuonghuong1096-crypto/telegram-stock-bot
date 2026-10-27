@@ -105,7 +105,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         start_time = end_time - (count * 86400 * 2)
     else:
         res_param = "D"
-        count = max(count, 200) # Giảm nhẹ số lượng nến lịch sử lấy về để tăng tốc độ xử lý nhanh hơn
+        count = max(count, 200)
         start_time = end_time - (count * 86400 * 2)
 
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
@@ -115,7 +115,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-API-KEY": TCBS_API_KEY,
         }
-        res = requests.get(tcbs_url, headers=headers, timeout=2) # Tối ưu timeout rút gọn xuống 2s
+        res = requests.get(tcbs_url, headers=headers, timeout=2)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -665,6 +665,47 @@ def run_market_screener():
     return results[:8]
 
 
+# 🔥 HÀM MỚI: QUÉT DÒNG TIỀN CÔ ĐỌNG HÀNG GIỜ TRONG GIỜ GIAO DỊCH
+def run_hourly_cashflow_screener():
+    results = []
+    def scan_one(symbol):
+        df, err = fetch_stock_data(symbol, resolution="60", count=30)
+        if err or df.empty or len(df) < 15:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        close = last["Close"]
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
+        macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+        
+        # Tiêu chí lọc dòng tiền mạnh trong 1 giờ qua
+        if rvol >= 1.15 and (cmf > 0.02 or mfi > 55):
+            score = (rvol * 3.0) + (cmf * 5) + (mfi * 0.1)
+            return {
+                "symbol": symbol,
+                "close": close,
+                "rvol": rvol,
+                "cmf": cmf,
+                "mfi": mfi,
+                "macd_hist": macd_hist,
+                "score": score
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_one, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+            
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    return results[:6]
+
+
 def process_single_stock_for_autobuy(symbol):
     try:
         df, err = fetch_stock_data(symbol, resolution="D", count=200)
@@ -741,7 +782,6 @@ def process_single_stock_for_autobuy(symbol):
 
 def run_smart_buy_screener():
     buy_recommendations = []
-    # Tăng tốc độ bằng cách đẩy số luồng tối đa lên 20 luồng chạy song song
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
@@ -755,11 +795,13 @@ def run_smart_buy_screener():
 
 def background_scheduler_thread(application):
     sent_daily_report_today = None
+    last_hourly_scan_hour = None  # Biến kiểm soát để tránh quét trùng trong cùng 1 giờ
 
     while True:
         now = datetime.datetime.now()
         today_date = now.date()
 
+        # 1. Giám sát Real-Time danh mục cá nhân (Cũ)
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -799,6 +841,31 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
+        # 2. 🔥 TÍNH NĂNG MỚI: TỰ ĐỘNG QUÉT DÒNG TIỀN MỖI 1 TIẾNG TRONG GIỜ GIAO DỊCH (09:00 - 14:00)
+        if now.weekday() < 5 and 9 <= now.hour <= 14 and now.minute == 0:
+            if last_hourly_scan_hour != now.hour and ACTIVE_CHAT_IDS:
+                last_hourly_scan_hour = now.hour
+                top_hourly = run_hourly_cashflow_screener()
+                if top_hourly:
+                    report_msg = f"⏱️ **BẢN TIN DÒNG TIỀN CÔ ĐỌNG HÀNG GIỜ ({now.strftime('%H:00')} - {now.strftime('%d/%m/%Y')})**\n"
+                    report_msg += "------------------------------------\n"
+                    report_msg += "💡 *Top cổ phiếu hút dòng tiền mạnh trong 1 giờ qua:*\n\n"
+                    
+                    for idx, item in enumerate(top_hourly, 1):
+                        trend_icon = "🟢" if item['macd_hist'] >= 0 else "🟡"
+                        report_msg += f"{idx}. {trend_icon} **{item['symbol']}** | Giá: `{item['close']:.1f}k`\n"
+                        report_msg += f"   • RVOL: `{item['rvol']:.2f}x` | CMF: `{item['cmf']:.2f}` | MFI: `{item['mfi']:.1f}`\n"
+                    
+                    report_msg += "\n------------------------------------\n"
+                    report_msg += "🤖 *Hệ thống giám sát real-time liên tục.*"
+
+                    for chat_id in ACTIVE_CHAT_IDS:
+                        try:
+                            application.bot.send_message(chat_id=chat_id, text=report_msg, parse_mode="Markdown")
+                        except Exception:
+                            pass
+
+        # 3. Bản tin định kỳ lúc 14:15 (Cũ)
         if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -813,6 +880,7 @@ def background_scheduler_thread(application):
                             pass
             time.sleep(70)
 
+        # 4. Báo cáo tổng kết cuối phiên lúc 15:00 (Cũ)
         if now.weekday() < 5 and now.hour == 15 and now.minute == 0:
             if sent_daily_report_today != today_date and USER_PORTFOLIOS:
                 sent_daily_report_today = today_date
@@ -946,7 +1014,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/scan` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
         "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng tối ưu:** Đã siêu tốc hóa bộ lọc `/autobuy` bằng hệ thống đa luồng song song!"
+        "📌 **Tính năng mới tích hợp:** Tự động gửi bản tin dòng tiền cô đọng **mỗi 1 tiếng** trong khung giờ giao dịch!"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
