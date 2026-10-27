@@ -205,7 +205,6 @@ def calculate_indicators(df):
 
     df["BB_Squeeze"] = df["BB_Width"] <= df["BB_Width"].rolling(50).quantile(0.20)
 
-    # Đo độ biến động hẹp (Low Volatility / Sideway Base) trong 10-20 phiên gần nhất
     df["Price_Range_Pct"] = (df["High"].rolling(10).max() - df["Low"].rolling(10).min()) / df["Close"]
 
     price_max_now = df["Close"].iloc[-1]
@@ -533,7 +532,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
+        final_action = f"Các திबा báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
         
         entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
         entry_2 = round(val if is_below_val else close, 2)
@@ -619,12 +618,12 @@ def analyze_stock(symbol, resolution="D", count=250):
             InlineKeyboardButton("📈 Khung 1W (Tuần)", callback_data=f"{symbol}|W|250"),
         ],
         [
-            InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
-            InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("🔍 Test Cung (/testcung)", callback_data="run_testcung_callback"),
+            InlineKeyboardButton("🛡️ Biên An Toàn (/safety)", callback_data="run_safety_callback"),
         ],
         [
-            InlineKeyboardButton("📂 Cài Đặt / Portfolio", callback_data="show_all_settings"),
-            InlineKeyboardButton("💡 Giải thích Scan vs Autobuy", callback_data="help_scan_vs_autobuy"),
+            InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
+            InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -649,7 +648,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, BREAKOUT, SMART-BUY & BACKTEST
+# 3. MODULE SCAN, BREAKOUT, TESTCUNG, SAFETY & BACKTEST
 # ==========================================
 def check_market_trend_general():
     try:
@@ -692,7 +691,6 @@ def run_market_screener():
         price_range = high - low
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
-        # Tiêu chí /scan: Tích lũy biên độ hẹp + Dòng tiền CMF dương + Khởi động bứt phá RVOL
         if (rvol >= 1.2 or price_range_pct < 0.08) and cmf > 0.02 and close > ema50 and is_solid_candle:
             score = (rvol * 2.5) + (cmf * 6) + (max(0, 0.1 - price_range_pct) * 20)
             return {
@@ -716,9 +714,6 @@ def run_market_screener():
     return results[:8]
 
 
-# ==========================================
-# HÀM QUÉT TÍN HIỆU BÙNG NỔ THỰC SỰ (/breakout)
-# ==========================================
 def run_breakout_screener():
     results = []
     def scan_breakout(symbol):
@@ -740,19 +735,13 @@ def run_breakout_screener():
         span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
         cloud_top = max(span_a, span_b)
         
-        # Tiêu chuẩn thanh khoản tối thiểu: 5 tỷ VNĐ/phiên
         avg_trading_value = vol_sma20 * close * 1000
         if avg_trading_value < 5_000_000_000:
             return None
             
-        # 1. Giá đóng cửa sát hoặc bằng mức cao nhất ngày (Close >= High - 10% biên độ)
         price_range = high - low
         is_closed_near_high = True if price_range == 0 else (close >= high - (price_range * 0.1))
-        
-        # 2. Khối lượng bùng nổ cực đại: RVOL từ 2.0x đến 2.5x trở lên
         is_volume_breakout = (rvol >= 2.0)
-        
-        # 3. Thoát hẳn nền tích lũy / vượt biên Bollinger Bands hoặc Mây Kumo
         is_breakout_structure = (close >= bb_upper) or (close > cloud_top)
         
         if is_closed_near_high and is_volume_breakout and is_breakout_structure and cmf > 0:
@@ -768,6 +757,100 @@ def run_breakout_screener():
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = [pool.submit(scan_breakout, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+            
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    return results[:6]
+
+
+# ==========================================
+# CÔNG CỤ MỚI 1: QUÉT CẠN CUNG / TEST CUNG (/testcung)
+# ==========================================
+def run_test_supply_screener():
+    results = []
+    def scan_test_supply(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=150)
+        if err or df.empty or len(df) < 50:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        close = last["Close"]
+        high = last["High"]
+        low = last["Low"]
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
+        
+        avg_trading_value = vol_sma20 * close * 1000
+        if avg_trading_value < 5_000_000_000:
+            return None
+            
+        # Tiêu chí Cạn Cung / Test Cung: Thanh khoản cực thấp nhưng giá rút chân hoặc giữ nền
+        price_range = high - low
+        is_pinbar_or_solid = True if price_range == 0 else (close >= low + price_range * 0.5)
+        
+        if rvol <= 0.65 and is_pinbar_or_solid and cmf >= -0.1:
+            score = (1.0 - rvol) * 50 + (max(0, cmf) * 20)
+            return {
+                "symbol": symbol,
+                "close": close,
+                "rvol": rvol,
+                "cmf": cmf,
+                "score": score
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_test_supply, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+            
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    return results[:6]
+
+
+# ==========================================
+# CÔNG CỤ MỚI 2: LỌC ĐỊNH GIÁ & BIÊN AN TOÀN (/safety)
+# ==========================================
+def run_safety_value_screener():
+    results = []
+    def scan_safety(symbol):
+        ratios = get_fundamental_ratios(symbol)
+        pe = ratios["pe"]
+        roe = ratios["roe"]
+        
+        # Tiêu chí an toàn của chuyên gia: P/E hợp lý (0 < PE < 20) & ROE cao (> 12%)
+        if pe <= 0 or pe > 22 or roe < 12.0:
+            return None
+            
+        df, err = fetch_stock_data(symbol, resolution="D", count=100)
+        if err or df.empty:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        close = last["Close"]
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        
+        # Điểm số hấp dẫn cơ bản kết hợp dòng tiền
+        score = (roe * 2.0) + max(0, (25 - pe)) + (cmf * 20)
+        return {
+            "symbol": symbol,
+            "close": close,
+            "pe": pe,
+            "roe": roe,
+            "cmf": cmf,
+            "score": score
+        }
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_safety, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
             res = future.result()
             if res:
@@ -1117,22 +1200,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
     welcome_text = (
-        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
+        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM (PRO 5%)!**\n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `BSR`)\n\n"
-        "2️⃣ **🤖 CÁC CÔNG CỤ QUÉT TÍN HIỆU:**\n"
-        "   • `/scan`: Radar dò dòng tiền nhe nhóm gom hàng ở nền giá.\n"
-        "   • `/breakout`: **Bộ lọc bùng nổ thực sự** (Lọc mã đóng cửa sát đỉnh, RVOL từ 2.0x - 2.5x trở lên, phá vỡ vượt biên Bollinger/Mây Kumo).\n"
+        "2️⃣ **🤖 CÔNG CỤ QUÉT CAO CẤP (CHUYÊN GIA):**\n"
+        "   • `/scan`: Radar dò dòng tiền nhe nhóm gom hàng.\n"
+        "   • `/breakout`: Bộ lọc bùng nổ thực sự (RVOL >= 2.0x, đóng cửa sát đỉnh).\n"
+        "   • `/testcung`: 🔍 **Quét phiên Cạn Cung / Rũ bỏ** (Săn điểm gom trước khi đánh lên).\n"
+        "   • `/safety`: 🛡️ **Lọc Biên An Toàn Cơ Bản** (P/E hợp lý, ROE > 12%, định giá ngon).\n"
         "   • `/autobuy`: Bộ lọc giải ngân an toàn khắt khe.\n\n"
-        "3️⃣ **Cài đặt canh MUA (Real-Time):**\n"
-        "`/setbuy BSR 29.4 28.5 1000` *(Mã, Giá vốn, Giá canh mua, Khối lượng)*\n\n"
-        "4️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
-        "`/setstop BSR 27.9` *(Mã, Giá cắt lỗ cần cảnh báo)*\n\n"
-        "5️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
-        "`/portfolio` hoặc `/listall`\n\n"
-        "6️⃣ **Quét dòng tiền & Backtest:**\n"
-        "`/scan` | `/breakout` | `/backtest VHM`\n\n"
-        "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
-        "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*"
+        "3️⃣ **Cài đặt canh MUA / CẮT LỖ (Real-Time):**\n"
+        "`/setbuy BSR 29.4 28.5 1000` | `/setstop BSR 27.9`\n\n"
+        "4️⃣ **Danh mục & Tiện ích:** `/portfolio` | `/listall` | `/backtest VHM` | `/reset <MÃ>`"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1150,7 +1228,7 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         picks = run_smart_buy_screener()
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại thị trường chưa có mã nào đạt đủ tiêu chuẩn khắt khe để giải ngân an toàn.\n\n💡 *Khuyên nghị: Đứng ngoài bảo toàn vốn (NAV 0%)!*")
+            await msg.edit_text("⚠️ Hiện tại thị trường chưa có mã nào đạt đủ tiêu chuẩn khắt khe để giải ngân an toàn.")
             return
             
         text = "🎯 **DANH SÁCH CỔ PHIẾU ĐẠT ĐIỂM MUA AN TOÀN (AUTO-BUY)**\n"
@@ -1165,7 +1243,6 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   • Lệnh cài canh mua nhanh: `/setbuy {item['symbol']} {item['close']} {item['entry']} 1000`\n"
             text += "------------------------------------\n"
             
-        text += "\n💡 *Bạn có thể bấm trực tiếp lệnh `/setbuy` được gợi ý bên trên để bot tự động giám sát real-time!*"
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi thực thi bộ lọc auto-buy: {str(e)}")
@@ -1188,21 +1265,86 @@ async def breakout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         text = "🚀 **DANH SÁCH CỔ PHIẾU CHÍNH THỨC BÙNG NỔ (BREAKOUT)**\n"
-        text += "*(Tiêu chí: Đóng cửa sát đỉnh phiên, RVOL cực đại >= 2.0x, vượt biên/mây)*\n"
         text += "====================================\n\n"
         
         for idx, item in enumerate(picks, 1):
             text += f"{idx}. 🔥 **Mã: {item['symbol'].upper()}** (Điểm số: `{item['score']:.1f}`)\n"
             text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
-            text += f"   • Khối lượng bùng nổ RVOL: `{item['rvol']:.2f}x` (Đạt chuẩn >= 2.0x)\n"
+            text += f"   • RVOL bùng nổ: `{item['rvol']:.2f}x` | CMF: `{item['cmf']:.2f}`\n"
+            text += f"   • Phân tích chi tiết: Nhập mã `{item['symbol']}`\n"
+            text += "------------------------------------\n"
+            
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc breakout: {str(e)}")
+
+
+async def testcung_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    if update.message:
+        msg = await update.message.reply_text("🔍 **Đang quét các mã cạn cung / rũ bỏ (Test Cung / No-Supply)...** ⚡")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🔍 **Đang quét các mã cạn cung / rũ bỏ (Test Cung / No-Supply)...** ⚡")
+
+    try:
+        picks = run_test_supply_screener()
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại chưa phát hiện mã nào có tín hiệu cạn kiệt thanh khoản kiểm định cung.")
+            return
+            
+        text = "🔍 **TOP CỔ PHIẾU CẠN CUNG / KIỂM ĐỊNH CUNG (TEST CUNG)**\n"
+        text += "*(Tiêu chí: RVOL rất thấp <= 0.65, giá rút chân/giữ nền, không áp lực bán tháo)*\n"
+        text += "====================================\n\n"
+        
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 🟢 **Mã: {item['symbol'].upper()}** (Điểm: `{item['score']:.1f}`)\n"
+            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
+            text += f"   • Khối lượng cạn kiệt RVOL: `{item['rvol']:.2f}x` (Rất thấp)\n"
             text += f"   • Dòng tiền CMF: `{item['cmf']:.2f}`\n"
             text += f"   • Phân tích chi tiết: Nhập mã `{item['symbol']}`\n"
             text += "------------------------------------\n"
             
-        text += "\n💡 *Đây là các mã đã thực sự phát nổ, xác nhận dòng tiền lớn đẩy giá dứt khoát!*"
+        text += "\n💡 *Gợi ý chuyên gia: Đây là thời điểm tuyệt vời để gom mua nhặt dần trước khi dòng tiền lớn đánh thốc!*"
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc breakout: {str(e)}")
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc test cung: {str(e)}")
+
+
+async def safety_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    if update.message:
+        msg = await update.message.reply_text("🛡️ **Đang lọc danh mục cổ phiếu có định giá hấp dẫn & Biên An Toàn cao (P/E & ROE)...** ⚡")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🛡️ **Đang lọc danh mục cổ phiếu có định giá hấp dẫn & Biên An Toàn cao (P/E & ROE)...** ⚡")
+
+    try:
+        picks = run_safety_value_screener()
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại chưa tìm thấy mã đạt chuẩn biên an toàn (ROE > 12% và P/E hợp lý).")
+            return
+            
+        text = "🛡️ **TOP CỔ PHIẾU CÓ BIÊN AN TOÀN & CƠ BẢN VỮNG CHẮC (SAFETY VALUE)**\n"
+        text += "*(Tiêu chí: ROE > 12%, P/E từ 0 đến 22, dòng tiền ủng hộ)*\n"
+        text += "====================================\n\n"
+        
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 💎 **Mã: {item['symbol'].upper()}** (Điểm cơ bản: `{item['score']:.1f}`)\n"
+            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
+            text += f"   • Hiệu suất sinh lời ROE: `{item['roe']:.1f}%` | P/E: `{item['pe']:.1f}`\n"
+            text += f"   • Dòng tiền CMF: `{item['cmf']:.2f}`\n"
+            text += f"   • Phân tích chi tiết: Nhập mã `{item['symbol']}`\n"
+            text += "------------------------------------\n"
+            
+        text += "\n💡 *Đây là các doanh nghiệp chất lượng cao, giữ tỷ trọng lớn an tâm nắm giữ dài hạn!*"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc safety: {str(e)}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1477,21 +1619,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await breakout_command(update, context)
         return
 
+    if data == "run_testcung_callback":
+        await testcung_command(update, context)
+        return
+
+    if data == "run_safety_callback":
+        await safety_command(update, context)
+        return
+
     if data == "show_all_settings":
         chat_id = query.message.chat_id
         await show_all_settings_func(query, context, chat_id)
-        return
-
-    if data.startswith("help_"):
-        explanations = {
-            "help_scan_vs_autobuy": (
-                "💡 **PHÂN BIỆT CÁC TÍNH NĂNG QUÉT TRÊN BOT:**\n\n"
-                "• `/scan`: Radar dò dòng tiền nhe nhóm gom hàng ở nền giá.\n"
-                "• `/breakout`: **Bộ lọc bùng nổ thực sự** (Chỉ chọn mã đóng cửa sát đỉnh phiên, RVOL từ 2.0x - 2.5x trở lên, bứt phá vượt biên Bollinger/Mây Kumo).\n"
-                "• `/autobuy`: Bộ lọc giải ngân an toàn khắt khe (kết hợp quản trị rủi ro ATR, chống bẫy giá)."
-            )
-        }
-        await query.message.reply_text(explanations.get(data, "Đang cập nhật..."), parse_mode="Markdown")
         return
 
     parts = data.split("|")
@@ -1524,7 +1662,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Breakout & Autobuy Screener is running!")
+        self.wfile.write(b"Quant Pro Bot with TestCung & Safety Value Screener is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1547,7 +1685,7 @@ if __name__ == "__main__":
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=self_ping_thread, daemon=True).start()
 
-    print("🤖 Đang khởi tạo Telegram Bot...")
+    print("🤖 Đang khởi tạo Telegram Bot Pro...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_error_handler(global_error_handler)
 
@@ -1557,6 +1695,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("breakout", breakout_command))
+    app.add_handler(CommandHandler("testcung", testcung_command))
+    app.add_handler(CommandHandler("safety", safety_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
     app.add_handler(CommandHandler("setstop", setstop_command))
@@ -1566,5 +1706,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng với tính năng Breakout bùng nổ!")
+    print("🚀 Bot Quant Trading Pro đã sẵn sàng với đầy đủ vũ khí cao cấp!")
     app.run_polling(drop_pending_updates=True)
