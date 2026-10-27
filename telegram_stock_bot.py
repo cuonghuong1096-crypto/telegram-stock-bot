@@ -665,7 +665,6 @@ def run_market_screener():
     return results[:8]
 
 
-# 🔥 HÀM MỚI: QUÉT DÒNG TIỀN CÔ ĐỌNG HÀNG GIỜ TRONG GIỜ GIAO DỊCH
 def run_hourly_cashflow_screener():
     results = []
     def scan_one(symbol):
@@ -681,7 +680,6 @@ def run_hourly_cashflow_screener():
         mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
         macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
         
-        # Tiêu chí lọc dòng tiền mạnh trong 1 giờ qua
         if rvol >= 1.15 and (cmf > 0.02 or mfi > 55):
             score = (rvol * 3.0) + (cmf * 5) + (mfi * 0.1)
             return {
@@ -795,13 +793,12 @@ def run_smart_buy_screener():
 
 def background_scheduler_thread(application):
     sent_daily_report_today = None
-    last_hourly_scan_hour = None  # Biến kiểm soát để tránh quét trùng trong cùng 1 giờ
+    last_hourly_scan_hour = None
 
     while True:
         now = datetime.datetime.now()
         today_date = now.date()
 
-        # 1. Giám sát Real-Time danh mục cá nhân (Cũ)
         if USER_PORTFOLIOS:
             for chat_id, portfolio in list(USER_PORTFOLIOS.items()):
                 for symbol, pos in list(portfolio.items()):
@@ -841,8 +838,8 @@ def background_scheduler_thread(application):
                                 except Exception:
                                     pass
 
-        # 2. 🔥 TÍNH NĂNG MỚI: TỰ ĐỘNG QUÉT DÒNG TIỀN MỖI 1 TIẾNG TRONG GIỜ GIAO DỊCH (09:00 - 14:00)
-        if now.weekday() < 5 and 9 <= now.hour <= 14 and now.minute == 0:
+        # 🔥 ĐÃ SỬA: Cho phép quét tự động các giờ giao dịch (9, 10, 11, 13, 14) và nới rộng phút <= 2 để không bỏ lỡ 13:00
+        if now.weekday() < 5 and now.hour in [9, 10, 11, 13, 14] and now.minute <= 2:
             if last_hourly_scan_hour != now.hour and ACTIVE_CHAT_IDS:
                 last_hourly_scan_hour = now.hour
                 top_hourly = run_hourly_cashflow_screener()
@@ -865,7 +862,6 @@ def background_scheduler_thread(application):
                         except Exception:
                             pass
 
-        # 3. Bản tin định kỳ lúc 14:15 (Cũ)
         if now.weekday() < 5 and now.hour == 14 and now.minute == 15:
             if ACTIVE_CHAT_IDS:
                 top_stocks = run_market_screener()
@@ -880,7 +876,6 @@ def background_scheduler_thread(application):
                             pass
             time.sleep(70)
 
-        # 4. Báo cáo tổng kết cuối phiên lúc 15:00 (Cũ)
         if now.weekday() < 5 and now.hour == 15 and now.minute == 0:
             if sent_daily_report_today != today_date and USER_PORTFOLIOS:
                 sent_daily_report_today = today_date
@@ -1339,7 +1334,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
-        await query.edit_message_text(text=f"⏳ Đang phân tích {symbol} (Khung: {resolution})...")
+        
+        # Gửi tin nhắn chờ mới hoàn toàn, giữ nguyên toàn bộ lịch sử tin nhắn cũ
+        msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution})...")
 
         def background_task():
             return analyze_stock(symbol, resolution=resolution, count=count)
@@ -1348,13 +1345,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=15)
             if err:
-                await query.message.reply_text(f"❌ Lỗi: {err}")
+                await msg.edit_text(f"❌ Lỗi: {err}")
             else:
+                await msg.delete()
                 await query.message.reply_photo(photo=img_buf)
                 await query.message.reply_text(text_part1, parse_mode="Markdown")
                 await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
         except Exception as e:
-            await query.message.reply_text(f"❌ Lỗi hệ thống: {str(e)}")
+            await msg.edit_text(f"❌ Lỗi hệ thống: {str(e)}")
 
 
 # ==========================================
