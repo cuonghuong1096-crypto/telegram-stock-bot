@@ -619,15 +619,11 @@ def analyze_stock(symbol, resolution="D", count=250):
             InlineKeyboardButton("📈 Khung 1W (Tuần)", callback_data=f"{symbol}|W|250"),
         ],
         [
+            InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
             InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
+        ],
+        [
             InlineKeyboardButton("📂 Cài Đặt / Portfolio", callback_data="show_all_settings"),
-        ],
-        [
-            InlineKeyboardButton("💡 Giải thích CMF/MFI", callback_data="help_cmf"),
-            InlineKeyboardButton("💡 Giải thích Ichimoku/RSI", callback_data="help_rsi"),
-        ],
-        [
-            InlineKeyboardButton("💡 Giải thích Volume Profile", callback_data="help_vp"),
             InlineKeyboardButton("💡 Giải thích Scan vs Autobuy", callback_data="help_scan_vs_autobuy"),
         ]
     ]
@@ -653,7 +649,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, SMART-BUY & BACKTEST (TÍCH HỢP BỘ LỌC TÍCH LŨY SIẾT CHẶT & MUA TẠI NỀN)
+# 3. MODULE SCAN, BREAKOUT, SMART-BUY & BACKTEST
 # ==========================================
 def check_market_trend_general():
     try:
@@ -696,7 +692,7 @@ def run_market_screener():
         price_range = high - low
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
-        # Tiêu chí: Tích lũy biên độ hẹp + Dòng tiền CMF dương + Khởi động bứt phá RVOL
+        # Tiêu chí /scan: Tích lũy biên độ hẹp + Dòng tiền CMF dương + Khởi động bứt phá RVOL
         if (rvol >= 1.2 or price_range_pct < 0.08) and cmf > 0.02 and close > ema50 and is_solid_candle:
             score = (rvol * 2.5) + (cmf * 6) + (max(0, 0.1 - price_range_pct) * 20)
             return {
@@ -718,6 +714,67 @@ def run_market_screener():
             
     results = sorted(results, key=lambda x: x["score"], reverse=True)
     return results[:8]
+
+
+# ==========================================
+# HÀM QUÉT TÍN HIỆU BÙNG NỔ THỰC SỰ (/breakout)
+# ==========================================
+def run_breakout_screener():
+    results = []
+    def scan_breakout(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=200)
+        if err or df.empty or len(df) < 50:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        close = last["Close"]
+        high = last["High"]
+        low = last["Low"]
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
+        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
+        
+        span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
+        span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
+        cloud_top = max(span_a, span_b)
+        
+        # Tiêu chuẩn thanh khoản tối thiểu: 5 tỷ VNĐ/phiên
+        avg_trading_value = vol_sma20 * close * 1000
+        if avg_trading_value < 5_000_000_000:
+            return None
+            
+        # 1. Giá đóng cửa sát hoặc bằng mức cao nhất ngày (Close >= High - 10% biên độ)
+        price_range = high - low
+        is_closed_near_high = True if price_range == 0 else (close >= high - (price_range * 0.1))
+        
+        # 2. Khối lượng bùng nổ cực đại: RVOL từ 2.0x đến 2.5x trở lên
+        is_volume_breakout = (rvol >= 2.0)
+        
+        # 3. Thoát hẳn nền tích lũy / vượt biên Bollinger Bands hoặc Mây Kumo
+        is_breakout_structure = (close >= bb_upper) or (close > cloud_top)
+        
+        if is_closed_near_high and is_volume_breakout and is_breakout_structure and cmf > 0:
+            score = (rvol * 4.0) + (cmf * 10)
+            return {
+                "symbol": symbol,
+                "close": close,
+                "rvol": rvol,
+                "cmf": cmf,
+                "score": score
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_breakout, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+            
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    return results[:6]
 
 
 def run_hourly_cashflow_screener():
@@ -803,7 +860,7 @@ def process_single_stock_for_autobuy(symbol):
         if cmf > 0.02:
             score += 15
         if rvol > 1.1 or price_range_pct < 0.07:
-            score += 15  # Thưởng điểm cho mã có nền tích lũy siết chặt hoặc volume khởi động
+            score += 15
         if macd_hist > 0:
             score += 10
         if is_bb_squeeze:
@@ -1062,9 +1119,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM!**\n\n"
         "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `BSR`)\n\n"
-        "2️⃣ **🤖 Lọc mã có điểm mua chuẩn xác (`/autobuy`):** \n"
-        "   • `/scan`: Giống như một chiếc **'radar dò dòng tiền'**, cho bạn biết mã nào đang hot, đang được chú ý.\n"
-        "   • `/autobuy`: Giống như một **'bộ lọc giải ngân chuẩn hóa'**, chắt lọc kỹ càng hơn từ các tín hiệu dòng tiền đó cộng thêm các màng lọc rủi ro để đưa ra điểm vào lệnh (Entry) và cắt lỗ cụ thể, sẵn sàng cho bạn cài lệnh giao dịch.\n\n"
+        "2️⃣ **🤖 CÁC CÔNG CỤ QUÉT TÍN HIỆU:**\n"
+        "   • `/scan`: Radar dò dòng tiền nhe nhóm gom hàng ở nền giá.\n"
+        "   • `/breakout`: **Bộ lọc bùng nổ thực sự** (Lọc mã đóng cửa sát đỉnh, RVOL từ 2.0x - 2.5x trở lên, phá vỡ vượt biên Bollinger/Mây Kumo).\n"
+        "   • `/autobuy`: Bộ lọc giải ngân an toàn khắt khe.\n\n"
         "3️⃣ **Cài đặt canh MUA (Real-Time):**\n"
         "`/setbuy BSR 29.4 28.5 1000` *(Mã, Giá vốn, Giá canh mua, Khối lượng)*\n\n"
         "4️⃣ **Cài đặt canh BÁN STOP LOSS (Cắt lỗ):**\n"
@@ -1072,10 +1130,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "5️⃣ **Xem danh mục đầu tư & Các mốc giá đang canh:**\n"
         "`/portfolio` hoặc `/listall`\n\n"
         "6️⃣ **Quét dòng tiền & Backtest:**\n"
-        "`/scan` | `/backtest VHM`\n\n"
+        "`/scan` | `/breakout` | `/backtest VHM`\n\n"
         "7️⃣ **Gỡ bỏ mã khỏi danh mục theo dõi:**\n"
-        "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*\n\n"
-        "📌 **Tính năng nâng cấp:** Đã tích hợp bộ lọc phát hiện nền tích lũy biên độ hẹp và dòng tiền tổ chức trước thềm bùng nổ!"
+        "`/reset BSR`  *(Hoặc `/reset ALL` để xóa sạch danh mục)*"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1112,6 +1169,40 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi thực thi bộ lọc auto-buy: {str(e)}")
+
+
+async def breakout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    if update.message:
+        msg = await update.message.reply_text("🚀 **Đang kích hoạt radar quét tín hiệu BÙNG NỔ (Breakout chuẩn mực)...** ⚡")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🚀 **Đang kích hoạt radar quét tín hiệu BÙNG NỔ (Breakout chuẩn mực)...** ⚡")
+
+    try:
+        picks = run_breakout_screener()
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại chưa có cổ phiếu nào bùng nổ đủ tiêu chuẩn khắt khe (RVOL >= 2.0x, đóng cửa sát đỉnh & vượt biên/mây).")
+            return
+            
+        text = "🚀 **DANH SÁCH CỔ PHIẾU CHÍNH THỨC BÙNG NỔ (BREAKOUT)**\n"
+        text += "*(Tiêu chí: Đóng cửa sát đỉnh phiên, RVOL cực đại >= 2.0x, vượt biên/mây)*\n"
+        text += "====================================\n\n"
+        
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 🔥 **Mã: {item['symbol'].upper()}** (Điểm số: `{item['score']:.1f}`)\n"
+            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
+            text += f"   • Khối lượng bùng nổ RVOL: `{item['rvol']:.2f}x` (Đạt chuẩn >= 2.0x)\n"
+            text += f"   • Dòng tiền CMF: `{item['cmf']:.2f}`\n"
+            text += f"   • Phân tích chi tiết: Nhập mã `{item['symbol']}`\n"
+            text += "------------------------------------\n"
+            
+        text += "\n💡 *Đây là các mã đã thực sự phát nổ, xác nhận dòng tiền lớn đẩy giá dứt khoát!*"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc breakout: {str(e)}")
 
 
 async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1382,6 +1473,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await autobuy_command(update, context)
         return
 
+    if data == "run_breakout_callback":
+        await breakout_command(update, context)
+        return
+
     if data == "show_all_settings":
         chat_id = query.message.chat_id
         await show_all_settings_func(query, context, chat_id)
@@ -1389,34 +1484,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("help_"):
         explanations = {
-            "help_cmf": (
-                "💡 **GIẢI THÍCH CHỈ SỐ DÒNG TIỀN (CMF & MFI):**\n\n"
-                "• **CMF (Chaikin Money Flow):** Đo lường áp lực dòng tiền tích lũy hoặc phân phối trong một chu kỳ (mặc định 20 phiên). "
-                "C,MF > 0 cho thấy dòng tiền lớn (tổ chức/Smart Money) đang mua gom; CMF < 0 thể hiện dòng tiền rút ra.\n"
-                "• **MFI (Money Flow Index):** Chỉ số dòng tiền kết hợp cả khối lượng và giá (giống RSI có thêm Volume). MFI > 50 thể hiện dòng tiền vào mạnh, > 80 là quá mua."
-            ),
-            "help_rsi": (
-                "💡 **GIẢI THÍCH ICHIMOKU, ADX & RSI:**\n\n"
-                "• **Mây Kumo (Span A & Span B):** Đóng vai trò là vùng kháng cự/hỗ trợ động. Giá vượt mây là vào xu hướng tăng mạnh; dưới mây là xu hướng giảm.\n"
-                "• **ADX (Average Directional Index):** Đo độ mạnh của xu hướng. ADX > 25 cho thấy xu hướng hiện tại rất khỏe; ADX < 20 thị trường đi ngang hoặc lình xình.\n"
-                "• **RSI & StochRSI:** Đo lường xung lực động lượng ngắn hạn, phát hiện vùng quá mua/quá bán và các điểm phân kỳ đảo chiều."
-            ),
-            "help_vp": (
-                "💡 **GIẢI THÍCH VOLUME PROFILE (BIÊN ĐỘ KHỐI LƯỢNG):**\n\n"
-                "• **POC (Point of Control):** Mức giá có khối lượng giao dịch khớp lệnh lớn nhất trong khung thời gian (vùng cân bằng giá).\n"
-                "• **VAL & VAH (Value Area Low / High):** Biên dưới và biên trên của vùng chứa 70% tổng khối lượng giao dịch. "
-                "Giá nằm trên VAH thể hiện sức mạnh vượt trội; giá nằm dưới VAL là vùng kháng cự mạnh hoặc rủi ro phân phối."
-            ),
             "help_scan_vs_autobuy": (
-                "💡 **PHÂN BIỆT `/scan` VÀ `/autobuy`:**\n\n"
-                "• `/scan`: Giống như một chiếc **'radar dò dòng tiền'**, cho bạn biết mã nào đang hot, đang có khối lượng đột biến (`RVOL`) và được thị trường chú ý.\n"
-                "• `/autobuy`: Giống như một **'bộ lọc giải ngân chuẩn hóa'**, chắt lọc kỹ càng hơn từ các tín hiệu dòng tiền đó cộng thêm các màng lọc rủi ro khắt khe (chống bẫy giá Bull Trap, lọc định giá P/E, kiểm tra mây Kumo, xác định biên độ an toàn ATR) để đưa ra điểm vào lệnh (Entry) và cắt lỗ (Stoploss) cụ thể, sẵn sàng cho bạn cài lệnh giao dịch."
-            ),
-            "help_portfolio": (
-                "💡 **HƯỚNG DẪN DANH MỤC & CẢNH BÁO REAL-TIME:**\n\n"
-                "• Dùng lệnh `/setbuy <Mã> <Giá_vốn> <Giá_canh_mua> <Khối_lượng>` để cài bot canh giá mua tự động.\n"
-                "• Dùng lệnh `/setstop <Mã> <Giá_cắt_lỗ>` để cài mốc cảnh báo cắt lỗ.\n"
-                "• Bot sẽ tự động quét liên tục 24/7 và hú còi thông báo về Telegram ngay khi giá khớp các mốc bạn đã thiết lập!"
+                "💡 **PHÂN BIỆT CÁC TÍNH NĂNG QUÉT TRÊN BOT:**\n\n"
+                "• `/scan`: Radar dò dòng tiền nhe nhóm gom hàng ở nền giá.\n"
+                "• `/breakout`: **Bộ lọc bùng nổ thực sự** (Chỉ chọn mã đóng cửa sát đỉnh phiên, RVOL từ 2.0x - 2.5x trở lên, bứt phá vượt biên Bollinger/Mây Kumo).\n"
+                "• `/autobuy`: Bộ lọc giải ngân an toàn khắt khe (kết hợp quản trị rủi ro ATR, chống bẫy giá)."
             )
         }
         await query.message.reply_text(explanations.get(data, "Đang cập nhật..."), parse_mode="Markdown")
@@ -1452,7 +1524,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Bot with Hyper-Speed Autobuy Screener is running!")
+        self.wfile.write(b"Quant Bot with Breakout & Autobuy Screener is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1484,6 +1556,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("scan", scan_command))
+    app.add_handler(CommandHandler("breakout", breakout_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
     app.add_handler(CommandHandler("setstop", setstop_command))
@@ -1493,5 +1566,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading System đã sẵn sàng với tốc độ siêu tốc!")
+    print("🚀 Bot Quant Trading System đã sẵn sàng với tính năng Breakout bùng nổ!")
     app.run_polling(drop_pending_updates=True)
