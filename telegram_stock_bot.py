@@ -1,4 +1,4 @@
-limport datetime
+import datetime
 import io
 import json
 import logging
@@ -668,10 +668,13 @@ def analyze_stock(symbol, resolution="D", count=250):
         ],
         [
             InlineKeyboardButton("🔍 Test Cung (/testcung)", callback_data="run_testcung_callback"),
-            InlineKeyboardButton("🛡️ Biên An Toàn (/safety)", callback_data="run_safety_callback"),
+            InlineKeyboardButton("🔄 Shakeout (/shakeout)", callback_data="run_shakeout_callback"),
         ],
         [
+            InlineKeyboardButton("🛡️ Biên An Toàn (/safety)", callback_data="run_safety_callback"),
             InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
+        ],
+        [
             InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
         ]
     ]
@@ -697,7 +700,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, BREAKOUT, TESTCUNG, SAFETY & BACKTEST
+# 3. MODULE SCAN, BREAKOUT, TESTCUNG, SHAKEOUT, SAFETY & BACKTEST
 # ==========================================
 def check_market_trend_general():
     try:
@@ -851,6 +854,63 @@ def run_test_supply_screener():
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = [pool.submit(scan_test_supply, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+            
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    return results[:6]
+
+
+# ==========================================
+# MODULE TÍCH HỢP MỚI: QUÉT RŨ BỎ (SHAKEOUT / BEAR TRAP)
+# ==========================================
+def run_shakeout_screener():
+    results = []
+    def scan_shakeout(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=150)
+        if err or df.empty or len(df) < 50:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        close = last["Close"]
+        open_p = last["Open"]
+        high = last["High"]
+        low = last["Low"]
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
+        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
+        
+        avg_trading_value = vol_sma20 * close * 1000
+        if avg_trading_value < 5_000_000_000:
+            return None
+            
+        candle_range = high - low
+        if candle_range == 0:
+            return None
+            
+        lower_wick = min(open_p, close) - low
+        lower_wick_ratio = lower_wick / candle_range
+        is_rebound = close >= low + candle_range * 0.45
+        
+        # Tiêu chuẩn Shakeout: Rút chân mạnh (bóng dưới >= 45% thân nến) & giữ nền trên/sát EMA50
+        if lower_wick_ratio >= 0.45 and is_rebound and close >= (ema50 * 0.97) and cmf >= -0.15:
+            score = (lower_wick_ratio * 40) + (max(0, cmf) * 25) + (min(rvol, 2.5) * 10)
+            return {
+                "symbol": symbol,
+                "close": close,
+                "lower_wick_pct": lower_wick_ratio * 100,
+                "rvol": rvol,
+                "cmf": cmf,
+                "score": score
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_shakeout, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
             res = future.result()
             if res:
@@ -1246,6 +1306,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   • `/scan`: Radar dò dòng tiền nhe nhóm gom hàng.\n"
         "   • `/breakout`: Bộ lọc bùng nổ thực sự (RVOL >= 2.0x, đóng cửa sát đỉnh).\n"
         "   • `/testcung`: 🔍 **Quét phiên Cạn Cung / Rũ bỏ** (Săn điểm gom trước khi đánh lên).\n"
+        "   • `/shakeout`: 🔄 **Quét phiên Rút Chân Rũ Bỏ (Shakeout/Bear Trap)**.\n"
         "   • `/safety`: 🛡️ **Lọc Biên An Toàn Cơ Bản** (P/E hợp lý, ROE > 12%, định giá ngon).\n"
         "   • `/autobuy`: Bộ lọc giải ngân an toàn khắt khe.\n\n"
         "3️⃣ **Cài đặt canh MUA / CẮT LỖ (Real-Time):**\n"
@@ -1351,6 +1412,40 @@ async def testcung_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi thực thi bộ lọc test cung: {str(e)}")
+
+
+async def shakeout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    if update.message:
+        msg = await update.message.reply_text("🔄 **Đang quét các mã xuất hiện nến rút chân RỦ BỎ (Shakeout / Bear Trap)...** ⚡")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🔄 **Đang quét các mã xuất hiện nến rút chân RỦ BỎ (Shakeout / Bear Trap)...** ⚡")
+
+    try:
+        picks = run_shakeout_screener()
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại chưa phát hiện mã nào có cấu trúc rũ bỏ rút chân mạnh mẽ.")
+            return
+            
+        text = "🔄 **TOP CỔ PHIẾU XUẤT HIỆN TÍN HIỆU RỦ BỎ RÚT CHÂN (SHAKEOUT)**\n"
+        text += "*(Tiêu chí: Bóng nến dưới >= 45% chiều cao nến, rút chân mạnh giữ nền giá)*\n"
+        text += "====================================\n\n"
+        
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. ⚓ **Mã: {item['symbol'].upper()}** (Điểm rũ bỏ: `{item['score']:.1f}`)\n"
+            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
+            text += f"   • Tỷ lệ rút chân nến: `{item['lower_wick_pct']:.1f}%`\n"
+            text += f"   • RVOL: `{item['rvol']:.2f}x` | CMF: `{item['cmf']:.2f}`\n"
+            text += f"   • Phân tích chi tiết: Nhập mã `{item['symbol']}`\n"
+            text += "------------------------------------\n"
+            
+        text += "\n💡 *Gợi ý chuyên gia: Nến rút chân dài thể hiện Tạo lập đã gom hết hàng hoảng loạn. Có thể canh nhặt nền giá!*"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc shakeout: {str(e)}")
 
 
 async def safety_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1663,6 +1758,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await testcung_command(update, context)
         return
 
+    if data == "run_shakeout_callback":
+        await shakeout_command(update, context)
+        return
+
     if data == "run_safety_callback":
         await safety_command(update, context)
         return
@@ -1736,6 +1835,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("breakout", breakout_command))
     app.add_handler(CommandHandler("testcung", testcung_command))
+    app.add_handler(CommandHandler("shakeout", shakeout_command))
     app.add_handler(CommandHandler("safety", safety_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
@@ -1746,5 +1846,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã sẵn sàng với đầy đủ vũ khí cao cấp & Google Sheets!")
+    print("🚀 Bot Quant Trading Pro đã sẵn sàng với bộ lọc Shakeout & Google Sheets!")
     app.run_polling(drop_pending_updates=True)
