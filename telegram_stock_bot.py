@@ -668,13 +668,14 @@ def analyze_stock(symbol, resolution="D", count=250):
         ],
         [
             InlineKeyboardButton("🔍 Test Cung (/testcung)", callback_data="run_testcung_callback"),
+            InlineKeyboardButton("🚀 Cầu Chủ Động (/demand)", callback_data="run_demand_callback"),
+        ],
+        [
             InlineKeyboardButton("🔄 Shakeout (/shakeout)", callback_data="run_shakeout_callback"),
-        ],
-        [
             InlineKeyboardButton("🛡️ Biên An Toàn (/safety)", callback_data="run_safety_callback"),
-            InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
         ],
         [
+            InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
             InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
         ]
     ]
@@ -700,7 +701,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, BREAKOUT, TESTCUNG, SHAKEOUT, SAFETY & BACKTEST
+# 3. MODULE SCAN, BREAKOUT, TESTCUNG, DEMAND, SHAKEOUT, SAFETY & BACKTEST
 # ==========================================
 def check_market_trend_general():
     try:
@@ -864,8 +865,77 @@ def run_test_supply_screener():
 
 
 # ==========================================
-# MODULE TÍCH HỢP MỚI: QUÉT RŨ BỎ (SHAKEOUT / BEAR TRAP)
+# MODULE TÍCH HỢP MỚI: QUÉT DÒNG TIỀN MUA CHỦ ĐỘNG (DEMAND)
 # ==========================================
+def run_demand_confirmation_screener():
+    """
+    Bộ lọc Xác nhận Dòng tiền Mua chủ động (Demand Confirmation)
+    Tiêu chí VSA:
+    1. RVOL vọt lên >= 1.5x (Lực mua tăng đột biến)
+    2. Đóng cửa cao nhất hoặc sát đỉnh (Close >= Low + 70% Candle Range)
+    3. CMF dâng cao >= 0.08 & MFI > 50 (Dòng tiền tổ chức đồng thuận chảy vào)
+    4. Thưởng điểm ưu tiên nếu phiên liền trước đó là No-Supply / Test Cung (RVOL_prev <= 0.70)
+    """
+    results = []
+    def scan_demand(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=150)
+        if err or df.empty or len(df) < 50:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        close = last["Close"]
+        high = last["High"]
+        low = last["Low"]
+        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
+        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
+        kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
+        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
+        
+        avg_trading_value = vol_sma20 * close * 1000
+        if avg_trading_value < 5_000_000_000:
+            return None
+            
+        candle_range = high - low
+        if candle_range == 0:
+            return None
+            
+        # VSA Demand: Giá đóng cửa nằm thuộc top 30% cao nhất phiên
+        close_position = (close - low) / candle_range
+        is_strong_close = close_position >= 0.70
+        
+        # Kiểm tra xem phiên trước đó có trạng thái cạn cung (RVOL_prev <= 0.7) không
+        prev_rvol = prev["RVOL"] if not np.isnan(prev["RVOL"]) else 1.0
+        was_no_supply = prev_rvol <= 0.70
+        
+        # Điều kiện Demand chủ động
+        if rvol >= 1.50 and is_strong_close and cmf >= 0.08 and close >= kijun:
+            bonus_score = 30 if was_no_supply else 0
+            score = (rvol * 20) + (cmf * 50) + (mfi * 0.5) + bonus_score
+            return {
+                "symbol": symbol,
+                "close": close,
+                "rvol": rvol,
+                "cmf": cmf,
+                "mfi": mfi,
+                "was_no_supply": was_no_supply,
+                "score": score
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_demand, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            res = future.result()
+            if res:
+                results.append(res)
+            
+    results = sorted(results, key=lambda x: x["score"], reverse=True)
+    return results[:6]
+
+
 def run_shakeout_screener():
     results = []
     def scan_shakeout(symbol):
@@ -896,7 +966,6 @@ def run_shakeout_screener():
         lower_wick_ratio = lower_wick / candle_range
         is_rebound = close >= low + candle_range * 0.45
         
-        # Tiêu chuẩn Shakeout: Rút chân mạnh (bóng dưới >= 45% thân nến) & giữ nền trên/sát EMA50
         if lower_wick_ratio >= 0.45 and is_rebound and close >= (ema50 * 0.97) and cmf >= -0.15:
             score = (lower_wick_ratio * 40) + (max(0, cmf) * 25) + (min(rvol, 2.5) * 10)
             return {
@@ -1306,6 +1375,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   • `/scan`: Radar dò dòng tiền nhe nhóm gom hàng.\n"
         "   • `/breakout`: Bộ lọc bùng nổ thực sự (RVOL >= 2.0x, đóng cửa sát đỉnh).\n"
         "   • `/testcung`: 🔍 **Quét phiên Cạn Cung / Rũ bỏ** (Săn điểm gom trước khi đánh lên).\n"
+        "   • `/demand`: 🚀 **Quét Dòng Tiền Mua Chủ Động (Demand Confirmation)**.\n"
         "   • `/shakeout`: 🔄 **Quét phiên Rút Chân Rũ Bỏ (Shakeout/Bear Trap)**.\n"
         "   • `/safety`: 🛡️ **Lọc Biên An Toàn Cơ Bản** (P/E hợp lý, ROE > 12%, định giá ngon).\n"
         "   • `/autobuy`: Bộ lọc giải ngân an toàn khắt khe.\n\n"
@@ -1412,6 +1482,40 @@ async def testcung_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi thực thi bộ lọc test cung: {str(e)}")
+
+
+async def demand_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    if update.message:
+        msg = await update.message.reply_text("🚀 **Đang quét tín hiệu DÒNG TIỀN MUA CHỦ ĐỘNG (Demand Confirmation)...** ⚡")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🚀 **Đang quét tín hiệu DÒNG TIỀN MUA CHỦ ĐỘNG (Demand Confirmation)...** ⚡")
+
+    try:
+        picks = run_demand_confirmation_screener()
+        if not picks:
+            await msg.edit_text("⚠️ Chưa phát hiện mã nào bùng nổ Demand rõ nét (RVOL >= 1.5x & CMF dâng cao).")
+            return
+            
+        text = "🚀 **TOP CỔ PHIẾU XÁC NHẬN DÒNG TIỀN MUA CHỦ ĐỘNG (DEMAND)**\n"
+        text += "*(Tiêu chí: Vừa cạn cung/siết nền + RVOL bùng nổ >= 1.5x, đóng cửa sát đỉnh)*\n"
+        text += "====================================\n\n"
+        
+        for idx, item in enumerate(picks, 1):
+            setup_tag = "🔥 [Mô hình Cạn Cung -> Đánh thốc]" if item['was_no_supply'] else "⚡ [Xác nhận Cầu mạnh]"
+            text += f"{idx}. 🟢 **Mã: {item['symbol'].upper()}** {setup_tag}\n"
+            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
+            text += f"   • RVOL bùng nổ: `{item['rvol']:.2f}x` | CMF: `{item['cmf']:.2f}` | MFI: `{item['mfi']:.1f}`\n"
+            text += f"   • Phân tích chi tiết: Nhập mã `{item['symbol']}`\n"
+            text += "------------------------------------\n"
+            
+        text += "\n💡 *Gợi ý chiến thuật: Đây là phiên xác nhận mua gia tăng/mua đuổi an toàn nhất theo chuẩn Wyckoff/VSA!*"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc demand: {str(e)}")
 
 
 async def shakeout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1758,6 +1862,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await testcung_command(update, context)
         return
 
+    if data == "run_demand_callback":
+        await demand_command(update, context)
+        return
+
     if data == "run_shakeout_callback":
         await shakeout_command(update, context)
         return
@@ -1835,6 +1943,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("scan", scan_command))
     app.add_handler(CommandHandler("breakout", breakout_command))
     app.add_handler(CommandHandler("testcung", testcung_command))
+    app.add_handler(CommandHandler("demand", demand_command))
     app.add_handler(CommandHandler("shakeout", shakeout_command))
     app.add_handler(CommandHandler("safety", safety_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
@@ -1846,5 +1955,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã sẵn sàng với bộ lọc Shakeout & Google Sheets!")
+    print("🚀 Bot Quant Trading Pro đã sẵn sàng với bộ lọc Demand, Shakeout & Google Sheets!")
     app.run_polling(drop_pending_updates=True)
