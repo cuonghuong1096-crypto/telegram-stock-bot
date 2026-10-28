@@ -1,4 +1,4 @@
-import datetime
+limport datetime
 import io
 import json
 import logging
@@ -32,6 +32,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TCBS_API_KEY = os.environ.get(
     "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
 )
+GOOGLE_SHEET_API_URL = os.environ.get("GOOGLE_SHEET_API_URL", "")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -62,26 +63,74 @@ ACTIVE_CHAT_IDS = set()
 ALERTED_TODAY = set()
 
 # ==========================================
-# QUẢN LÝ LƯU TRỮ DỮ LIỆU BỀN VỮNG (JSON)
+# QUẢN LÝ LƯU TRỮ QUA GOOGLE SHEETS API
 # ==========================================
-PORTFOLIO_FILE = "user_portfolios.json"
+USER_PORTFOLIOS = {}
 
 def load_portfolios():
-    if os.path.exists(PORTFOLIO_FILE):
-        try:
-            with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-        except Exception as e:
-            logging.error(f"Lỗi đọc file portfolio: {e}")
+    """Tải danh mục từ Google Sheet khi bot khởi động"""
+    if not GOOGLE_SHEET_API_URL:
+        logging.warning("Chưa cấu hình GOOGLE_SHEET_API_URL trên môi trường!")
+        return {}
+    
+    try:
+        res = requests.get(GOOGLE_SHEET_API_URL, timeout=10)
+        if res.status_code == 200:
+            result = res.json()
+            if result.get("status") == "success":
+                data = result.get("data", [])
+                temp_portfolios = {}
+                for item in data:
+                    chat_id = int(item["chat_id"])
+                    symbol = item["symbol"]
+                    entry = float(item["entry"])
+                    qty = int(item["qty"])
+                    
+                    try:
+                        alert_data = json.loads(item["alerts"])
+                    except Exception:
+                        alert_data = {"buy_alert_prices": [], "stop_alert_prices": []}
+                    
+                    if chat_id not in temp_portfolios:
+                        temp_portfolios[chat_id] = {}
+                    
+                    temp_portfolios[chat_id][symbol] = {
+                        "entry": entry,
+                        "qty": qty,
+                        "buy_alert_prices": alert_data.get("buy_alert_prices", []),
+                        "stop_alert_prices": alert_data.get("stop_alert_prices", [])
+                    }
+                logging.info("Đã tải thành công portfolio từ Google Sheets!")
+                return temp_portfolios
+    except Exception as e:
+        logging.error(f"Lỗi tải portfolio từ Google Sheet: {e}")
     return {}
 
 def save_portfolios():
+    """Đồng bộ toàn bộ danh mục lên Google Sheet mỗi khi có thay đổi"""
+    if not GOOGLE_SHEET_API_URL:
+        return
+    
     try:
-        with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
-            json.dump(USER_PORTFOLIOS, f, ensure_ascii=False, indent=4)
+        rows = []
+        for chat_id, portfolio in USER_PORTFOLIOS.items():
+            for symbol, pos in portfolio.items():
+                alert_dict = {
+                    "buy_alert_prices": pos.get("buy_alert_prices", []),
+                    "stop_alert_prices": pos.get("stop_alert_prices", [])
+                }
+                rows.append([
+                    str(chat_id),
+                    symbol,
+                    pos.get("entry", 0),
+                    pos.get("qty", 1000),
+                    json.dumps(alert_dict)
+                ])
+        
+        payload = {"action": "save", "rows": rows}
+        requests.post(GOOGLE_SHEET_API_URL, json=payload, timeout=10)
     except Exception as e:
-        logging.error(f"Lỗi ghi file portfolio: {e}")
+        logging.error(f"Lỗi ghi portfolio lên Google Sheet: {e}")
 
 USER_PORTFOLIOS = load_portfolios()
 
@@ -532,7 +581,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Các திबा báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
+        final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
         
         entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
         entry_2 = round(val if is_below_val else close, 2)
@@ -766,9 +815,6 @@ def run_breakout_screener():
     return results[:6]
 
 
-# ==========================================
-# CÔNG CỤ MỚI 1: QUÉT CẠN CUNG / TEST CUNG (/testcung)
-# ==========================================
 def run_test_supply_screener():
     results = []
     def scan_test_supply(symbol):
@@ -789,7 +835,6 @@ def run_test_supply_screener():
         if avg_trading_value < 5_000_000_000:
             return None
             
-        # Tiêu chí Cạn Cung / Test Cung: Thanh khoản cực thấp nhưng giá rút chân hoặc giữ nền
         price_range = high - low
         is_pinbar_or_solid = True if price_range == 0 else (close >= low + price_range * 0.5)
         
@@ -815,9 +860,6 @@ def run_test_supply_screener():
     return results[:6]
 
 
-# ==========================================
-# CÔNG CỤ MỚI 2: LỌC ĐỊNH GIÁ & BIÊN AN TOÀN (/safety)
-# ==========================================
 def run_safety_value_screener():
     results = []
     def scan_safety(symbol):
@@ -825,7 +867,6 @@ def run_safety_value_screener():
         pe = ratios["pe"]
         roe = ratios["roe"]
         
-        # Tiêu chí an toàn của chuyên gia: P/E hợp lý (0 < PE < 20) & ROE cao (> 12%)
         if pe <= 0 or pe > 22 or roe < 12.0:
             return None
             
@@ -838,7 +879,6 @@ def run_safety_value_screener():
         close = last["Close"]
         cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
         
-        # Điểm số hấp dẫn cơ bản kết hợp dòng tiền
         score = (roe * 2.0) + max(0, (25 - pe)) + (cmf * 20)
         return {
             "symbol": symbol,
@@ -1662,7 +1702,7 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Quant Pro Bot with TestCung & Safety Value Screener is running!")
+        self.wfile.write(b"Quant Pro Bot with Google Sheets Database is running!")
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -1706,5 +1746,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã sẵn sàng với đầy đủ vũ khí cao cấp!")
+    print("🚀 Bot Quant Trading Pro đã sẵn sàng với đầy đủ vũ khí cao cấp & Google Sheets!")
     app.run_polling(drop_pending_updates=True)
