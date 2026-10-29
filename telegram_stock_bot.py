@@ -486,6 +486,36 @@ def analyze_multi_timeframe_poc(symbol):
 
 
 # ==========================================
+# HÀM BỔ TRỢ MỚI: TÍNH CÁC CHỈ BÁO VCP & RELATIVE STRENGTH (RS)
+# ==========================================
+def calculate_vcp_tightness(df_d):
+    """Kiểm tra mô hình thu hẹp biến độ VCP trong 3 chu kỳ ngắn hạn"""
+    if len(df_d) < 20:
+        return False, 1.0
+    
+    # Tính biến độ 3 giai đoạn: 15-20 phiên trước, 8-14 phiên trước, 1-7 phiên trước
+    vcp_1 = (df_d["High"].iloc[-20:-14] - df_d["Low"].iloc[-20:-14]).mean() / df_d["Close"].iloc[-1]
+    vcp_2 = (df_d["High"].iloc[-14:-7] - df_d["Low"].iloc[-14:-7]).mean() / df_d["Close"].iloc[-1]
+    vcp_3 = (df_d["High"].iloc[-7:] - df_d["Low"].iloc[-7:]).mean() / df_d["Close"].iloc[-1]
+    
+    is_vcp = (vcp_1 > vcp_2) and (vcp_2 > vcp_3) and (vcp_3 < 0.035)
+    tightness_score = max(0, (0.05 - vcp_3) * 100)
+    return is_vcp, tightness_score
+
+
+def calculate_relative_strength(df_stock, df_vnindex):
+    """Tính Sức mạnh tương đối RS (Cổ phiếu vs VN-Index) trong 15 phiên"""
+    if df_stock.empty or df_vnindex.empty or len(df_stock) < 15 or len(df_vnindex) < 15:
+        return 1.0
+    
+    stock_perf = (df_stock["Close"].iloc[-1] - df_stock["Close"].iloc[-15]) / df_stock["Close"].iloc[-15]
+    vni_perf = (df_vnindex["Close"].iloc[-1] - df_vnindex["Close"].iloc[-15]) / df_vnindex["Close"].iloc[-15]
+    
+    rs_rating = stock_perf - vni_perf
+    return rs_rating
+
+
+# ==========================================
 # 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
@@ -853,17 +883,15 @@ def run_test_supply_screener():
     return results[:6]
 
 
-# --- TẦNG 3: QUÉT RỦ BỎ RÚT CHÂN / BEAR TRAP (/shakeout) - ĐÃ TỐI ƯU TỐC ĐỘ ---
+# --- TẦNG 3: QUÉT RỦ BỎ RÚT CHÂN / BEAR TRAP (/shakeout) ---
 def run_shakeout_screener():
     results = []
     
     def scan_shakeout(symbol):
-        # Tải 80 nến thay vì 150 để tăng tốc lấy dữ liệu từ API
         df, err = fetch_stock_data(symbol, resolution="D", count=80)
         if err or df.empty or len(df) < 50:
             return None
 
-        # Tối ưu: Chỉ tính các chỉ báo cần thiết cho Shakeout (EMA50, RVOL, CMF)
         df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
         df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
         df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
@@ -873,7 +901,6 @@ def run_shakeout_screener():
 
         last = df.iloc[-1]
         
-        # Kiểm tra thanh khoản nền
         if not check_liquidity_and_base(df, last):
             return None
 
@@ -890,7 +917,6 @@ def run_shakeout_screener():
         lower_wick_ratio = lower_wick / candle_range
         is_rebound = close >= low + candle_range * 0.45
         
-        # Logic chuẩn Shakeout / Bear Trap giữ nguyên 100%
         if lower_wick_ratio >= 0.45 and is_rebound and close >= (ema50 * 0.97) and cmf >= -0.15:
             score = (lower_wick_ratio * 40) + (max(0, cmf) * 25) + (min(rvol, 2.5) * 10)
             return {
@@ -903,7 +929,6 @@ def run_shakeout_screener():
             }
         return None
 
-    # Giữ nguyên 20 luồng xử lý song song
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = [pool.submit(scan_shakeout, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
@@ -1078,17 +1103,23 @@ def run_hourly_cashflow_screener():
     return results[:6]
 
 
-# --- TẦNG 5 (ĐỈNH PHỄU): ĐIỂM MUA TỔNG HỢP AN TOÀN NÂNG CẤP (/autobuy) ---
+# ==========================================
+# 🎯 TẦNG 5 (ĐỈNH PHỄU): ĐIỂM MUA AUTOBUY NÂNG CẤP HOÀN CHỈNH 100%
+# ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
+        # 1. Kiểm tra sức khỏe VN-Index & Lấy DF VN-Index tính RS
         mkt_health = check_vnindex_health()
+        df_vni, err_vni = fetch_stock_data("VNINDEX", resolution="D", count=60)
+        if err_vni or df_vni.empty:
+            df_vni, _ = fetch_stock_data("1000", resolution="D", count=60)
 
-        # 1. Lọc cơ bản
+        # 2. Lọc cơ bản khắt khe
         ratios = get_fundamental_ratios(symbol)
-        if ratios["pe"] > 45 or ratios["roe"] < 0:
+        if ratios["pe"] > 40 or ratios["roe"] < 2.0:
             return None
 
-        # 2. Lấy dữ liệu Đa khung thời gian (Khung D & Khung 60m)
+        # 3. Lấy dữ liệu Đa khung thời gian (Khung D & Khung 60m)
         df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
         df_h, err_h = fetch_stock_data(symbol, resolution="60", count=60)
         
@@ -1098,14 +1129,18 @@ def process_single_stock_for_autobuy(symbol):
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
 
-        # Tính chỉ báo cho khung 60m để chặn dính nhịp chỉnh ngắn hạn
-        cmf_h = 0.0
-        if not err_h and not df_h.empty and len(df_h) >= 20:
-            df_h = calculate_indicators(df_h)
-            cmf_h = df_h.iloc[-1].get("CMF", 0.0)
-
+        # Lọc thanh khoản & Giá trị giao dịch trung bình > 5 tỷ
         if not check_liquidity_and_base(df_d, last_d):
             return None
+
+        # 4. Tính toán Dòng tiền Khung 60m
+        cmf_h = 0.0
+        rvol_h = 1.0
+        if not err_h and not df_h.empty and len(df_h) >= 20:
+            df_h = calculate_indicators(df_h)
+            last_h = df_h.iloc[-1]
+            cmf_h = last_h.get("CMF", 0.0)
+            rvol_h = last_h.get("RVOL", 1.0)
 
         close = last_d["Close"]
         cmf_d = last_d.get("CMF", 0.0)
@@ -1116,91 +1151,106 @@ def process_single_stock_for_autobuy(symbol):
         stoch_rsi_d = last_d.get("Stoch_RSI", 50.0)
         is_rsi_bear_div = last_d.get("RSI_Bearish_Divergence", False)
         is_bb_squeeze = last_d.get("BB_Squeeze", False)
-        price_range_pct = last_d.get("Price_Range_Pct", 0.1)
         bb_upper = last_d.get("BB_Upper", close)
 
-        # 3. Lọc Volume Profile & Tính Tỷ lệ Reward/Risk (R:R)
+        # 5. Phân tích mô hình VCP & Chỉ số RS
+        is_vcp, vcp_score = calculate_vcp_tightness(df_d)
+        rs_rating = calculate_relative_strength(df_d, df_vni)
+
+        # 6. Lọc Volume Profile & Tỷ lệ Reward/Risk (R:R)
         poc, vah, val = calculate_volume_profile(df_d)
         atr = last_d.get("ATR", close * 0.03)
 
         entry_price = round(max(val, close * 0.98), 2)
         stop_loss = round(entry_price - (1.5 * atr), 2)
-        target_price = vah if vah > close else close * 1.08  # Kỳ vọng chạm VAH hoặc lợi nhuận +8%
+        target_price = vah if vah > (close * 1.03) else round(close * 1.08, 2)
 
         risk = entry_price - stop_loss
         reward = target_price - entry_price
         rr_ratio = reward / (risk + 1e-9)
 
-        # 4. Chấm điểm đa tầng
+        # 7. CHẤM ĐIỂM ĐA TẦNG CẢI TIẾN
         score = 50
 
-        # Xu hướng & Mây Kumo
+        # Mây Kumo & Xu hướng
         span_a = last_d.get("Senkou_Span_A", close)
         span_b = last_d.get("Senkou_Span_B", close)
         cloud_top = max(span_a, span_b)
         cloud_bottom = min(span_a, span_b)
 
         if close > cloud_top:
-            score += 20
+            score += 15
         elif close >= cloud_bottom:
-            score += 10
+            score += 5
         else:
-            score -= 20
+            score -= 25
 
-        # Đồng thuận Dòng tiền (Khung D & Khung 60m)
-        if cmf_d > 0.02 and cmf_h > 0:
+        # Dòng tiền D & 60m đồng thuận
+        if cmf_d > 0.03 and cmf_h > 0.01:
             score += 20
-        elif cmf_d > 0.02:
+        elif cmf_d > 0:
             score += 10
-        elif cmf_h < -0.15:
-            score -= 20  # Trừ điểm mạnh nếu ngắn hạn tiền đang rút
+        elif cmf_h < -0.10:
+            score -= 20  # Xả ngắn hạn ở khung giờ
 
-        if rvol_d > 1.1 or price_range_pct < 0.07:
+        # Sức mạnh RS & VCP
+        if rs_rating > 0.05: # Khỏe hơn VN-Index 5%
+            score += 15
+        if is_vcp:
+            score += 15
+
+        # RVOL & Tích lũy
+        if rvol_d >= 1.15:
             score += 10
         if macd_hist_d > 0:
             score += 10
         if is_bb_squeeze:
             score += 10
 
-        # Khối ngoại mua ròng
-        is_foreign_buying = get_foreign_trading_flow(symbol)
-        if is_foreign_buying:
+        # Khối ngoại gom ròng
+        if get_foreign_trading_flow(symbol):
             score += 10
 
-        # Phân tích sóng POC Đa khung thời gian
+        # Phân tích Sóng POC Tuần / Ngày
         is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
         score += wave_info.get("score_bonus", 0)
 
-        # Tỷ lệ Reward / Risk hấp dẫn
+        # Tỷ lệ Reward / Risk
         if rr_ratio >= 2.0:
             score += 15
         elif rr_ratio < 1.0:
-            score -= 15
+            score -= 20
 
-        # Nhận diện Bẫy giá & Bẫy Quá mua
+        # TRỪ ĐIỂM BẪY GIẢ & QUÁ MUA
         is_bull_trap = (rsi_d < 40 and stoch_rsi_d > 80)
-        is_overbought_bb = close > (bb_upper * 1.01)  # Vượt ngoài biên trên Bollinger Top
+        is_overbought_bb = close > (bb_upper * 1.008) # Phọt ra ngoài BB
 
-        if is_bull_trap:
-            score -= 30
-        if is_rsi_bear_div:
-            score -= 25
-        if is_overbought_bb:
-            score -= 15
+        if is_bull_trap: score -= 30
+        if is_rsi_bear_div: score -= 25
+        if is_overbought_bb: score -= 20
 
-        # Nhân hệ số điều chỉnh xu hướng VN-Index
+        # Điều chỉnh theo VN-Index Health
         score = int(score * mkt_health["score_modifier"])
 
-        # 5. ĐIỀU KIỆN LỌC CUỐI CÙNG KHẮT KHE NHẤT
-        if (score >= 65 and 
-            cmf_d > -0.10 and 
-            cmf_h > -0.10 and 
+        # 8. TÍNH TỶ TRỌNG NAV ĐỀ XUẤT (DYNAMIC POSITION SIZING)
+        atr_pct = (atr / close) * 100
+        if atr_pct <= 2.5 and is_vcp:
+            suggested_nav = "30 - 35% NAV (Nền siết rất chặt)"
+        elif atr_pct <= 4.0:
+            suggested_nav = "20 - 25% NAV (Tỷ trọng chuẩn)"
+        else:
+            suggested_nav = "10 - 15% NAV (Biến động rộng)"
+
+        # 9. ĐIỀU KIỆN LOẠI TRỪ CUỐI CÙNG Khắt khe
+        if (score >= 68 and 
+            cmf_d > -0.05 and 
+            cmf_h > -0.05 and 
             close >= cloud_bottom and 
             not is_bull_trap and 
             not is_rsi_bear_div and 
             not is_overbought_bb and 
             is_wave_ok and 
-            rr_ratio >= 1.2):
+            rr_ratio >= 1.25):
 
             return {
                 "symbol": symbol,
@@ -1209,11 +1259,15 @@ def process_single_stock_for_autobuy(symbol):
                 "cmf": cmf_d,
                 "cmf_h": cmf_h,
                 "rvol": rvol_d,
+                "rs_rating": round(rs_rating * 100, 1),
+                "is_vcp": is_vcp,
                 "rr_ratio": round(rr_ratio, 2),
                 "entry": entry_price,
-                "stop_loss": stop_loss
+                "stop_loss": stop_loss,
+                "target": target_price,
+                "suggested_nav": suggested_nav
             }
-    except Exception:
+    except Exception as e:
         pass
     return None
 
@@ -1443,7 +1497,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🔄 `/shakeout`: **Tầng 3** - Quét nến rút chân rũ nhỏ lẻ (Bear Trap)\n"
         "   ├ 🚀 `/demand`  : **Tầng 4A** - Xác nhận dòng tiền mua chủ động (Demand)\n"
         "   ├ 🔥 `/breakout`: **Tầng 4B** - Bùng nổ giá & khối lượng (RVOL >= 2.0x)\n"
-        "   └ 🤖 `/autobuy` : **Tầng 5 (Phễu cuối)** - Lọc điểm giải ngân an toàn khắt khe nhất\n\n"
+        "   └ 🤖 `/autobuy` : **Tầng 5 (Phễu cuối)** - Lọc điểm giải ngân VCP & RS an toàn nhất\n\n"
         "3️⃣ **🛡️ BỘ LỌC CƠ BẢN & ĐỊNH GIÁ:**\n"
         "   └ `/safety`: Lọc cổ phiếu Biên An Toàn (P/E hợp lý, ROE > 12%)\n\n"
         "4️⃣ **CÀI ĐẶT CANH MUA / STOP LOSS (REAL-TIME):**\n"
@@ -1459,33 +1513,34 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     
     if update.message:
-        msg = await update.message.reply_text("🤖 **Đang quét siêu tốc các mã siết nền tích lũy & bùng nổ dòng tiền...** ⚡")
+        msg = await update.message.reply_text("🤖 **Đang kích hoạt radar AI quét siêu tốc mã siết nền VCP & Dòng tiền đa khung...** ⚡")
     else:
         query = update.callback_query
-        msg = await query.message.reply_text("🤖 **Đang quét siêu tốc các mã siết nền tích lũy & bùng nổ dòng tiền...** ⚡")
+        msg = await query.message.reply_text("🤖 **Đang kích hoạt radar AI quét siêu tốc mã siết nền VCP & Dòng tiền đa khung...** ⚡")
 
     try:
         picks = run_smart_buy_screener()
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại thị trường chưa có mã nào đạt đủ tiêu chuẩn khắt khe để giải ngân an toàn.")
+            await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn 100% tiêu chuẩn khắt khe (Cơ bản + VCP + RS + R:R >= 1.25).")
             return
             
-        text = "🎯 **DANH SÁCH CỔ PHIẾU ĐẠT ĐIỂM MUA AN TOÀN (AUTO-BUY)**\n"
+        text = "🎯 **DANH SÁCH CỔ PHIẾU ĐẠT ĐIỂM MUA AN TOÀN CAO NHẤT (AUTO-BUY)**\n"
         text += "====================================\n\n"
         
         for idx, item in enumerate(picks, 1):
-            text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** (Độ tin cậy: `{item['score']}%`)\n"
-            text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
-            text += f"   • CMF (D): `{item['cmf']:.2f}` | CMF (60m): `{item['cmf_h']:.2f}` | RVOL: `{item['rvol']:.2f}x`\n"
-            text += f"   • Tỷ lệ Reward/Risk: `{item['rr_ratio']}x`\n"
-            text += f"   • 🎯 **Vùng giải ngân chuẩn**: Khoảng `{item['entry']}k`\n"
-            text += f"   • 🛡️ **Stoploss tham chiếu**: `{item['stop_loss']}k`\n"
-            text += f"   • Lệnh cài canh mua nhanh: `/setbuy {item['symbol']} {item['close']} {item['entry']} 1000`\n"
+            vcp_tag = "🔥 [Nền VCP Thu Hẹp]" if item['is_vcp'] else "⚡ [Tích Lũy Chuẩn]"
+            text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** {vcp_tag} (Độ tin cậy: `{item['score']}%`)\n"
+            text += f"   • Giá đóng cửa: `{item['close']:.1f}k` | Sức mạnh RS: `{item['rs_rating']:+.1f}%`\n"
+            text += f"   • Dòng tiền CMF (D): `{item['cmf']:.2f}` | CMF (60m): `{item['cmf_h']:.2f}`\n"
+            text += f"   • Tỷ lệ Reward/Risk: `{item['rr_ratio']}x` | Tỷ trọng đề xuất: `{item['suggested_nav']}`\n"
+            text += f"   • 🎯 **Vùng giải ngân**: `{item['entry']}k` | **Chốt lời**: `{item['target']}k`\n"
+            text += f"   • 🛡️ **Cắt lỗ ATR**: `{item['stop_loss']}k`\n"
+            text += f"   • Lệnh cài canh mua: `/setbuy {item['symbol']} {item['close']} {item['entry']} 1000`\n"
             text += "------------------------------------\n"
             
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc auto-buy: {str(e)}")
+        await msg.edit_text(f"❌ Lỗi thực thi bộ lọc auto-buy nâng cấp: {str(e)}")
 
 
 async def breakout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
