@@ -685,7 +685,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     elif confidence_score >= 65 and not is_below_val:
         sec5_action = "🚀 **Kịch bản Thuận lợi:** Tiếp diễn xu hướng tăng."
     else:
-        sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Tín hiệu đan xen, tuân thủ kỷ luật."
+        sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Tín hiệu đan xem, tuân thủ kỷ luật."
 
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n"
@@ -853,16 +853,27 @@ def run_test_supply_screener():
     return results[:6]
 
 
-# --- TẦNG 3: QUÉT RỦ BỎ RÚT CHÂN / BEAR TRAP (/shakeout) ---
+# --- TẦNG 3: QUÉT RỦ BỎ RÚT CHÂN / BEAR TRAP (/shakeout) - ĐÃ TỐI ƯU TỐC ĐỘ ---
 def run_shakeout_screener():
     results = []
+    
     def scan_shakeout(symbol):
-        df, err = fetch_stock_data(symbol, resolution="D", count=150)
+        # Tải 80 nến thay vì 150 để tăng tốc lấy dữ liệu từ API
+        df, err = fetch_stock_data(symbol, resolution="D", count=80)
         if err or df.empty or len(df) < 50:
             return None
-        df = calculate_indicators(df)
+
+        # Tối ưu: Chỉ tính các chỉ báo cần thiết cho Shakeout (EMA50, RVOL, CMF)
+        df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+        df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
+        df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
+
+        mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
+        df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
+
         last = df.iloc[-1]
         
+        # Kiểm tra thanh khoản nền
         if not check_liquidity_and_base(df, last):
             return None
 
@@ -879,6 +890,7 @@ def run_shakeout_screener():
         lower_wick_ratio = lower_wick / candle_range
         is_rebound = close >= low + candle_range * 0.45
         
+        # Logic chuẩn Shakeout / Bear Trap giữ nguyên 100%
         if lower_wick_ratio >= 0.45 and is_rebound and close >= (ema50 * 0.97) and cmf >= -0.15:
             score = (lower_wick_ratio * 40) + (max(0, cmf) * 25) + (min(rvol, 2.5) * 10)
             return {
@@ -891,6 +903,7 @@ def run_shakeout_screener():
             }
         return None
 
+    # Giữ nguyên 20 luồng xử lý song song
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = [pool.submit(scan_shakeout, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
