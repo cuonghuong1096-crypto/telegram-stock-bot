@@ -2041,4 +2041,3 @@ if __name__ == "__main__":
 
     print("🚀 Bot Quant Trading Pro đã hoàn tất nâng cấp chuẩn Top 5%!")
     app.run_polling(drop_pending_updates=True)
-
