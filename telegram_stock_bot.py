@@ -741,7 +741,7 @@ def analyze_stock(symbol, resolution="D", count=250):
             InlineKeyboardButton("🛡️ Biên An Toàn (/safety)", callback_data="run_safety_callback"),
         ],
         [
-            InlineKeyboardButton("🚀 Quét Bùng Nổ (/breakout)", callback_data="run_breakout_callback"),
+            InlineKeyboardButton("🚀 Quét Bùng NỔ (/breakout)", callback_data="run_breakout_callback"),
             InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
         ]
     ]
@@ -1078,85 +1078,138 @@ def run_hourly_cashflow_screener():
     return results[:6]
 
 
-# --- TẦNG 5 (ĐỈNH PHỄU): ĐIỂM MUA TỔNG HỢP AN TOÀN (/autobuy) ---
+# --- TẦNG 5 (ĐỈNH PHỄU): ĐIỂM MUA TỔNG HỢP AN TOÀN NÂNG CẤP (/autobuy) ---
 def process_single_stock_for_autobuy(symbol):
     try:
         mkt_health = check_vnindex_health()
 
+        # 1. Lọc cơ bản
         ratios = get_fundamental_ratios(symbol)
         if ratios["pe"] > 45 or ratios["roe"] < 0:
             return None
 
-        df, err = fetch_stock_data(symbol, resolution="D", count=200)
-        if err or df.empty or len(df) < 50:
-            return None
-        df = calculate_indicators(df)
-        last = df.iloc[-1]
+        # 2. Lấy dữ liệu Đa khung thời gian (Khung D & Khung 60m)
+        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
+        df_h, err_h = fetch_stock_data(symbol, resolution="60", count=60)
         
-        if not check_liquidity_and_base(df, last):
+        if err_d or df_d.empty or len(df_d) < 50:
             return None
 
-        close = last["Close"]
-        cmf = last.get("CMF", 0.0)
-        rvol = last.get("RVOL", 1.0)
-        adx = last.get("ADX", 20.0)
-        macd_hist = last.get("MACD_Hist", 0.0)
-        rsi = last.get("RSI", 50.0)
-        stoch_rsi = last.get("Stoch_RSI", 50.0)
-        is_rsi_bear_div = last.get("RSI_Bearish_Divergence", False)
-        is_bb_squeeze = last.get("BB_Squeeze", False)
-        price_range_pct = last.get("Price_Range_Pct", 0.1)
-        
-        span_a = last.get("Senkou_Span_A", close)
-        span_b = last.get("Senkou_Span_B", close)
+        df_d = calculate_indicators(df_d)
+        last_d = df_d.iloc[-1]
+
+        # Tính chỉ báo cho khung 60m để chặn dính nhịp chỉnh ngắn hạn
+        cmf_h = 0.0
+        if not err_h and not df_h.empty and len(df_h) >= 20:
+            df_h = calculate_indicators(df_h)
+            cmf_h = df_h.iloc[-1].get("CMF", 0.0)
+
+        if not check_liquidity_and_base(df_d, last_d):
+            return None
+
+        close = last_d["Close"]
+        cmf_d = last_d.get("CMF", 0.0)
+        rvol_d = last_d.get("RVOL", 1.0)
+        adx_d = last_d.get("ADX", 20.0)
+        macd_hist_d = last_d.get("MACD_Hist", 0.0)
+        rsi_d = last_d.get("RSI", 50.0)
+        stoch_rsi_d = last_d.get("Stoch_RSI", 50.0)
+        is_rsi_bear_div = last_d.get("RSI_Bearish_Divergence", False)
+        is_bb_squeeze = last_d.get("BB_Squeeze", False)
+        price_range_pct = last_d.get("Price_Range_Pct", 0.1)
+        bb_upper = last_d.get("BB_Upper", close)
+
+        # 3. Lọc Volume Profile & Tính Tỷ lệ Reward/Risk (R:R)
+        poc, vah, val = calculate_volume_profile(df_d)
+        atr = last_d.get("ATR", close * 0.03)
+
+        entry_price = round(max(val, close * 0.98), 2)
+        stop_loss = round(entry_price - (1.5 * atr), 2)
+        target_price = vah if vah > close else close * 1.08  # Kỳ vọng chạm VAH hoặc lợi nhuận +8%
+
+        risk = entry_price - stop_loss
+        reward = target_price - entry_price
+        rr_ratio = reward / (risk + 1e-9)
+
+        # 4. Chấm điểm đa tầng
+        score = 50
+
+        # Xu hướng & Mây Kumo
+        span_a = last_d.get("Senkou_Span_A", close)
+        span_b = last_d.get("Senkou_Span_B", close)
         cloud_top = max(span_a, span_b)
         cloud_bottom = min(span_a, span_b)
 
-        score = 50
         if close > cloud_top:
             score += 20
         elif close >= cloud_bottom:
             score += 10
         else:
-            score -= 15
+            score -= 20
 
-        if cmf > 0.02:
-            score += 15
-        if rvol > 1.1 or price_range_pct < 0.07:
-            score += 15
-        if macd_hist > 0:
+        # Đồng thuận Dòng tiền (Khung D & Khung 60m)
+        if cmf_d > 0.02 and cmf_h > 0:
+            score += 20
+        elif cmf_d > 0.02:
+            score += 10
+        elif cmf_h < -0.15:
+            score -= 20  # Trừ điểm mạnh nếu ngắn hạn tiền đang rút
+
+        if rvol_d > 1.1 or price_range_pct < 0.07:
+            score += 10
+        if macd_hist_d > 0:
             score += 10
         if is_bb_squeeze:
             score += 10
 
+        # Khối ngoại mua ròng
         is_foreign_buying = get_foreign_trading_flow(symbol)
         if is_foreign_buying:
-            score += 15
+            score += 10
 
+        # Phân tích sóng POC Đa khung thời gian
         is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
         score += wave_info.get("score_bonus", 0)
 
-        is_bull_trap = (rsi < 40 and stoch_rsi > 80)
+        # Tỷ lệ Reward / Risk hấp dẫn
+        if rr_ratio >= 2.0:
+            score += 15
+        elif rr_ratio < 1.0:
+            score -= 15
+
+        # Nhận diện Bẫy giá & Bẫy Quá mua
+        is_bull_trap = (rsi_d < 40 and stoch_rsi_d > 80)
+        is_overbought_bb = close > (bb_upper * 1.01)  # Vượt ngoài biên trên Bollinger Top
+
         if is_bull_trap:
             score -= 30
         if is_rsi_bear_div:
             score -= 25
+        if is_overbought_bb:
+            score -= 15
 
+        # Nhân hệ số điều chỉnh xu hướng VN-Index
         score = int(score * mkt_health["score_modifier"])
 
-        if score >= 60 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div and is_wave_ok:
-            atr = last.get("ATR", close * 0.03)
-            poc, vah, val = calculate_volume_profile(df)
-            
-            entry_price = round(max(val, close * 0.98), 2)
-            stop_loss = round(entry_price - (1.5 * atr), 2)
-            
+        # 5. ĐIỀU KIỆN LỌC CUỐI CÙNG KHẮT KHE NHẤT
+        if (score >= 65 and 
+            cmf_d > -0.10 and 
+            cmf_h > -0.10 and 
+            close >= cloud_bottom and 
+            not is_bull_trap and 
+            not is_rsi_bear_div and 
+            not is_overbought_bb and 
+            is_wave_ok and 
+            rr_ratio >= 1.2):
+
             return {
                 "symbol": symbol,
                 "close": close,
                 "score": min(score, 99),
-                "cmf": cmf,
-                "rvol": rvol,
+                "cmf": cmf_d,
+                "cmf_h": cmf_h,
+                "rvol": rvol_d,
+                "rr_ratio": round(rr_ratio, 2),
                 "entry": entry_price,
                 "stop_loss": stop_loss
             }
@@ -1423,7 +1476,8 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for idx, item in enumerate(picks, 1):
             text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** (Độ tin cậy: `{item['score']}%`)\n"
             text += f"   • Giá hiện tại: `{item['close']:.1f}k`\n"
-            text += f"   • Dòng tiền CMF: `{item['cmf']:.2f}` | RVOL: `{item['rvol']:.2f}x`\n"
+            text += f"   • CMF (D): `{item['cmf']:.2f}` | CMF (60m): `{item['cmf_h']:.2f}` | RVOL: `{item['rvol']:.2f}x`\n"
+            text += f"   • Tỷ lệ Reward/Risk: `{item['rr_ratio']}x`\n"
             text += f"   • 🎯 **Vùng giải ngân chuẩn**: Khoảng `{item['entry']}k`\n"
             text += f"   • 🛡️ **Stoploss tham chiếu**: `{item['stop_loss']}k`\n"
             text += f"   • Lệnh cài canh mua nhanh: `/setbuy {item['symbol']} {item['close']} {item['entry']} 1000`\n"
