@@ -374,7 +374,7 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# CÁC HÀM BỔ SUNG NÂNG CAO (KHỐI NGOẠI, CƠ BẢN, ĐA KHUNG POC)
+# CÁC HÀM BỔ SUNG NÂNG CAO (KHỐI NGOẠI, CƠ BẢN, ĐA KHUNG POC & SÓNG NGÀY)
 # ==========================================
 def get_foreign_trading_flow(symbol):
     url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/foreign-trading?ticker={symbol.upper()}&resolution=D&count=5"
@@ -409,18 +409,69 @@ def get_fundamental_ratios(symbol):
     return {"pe": 15, "roe": 10}
 
 def analyze_multi_timeframe_poc(symbol):
+    """
+    Phân tích Đa Khung Thời Gian (Multi-Timeframe) kết hợp kiểm định Sóng Ngày (Daily Wave).
+    Tích hợp phân loại trạng thái Sóng Ngày:
+      - STRONG_UPTREND_WAVE: Sóng tăng mạnh bùng nổ
+      - PULLBACK_BUY_ZONE: Sóng điều chỉnh gom mua lành mạnh
+      - ACCUMULATION_WAVE: Sóng tích lũy nền trên POC
+      - WEAK_OR_DOWNTREND_WAVE: Sóng giảm / Hồi kỹ thuật
+    """
     try:
-        df_d, _ = fetch_stock_data(symbol, resolution="D", count=100)
-        poc_d, _, _ = calculate_volume_profile(df_d, bins=20)
+        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=100)
+        df_w, err_w = fetch_stock_data(symbol, resolution="W", count=50)
+
+        if err_d or df_d.empty or len(df_d) < 30:
+            return True, {"wave_type": "UNKNOWN", "score_bonus": 0, "is_above_weekly_poc": True}
+
+        df_d = calculate_indicators(df_d)
+        poc_d, vah_d, val_d = calculate_volume_profile(df_d, bins=20)
         
-        df_w, _ = fetch_stock_data(symbol, resolution="W", count=50)
-        poc_w, _, _ = calculate_volume_profile(df_w, bins=20)
-        
-        current_price = df_d.iloc[-1]["Close"] if not df_d.empty else 0
-        is_above_weekly_poc = current_price >= poc_w
-        return is_above_weekly_poc
-    except Exception:
-        return True
+        if not df_w.empty and len(df_w) >= 10:
+            poc_w, vah_w, val_w = calculate_volume_profile(df_w, bins=20)
+        else:
+            poc_w = poc_d
+
+        last_d = df_d.iloc[-1]
+        close_d = last_d["Close"]
+        ema20_d = last_d.get("EMA20", close_d)
+        ema50_d = last_d.get("EMA50", close_d)
+        cmf_d = last_d["CMF"] if not np.isnan(last_d["CMF"]) else 0.0
+        macd_hist_d = last_d["MACD_Hist"] if not np.isnan(last_d["MACD_Hist"]) else 0.0
+
+        is_above_weekly_poc = close_d >= poc_w
+        is_ema_bullish = (close_d > ema20_d) and (ema20_d > ema50_d)
+        is_pullback = (close_d <= ema20_d) and (close_d >= ema50_d) and (cmf_d > 0)
+
+        if is_ema_bullish and is_above_weekly_poc and macd_hist_d > 0:
+            wave_type = "STRONG_UPTREND_WAVE"
+            is_daily_wave_bullish = True
+            score_bonus = 15
+        elif is_pullback and is_above_weekly_poc:
+            wave_type = "PULLBACK_BUY_ZONE"
+            is_daily_wave_bullish = True
+            score_bonus = 10
+        elif close_d > poc_d and is_above_weekly_poc:
+            wave_type = "ACCUMULATION_WAVE"
+            is_daily_wave_bullish = True
+            score_bonus = 5
+        else:
+            wave_type = "WEAK_OR_DOWNTREND_WAVE"
+            is_daily_wave_bullish = False
+            score_bonus = -10
+
+        wave_info = {
+            "wave_type": wave_type,
+            "is_above_weekly_poc": is_above_weekly_poc,
+            "poc_w": poc_w,
+            "poc_d": poc_d,
+            "score_bonus": score_bonus
+        }
+
+        return is_daily_wave_bullish, wave_info
+    except Exception as e:
+        logging.error(f"Lỗi phân tích sóng ngày {symbol}: {e}")
+        return True, {"wave_type": "ERROR", "score_bonus": 0, "is_above_weekly_poc": True}
 
 
 # ==========================================
@@ -902,15 +953,12 @@ def run_demand_confirmation_screener():
         if candle_range == 0:
             return None
             
-        # VSA Demand: Giá đóng cửa nằm thuộc top 30% cao nhất phiên
         close_position = (close - low) / candle_range
         is_strong_close = close_position >= 0.70
         
-        # Kiểm tra xem phiên trước đó có trạng thái cạn cung (RVOL_prev <= 0.7) không
         prev_rvol = prev["RVOL"] if not np.isnan(prev["RVOL"]) else 1.0
         was_no_supply = prev_rvol <= 0.70
         
-        # Điều kiện Demand chủ động
         if rvol >= 1.50 and is_strong_close and cmf >= 0.08 and close >= kijun:
             bonus_score = 30 if was_no_supply else 0
             score = (rvol * 20) + (cmf * 50) + (mfi * 0.5) + bonus_score
@@ -1122,8 +1170,9 @@ def process_single_stock_for_autobuy(symbol):
         if is_foreign_buying:
             score += 15
 
-        if analyze_multi_timeframe_poc(symbol):
-            score += 10
+        # Tích hợp đánh giá Sóng Ngày & Multi-timeframe nâng cấp
+        is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
+        score += wave_info.get("score_bonus", 0)
 
         is_bull_trap = (rsi < 40 and stoch_rsi > 80)
         if is_bull_trap:
@@ -1131,7 +1180,7 @@ def process_single_stock_for_autobuy(symbol):
         if is_rsi_bear_div:
             score -= 25
 
-        if score >= 60 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
+        if score >= 60 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div and is_wave_ok:
             atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
             poc, vah, val = calculate_volume_profile(df)
             
@@ -1141,7 +1190,7 @@ def process_single_stock_for_autobuy(symbol):
             return {
                 "symbol": symbol,
                 "close": close,
-                "score": score,
+                "score": min(score, 99),
                 "cmf": cmf,
                 "rvol": rvol,
                 "entry": entry_price,
