@@ -137,7 +137,7 @@ executor = ThreadPoolExecutor(max_workers=16)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (NÂNG CẤP SỬA LỖI NẾN TUẦN)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -211,7 +211,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
 
-    # NÂNG CẤP THỰC CHIẾN: Gom nến tuần chuẩn Thứ 6 (W-FRI)
     if resolution == "W":
         df_raw.set_index("time", inplace=True)
         df_weekly = df_raw.resample("W-FRI").agg({
@@ -374,13 +373,12 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# CÁC HÀM BỔ SUNG NÂNG CAO (NÂNG CẤP VN-INDEX FILTER & VSA MULTI-TF)
+# CÁC HÀM BỔ SUNG NÂNG CAO (VN-INDEX & MULTI-TF)
 # ==========================================
 def check_vnindex_health():
     """Bộ lọc sức khỏe Thị trường Chung (VN-Index)"""
     df, err = fetch_stock_data("VNINDEX", resolution="D", count=60)
     if err or df.empty:
-        # Retry lấy chỉ số VNINDEX từ mã thay thế nếu API yêu cầu mã chỉ số
         df, err = fetch_stock_data("1000", resolution="D", count=60)
         if err or df.empty:
             return {"status": "NEUTRAL", "score_modifier": 1.0, "note": "Không lấy được dữ liệu VN-Index"}
@@ -632,7 +630,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"MACD Histogram âm ({macd_hist:+.2f})")
 
-    # NÂNG CẤP: Điều chỉnh điểm số theo Sức khỏe VN-Index
     mkt_health = check_vnindex_health()
     score = score * mkt_health["score_modifier"]
 
@@ -773,8 +770,22 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. MODULE SCAN, BREAKOUT, TESTCUNG, DEMAND, SHAKEOUT, SAFETY & BACKTEST
+# 3. BỘ LỌC PHỄU MULTI-STAGE SCREENER (TỐI ƯU HÓA)
 # ==========================================
+
+def check_liquidity_and_base(df, last):
+    """Bộ lọc thanh khoản tối thiểu (>= 5 tỷ/phiên) & nến kỹ thuật"""
+    close = last["Close"]
+    vol_sma20 = last["Vol_SMA20"] if not np.isnan(last.get("Vol_SMA20", np.nan)) else last["Volume"]
+    avg_trading_value = vol_sma20 * close * 1000
+    if avg_trading_value < 5_000_000_000:
+        return False
+    return True
+
+
+# ------------------------------------------
+# TẦNG 1: QUÉT TÍCH LŨY NỀN & DÒNG TIỀN NHA NHÓM (/scan)
+# ------------------------------------------
 def run_market_screener():
     results = []
     mkt_health = check_vnindex_health()
@@ -786,101 +797,33 @@ def run_market_screener():
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        adx = last["ADX"] if not np.isnan(last["ADX"]) else 20.0
+        if not check_liquidity_and_base(df, last):
+            return None
+
         close = last["Close"]
-        high = last["High"]
-        low = last["Low"]
-        volume = last["Volume"]
-        ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
-        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else volume
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        adx = last.get("ADX", 20.0)
+        ema50 = last.get("EMA50", close)
         price_range_pct = last.get("Price_Range_Pct", 0.1)
-        
-        avg_trading_value = vol_sma20 * close * 1000
-        if avg_trading_value < 5_000_000_000:
-            return None
-            
-        price_range = high - low
-        is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
-        if (rvol >= 1.2 or price_range_pct < 0.08) and cmf > 0.02 and close > ema50 and is_solid_candle:
+        if (rvol >= 1.1 or price_range_pct < 0.08) and cmf > 0.01 and close > ema50:
             score = ((rvol * 2.5) + (cmf * 6) + (max(0, 0.1 - price_range_pct) * 20)) * mkt_health["score_modifier"]
-            return {
-                "symbol": symbol,
-                "close": close,
-                "rvol": rvol,
-                "cmf": cmf,
-                "adx": adx,
-                "score": score
-            }
+            return {"symbol": symbol, "close": close, "rvol": rvol, "cmf": cmf, "adx": adx, "score": score}
         return None
 
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_one, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
+        futures = [pool.submit(scan_one, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
             
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:8]
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:8]
 
 
-def run_breakout_screener():
-    results = []
-    mkt_health = check_vnindex_health()
-
-    def scan_breakout(symbol):
-        df, err = fetch_stock_data(symbol, resolution="D", count=200)
-        if err or df.empty or len(df) < 50:
-            return None
-        df = calculate_indicators(df)
-        last = df.iloc[-1]
-        
-        close = last["Close"]
-        high = last["High"]
-        low = last["Low"]
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        bb_upper = last["BB_Upper"] if not np.isnan(last["BB_Upper"]) else close
-        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
-        
-        span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
-        span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
-        cloud_top = max(span_a, span_b)
-        
-        avg_trading_value = vol_sma20 * close * 1000
-        if avg_trading_value < 5_000_000_000:
-            return None
-            
-        price_range = high - low
-        is_closed_near_high = True if price_range == 0 else (close >= high - (price_range * 0.1))
-        is_volume_breakout = (rvol >= 2.0)
-        is_breakout_structure = (close >= bb_upper) or (close > cloud_top)
-        
-        if is_closed_near_high and is_volume_breakout and is_breakout_structure and cmf > 0:
-            score = ((rvol * 4.0) + (cmf * 10)) * mkt_health["score_modifier"]
-            return {
-                "symbol": symbol,
-                "close": close,
-                "rvol": rvol,
-                "cmf": cmf,
-                "score": score
-            }
-        return None
-
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_breakout, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
-            
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:6]
-
-
+# ------------------------------------------
+# TẦNG 2: QUÉT CẠN CUNG / NO-SUPPLY (/testcung)
+# ------------------------------------------
 def run_test_supply_screener():
     results = []
     def scan_test_supply(symbol):
@@ -890,100 +833,33 @@ def run_test_supply_screener():
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
-        close = last["Close"]
-        high = last["High"]
-        low = last["Low"]
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
-        
-        avg_trading_value = vol_sma20 * close * 1000
-        if avg_trading_value < 5_000_000_000:
+        if not check_liquidity_and_base(df, last):
             return None
-            
+
+        close, high, low = last["Close"], last["High"], last["Low"]
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        
         price_range = high - low
         is_pinbar_or_solid = True if price_range == 0 else (close >= low + price_range * 0.5)
         
         if rvol <= 0.65 and is_pinbar_or_solid and cmf >= -0.1:
             score = (1.0 - rvol) * 50 + (max(0, cmf) * 20)
-            return {
-                "symbol": symbol,
-                "close": close,
-                "rvol": rvol,
-                "cmf": cmf,
-                "score": score
-            }
+            return {"symbol": symbol, "close": close, "rvol": rvol, "cmf": cmf, "score": score}
         return None
 
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_test_supply, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
+        futures = [pool.submit(scan_test_supply, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
             
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:6]
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
 
 
-def run_demand_confirmation_screener():
-    results = []
-    def scan_demand(symbol):
-        df, err = fetch_stock_data(symbol, resolution="D", count=150)
-        if err or df.empty or len(df) < 50:
-            return None
-        df = calculate_indicators(df)
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        close = last["Close"]
-        high = last["High"]
-        low = last["Low"]
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
-        kijun = last["Kijun_sen"] if not np.isnan(last["Kijun_sen"]) else close
-        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
-        
-        avg_trading_value = vol_sma20 * close * 1000
-        if avg_trading_value < 5_000_000_000:
-            return None
-            
-        candle_range = high - low
-        if candle_range == 0:
-            return None
-            
-        close_position = (close - low) / candle_range
-        is_strong_close = close_position >= 0.70
-        
-        prev_rvol = prev["RVOL"] if not np.isnan(prev["RVOL"]) else 1.0
-        was_no_supply = prev_rvol <= 0.70
-        
-        if rvol >= 1.50 and is_strong_close and cmf >= 0.08 and close >= kijun:
-            bonus_score = 30 if was_no_supply else 0
-            score = (rvol * 20) + (cmf * 50) + (mfi * 0.5) + bonus_score
-            return {
-                "symbol": symbol,
-                "close": close,
-                "rvol": rvol,
-                "cmf": cmf,
-                "mfi": mfi,
-                "was_no_supply": was_no_supply,
-                "score": score
-            }
-        return None
-
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_demand, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
-            
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:6]
-
-
+# ------------------------------------------
+# TẦNG 3: QUÉT RỦ BỎ RÚT CHÂN / BEAR TRAP (/shakeout)
+# ------------------------------------------
 def run_shakeout_screener():
     results = []
     def scan_shakeout(symbol):
@@ -993,22 +869,16 @@ def run_shakeout_screener():
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
-        close = last["Close"]
-        open_p = last["Open"]
-        high = last["High"]
-        low = last["Low"]
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        ema50 = last["EMA50"] if not np.isnan(last["EMA50"]) else close
-        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
-        
-        avg_trading_value = vol_sma20 * close * 1000
-        if avg_trading_value < 5_000_000_000:
+        if not check_liquidity_and_base(df, last):
             return None
-            
+
+        close, open_p, high, low = last["Close"], last["Open"], last["High"], last["Low"]
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        ema50 = last.get("EMA50", close)
+
         candle_range = high - low
-        if candle_range == 0:
-            return None
+        if candle_range == 0: return None
             
         lower_wick = min(open_p, close) - low
         lower_wick_ratio = lower_wick / candle_range
@@ -1027,56 +897,139 @@ def run_shakeout_screener():
         return None
 
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_shakeout, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
+        futures = [pool.submit(scan_shakeout, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
             
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:6]
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
 
 
+# ------------------------------------------
+# TẦNG 4A: QUÉT CẦU CHỦ ĐỘNG XÁC NHẬN (/demand)
+# ------------------------------------------
+def run_demand_confirmation_screener():
+    results = []
+    def scan_demand(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=150)
+        if err or df.empty or len(df) < 50:
+            return None
+        df = calculate_indicators(df)
+        last, prev = df.iloc[-1], df.iloc[-2]
+        
+        if not check_liquidity_and_base(df, last):
+            return None
+
+        close, high, low = last["Close"], last["High"], last["Low"]
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        mfi = last.get("MFI", 50.0)
+        kijun = last.get("Kijun_sen", close)
+
+        candle_range = high - low
+        if candle_range == 0: return None
+            
+        is_strong_close = ((close - low) / candle_range) >= 0.70
+        was_no_supply = prev.get("RVOL", 1.0) <= 0.70
+        
+        if rvol >= 1.50 and is_strong_close and cmf >= 0.08 and close >= kijun:
+            bonus = 30 if was_no_supply else 0
+            score = (rvol * 20) + (cmf * 50) + (mfi * 0.5) + bonus
+            return {
+                "symbol": symbol,
+                "close": close,
+                "rvol": rvol,
+                "cmf": cmf,
+                "mfi": mfi,
+                "was_no_supply": was_no_supply,
+                "score": score
+            }
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_demand, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
+            
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
+
+
+# ------------------------------------------
+# TẦNG 4B: QUÉT BÙNG NỔ XU HƯỚNG (/breakout)
+# ------------------------------------------
+def run_breakout_screener():
+    results = []
+    mkt_health = check_vnindex_health()
+
+    def scan_breakout(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=200)
+        if err or df.empty or len(df) < 50:
+            return None
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        
+        if not check_liquidity_and_base(df, last):
+            return None
+
+        close, high, low = last["Close"], last["High"], last["Low"]
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        bb_upper = last.get("BB_Upper", close)
+        cloud_top = max(last.get("Senkou_Span_A", close), last.get("Senkou_Span_B", close))
+
+        price_range = high - low
+        is_closed_near_high = True if price_range == 0 else (close >= high - (price_range * 0.15))
+        
+        if is_closed_near_high and rvol >= 2.0 and (close >= bb_upper or close > cloud_top) and cmf > 0:
+            score = ((rvol * 4.0) + (cmf * 10)) * mkt_health["score_modifier"]
+            return {"symbol": symbol, "close": close, "rvol": rvol, "cmf": cmf, "score": score}
+        return None
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = [pool.submit(scan_breakout, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
+            
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
+
+
+# ------------------------------------------
+# TẦNG BỔ TRỢ: QUÉT BIÊN AN TOÀN CƠ BẢN (/safety)
+# ------------------------------------------
 def run_safety_value_screener():
     results = []
     def scan_safety(symbol):
         ratios = get_fundamental_ratios(symbol)
-        pe = ratios["pe"]
-        roe = ratios["roe"]
+        pe, roe = ratios.get("pe", 99), ratios.get("roe", 0)
         
         if pe <= 0 or pe > 22 or roe < 12.0:
             return None
             
         df, err = fetch_stock_data(symbol, resolution="D", count=100)
-        if err or df.empty:
-            return None
+        if err or df.empty: return None
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
         close = last["Close"]
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
+        cmf = last.get("CMF", 0.0)
         
         score = (roe * 2.0) + max(0, (25 - pe)) + (cmf * 20)
-        return {
-            "symbol": symbol,
-            "close": close,
-            "pe": pe,
-            "roe": roe,
-            "cmf": cmf,
-            "score": score
-        }
+        return {"symbol": symbol, "close": close, "pe": pe, "roe": roe, "cmf": cmf, "score": score}
 
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_safety, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
+        futures = [pool.submit(scan_safety, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
             
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:6]
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
 
 
+# ------------------------------------------
+# TẦNG DÒNG TIỀN HÀNG GIỜ
+# ------------------------------------------
 def run_hourly_cashflow_screener():
     results = []
     def scan_one(symbol):
@@ -1087,10 +1040,10 @@ def run_hourly_cashflow_screener():
         last = df.iloc[-1]
         
         close = last["Close"]
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        mfi = last["MFI"] if not np.isnan(last["MFI"]) else 50.0
-        macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        mfi = last.get("MFI", 50.0)
+        macd_hist = last.get("MACD_Hist", 0.0)
         
         if rvol >= 1.15 and (cmf > 0.02 or mfi > 55):
             score = (rvol * 3.0) + (cmf * 5) + (mfi * 0.1)
@@ -1106,16 +1059,17 @@ def run_hourly_cashflow_screener():
         return None
 
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(scan_one, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            res = future.result()
-            if res:
-                results.append(res)
+        futures = [pool.submit(scan_one, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: results.append(res)
             
-    results = sorted(results, key=lambda x: x["score"], reverse=True)
-    return results[:6]
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
 
 
+# ------------------------------------------
+# TẦNG 5 (ĐỈNH PHỄU): ĐIỂM MUA TỔNG HỢP AN TOÀN (/autobuy)
+# ------------------------------------------
 def process_single_stock_for_autobuy(symbol):
     try:
         mkt_health = check_vnindex_health()
@@ -1130,26 +1084,21 @@ def process_single_stock_for_autobuy(symbol):
         df = calculate_indicators(df)
         last = df.iloc[-1]
         
+        if not check_liquidity_and_base(df, last):
+            return None
+
         close = last["Close"]
-        cmf = last["CMF"] if not np.isnan(last["CMF"]) else 0.0
-        rvol = last["RVOL"] if not np.isnan(last["RVOL"]) else 1.0
-        adx = last["ADX"] if not np.isnan(last["ADX"]) else 20.0
-        macd_hist = last["MACD_Hist"] if not np.isnan(last["MACD_Hist"]) else 0.0
-        rsi = last["RSI"] if not np.isnan(last["RSI"]) else 50.0
-        stoch_rsi = last["Stoch_RSI"] if not np.isnan(last["Stoch_RSI"]) else 50.0
+        cmf = last.get("CMF", 0.0)
+        rvol = last.get("RVOL", 1.0)
+        macd_hist = last.get("MACD_Hist", 0.0)
+        rsi = last.get("RSI", 50.0)
+        stoch_rsi = last.get("Stoch_RSI", 50.0)
         is_rsi_bear_div = last.get("RSI_Bearish_Divergence", False)
         is_bb_squeeze = last.get("BB_Squeeze", False)
         price_range_pct = last.get("Price_Range_Pct", 0.1)
         
-        span_a = last["Senkou_Span_A"] if not np.isnan(last["Senkou_Span_A"]) else close
-        span_b = last["Senkou_Span_B"] if not np.isnan(last["Senkou_Span_B"]) else close
-        cloud_top = max(span_a, span_b)
-        cloud_bottom = min(span_a, span_b)
-        
-        vol_sma20 = last["Vol_SMA20"] if not np.isnan(last["Vol_SMA20"]) else last["Volume"]
-        avg_trading_value = vol_sma20 * close * 1000
-        if avg_trading_value < 5_000_000_000: 
-            return None
+        cloud_top = max(last.get("Senkou_Span_A", close), last.get("Senkou_Span_B", close))
+        cloud_bottom = min(last.get("Senkou_Span_A", close), last.get("Senkou_Span_B", close))
 
         score = 50
         if close > cloud_top:
@@ -1168,8 +1117,7 @@ def process_single_stock_for_autobuy(symbol):
         if is_bb_squeeze:
             score += 10
 
-        is_foreign_buying = get_foreign_trading_flow(symbol)
-        if is_foreign_buying:
+        if get_foreign_trading_flow(symbol):
             score += 15
 
         is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
@@ -1184,7 +1132,7 @@ def process_single_stock_for_autobuy(symbol):
         score = int(score * mkt_health["score_modifier"])
 
         if score >= 60 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div and is_wave_ok:
-            atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
+            atr = last.get("ATR", close * 0.03)
             poc, vah, val = calculate_volume_profile(df)
             
             entry_price = round(max(val, close * 0.98), 2)
@@ -1207,16 +1155,17 @@ def process_single_stock_for_autobuy(symbol):
 def run_smart_buy_screener():
     buy_recommendations = []
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                buy_recommendations.append(result)
+        futures = [pool.submit(process_single_stock_for_autobuy, s) for s in WATCHLIST_SCAN]
+        for f in as_completed(futures):
+            res = f.result()
+            if res: buy_recommendations.append(res)
 
-    buy_recommendations = sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)
-    return buy_recommendations[:5]
+    return sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)[:5]
 
 
+# ==========================================
+# BACKGROUND SCHEDULER & BACKTEST
+# ==========================================
 def background_scheduler_thread(application):
     sent_daily_report_today = None
     last_hourly_scan_hour = None
@@ -1422,18 +1371,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM (PRO 5%)!**\n\n"
-        "1️⃣ **Phân tích chi tiết mã cổ phiếu:** Nhập trực tiếp mã bất kỳ (Ví dụ: `VHM`, `BSR`)\n\n"
-        "2️⃣ **🤖 CÔNG CỤ QUÉT CAO CẤP (CHUYÊN GIA):**\n"
-        "   • `/scan`: Radar dò dòng tiền nhe nhóm gom hàng.\n"
-        "   • `/breakout`: Bộ lọc bùng nổ thực sự (RVOL >= 2.0x, đóng cửa sát đỉnh).\n"
-        "   • `/testcung`: 🔍 **Quét phiên Cạn Cung / Rũ bỏ** (Săn điểm gom trước khi đánh lên).\n"
-        "   • `/demand`: 🚀 **Quét Dòng Tiền Mua Chủ Động (Demand Confirmation)**.\n"
-        "   • `/shakeout`: 🔄 **Quét phiên Rút Chân Rũ Bỏ (Shakeout/Bear Trap)**.\n"
-        "   • `/safety`: 🛡️ **Lọc Biên An Toàn Cơ Bản** (P/E hợp lý, ROE > 12%, định giá ngon).\n"
-        "   • `/autobuy`: Bộ lọc giải ngân an toàn khắt khe.\n\n"
-        "3️⃣ **Cài đặt canh MUA / CẮT LỖ (Real-Time):**\n"
-        "`/setbuy BSR 29.4 28.5 1000` | `/setstop BSR 27.9` | `/trail BSR`\n\n"
-        "4️⃣ **Danh mục & Tiện ích:** `/portfolio` | `/listall` | `/trail <MÃ>` | `/backtest VHM` | `/reset <MÃ>`"
+        "1️⃣ **Phân tích kỹ thuật đơn mã:** Nhập mã cổ phiếu trực tiếp (Ví dụ: `VHM`, `BSR`)\n\n"
+        "2️⃣ **🎯 BỘ LỌC PHỄU DÒNG TIỀN (VSA & QUANT SCREENER):**\n"
+        "   ├ 🟢 `/scan` : **Tầng 1** - Dò cổ phiếu tích lũy nền & dòng tiền nha nhóm\n"
+        "   ├ 🔍 `/testcung`: **Tầng 2** - Săn mã cạn kiệt thanh khoản (No-Supply/Rũ xong)\n"
+        "   ├ 🔄 `/shakeout`: **Tầng 3** - Quét nến rút chân rũ nhỏ lẻ (Bear Trap)\n"
+        "   ├ 🚀 `/demand`  : **Tầng 4A** - Xác nhận dòng tiền mua chủ động (Demand)\n"
+        "   ├ 🔥 `/breakout`: **Tầng 4B** - Bùng nổ giá & khối lượng (RVOL >= 2.0x)\n"
+        "   └ 🤖 `/autobuy` : **Tầng 5 (Phễu cuối)** - Lọc điểm giải ngân an toàn khắt khe nhất\n\n"
+        "3️⃣ **🛡️ BỘ LỌC CƠ BẢN & ĐỊNH GIÁ:**\n"
+        "   └ `/safety`: Lọc cổ phiếu Biên An Toàn (P/E hợp lý, ROE > 12%)\n\n"
+        "4️⃣ **CÀI ĐẶT CANH MUA / STOP LOSS (REAL-TIME):**\n"
+        "   • `/setbuy BSR 29.4 28.5 1000` | `/setstop BSR 27.9` | `/trail BSR`\n\n"
+        "5️⃣ **QUẢN LÝ DANH MỤC & BACKTEST:**\n"
+        "   • `/portfolio` | `/listall` | `/backtest VHM` | `/reset <MÃ>`"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1742,7 +1693,6 @@ async def setstop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# TÍNH NĂNG MỚI: Tự động tính Mốc Trailing Stop (Khóa Lãi ATR) cho danh mục
 async def trail_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
@@ -1802,242 +1752,4 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status = "🟢 LÃI" if pnl_pct >= 0 else "🔴 LỖ"
 
             text += f"🔹 **Mã: {symbol.upper()}** ({qty} cổ)\n"
-            text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.2f}k`\n"
-            text += f"  • Hiệu suất: `{pnl_pct:+.2f}%` (`{pnl_vnd:+,.0f} VNĐ`) [{status}]\n"
-            text += f"  • 🎯 **Canh Mua**: `{buy_str}`\n"
-            text += f"  • 🛡️ **Stop Loss**: `{stop_str}`\n"
-            text += f"  • Lệnh gỡ bỏ: `/reset {symbol}`\n"
-            text += "------------------------------------\n"
-        else:
-            text += f"🔹 **{symbol.upper()}**: Không lấy được dữ liệu.\n"
-
-    text += "\n💡 Dùng lệnh `/listall` để xem tổng quan nhanh, `/trail <MÃ>` để tính Trailing Stop hoặc `/reset <MÃ>` để xóa."
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def show_all_settings_func(update_or_query, context, chat_id):
-    if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
-        text = "📂 Danh mục theo dõi của bạn hiện đang trống.\n👉 Sử dụng `/setbuy` hoặc `/setstop` để bắt đầu cài đặt."
-    else:
-        text = "📋 **TỔNG HỢP TOÀN BỘ MÃ & MỐC CÀI ĐẶT CANH MUA / STOP LOSS**\n\n"
-        for idx, (symbol, pos) in enumerate(USER_PORTFOLIOS[chat_id].items(), 1):
-            entry = pos.get("entry", 0)
-            qty = pos.get("qty", 1000)
-            buy_list = pos.get("buy_alert_prices", [])
-            stop_list = pos.get("stop_alert_prices", [])
-            
-            buy_str = ", ".join([f"{p}k" for p in buy_list]) if buy_list else "Chưa cài"
-            stop_str = ", ".join([f"{p}k" for p in stop_list]) if stop_list else "Chưa cài"
-            
-            text += f"{idx}. 🔹 **Mã: {symbol.upper()}**\n"
-            text += f"   • Giá vốn: `{entry}k` | Khối lượng: `{qty}`\n"
-            text += f"   • 🎯 **Mốc Canh Mua**: `{buy_str}`\n"
-            text += f"   • 🛡️ **Mốc Stop Loss**: `{stop_str}`\n"
-            text += f"   • 🗑️ Lệnh xóa: `/reset {symbol}`\n"
-            text += "------------------------------------\n"
-        
-        text += "\n💡 *Bot đang giám sát real-time 24/7 các mốc này!*"
-
-    if hasattr(update_or_query, "message") and update_or_query.message:
-        await update_or_query.message.reply_text(text, parse_mode="Markdown")
-    else:
-        await update_or_query.edit_message_text(text, parse_mode="Markdown")
-
-
-async def listall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    await show_all_settings_func(update, context, chat_id)
-
-
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Vui lòng nhập mã cần xóa! Ví dụ: `/reset PLX` hoặc `/reset ALL`.", parse_mode="Markdown")
-        return
-
-    target = args[0].upper().strip()
-    if chat_id in USER_PORTFOLIOS:
-        if target == "ALL":
-            USER_PORTFOLIOS[chat_id] = {}
-            save_portfolios()
-            await update.message.reply_text("🗑️ Đã xóa toàn bộ danh mục theo dõi của bạn.")
-        elif target in USER_PORTFOLIOS[chat_id]:
-            del USER_PORTFOLIOS[chat_id][target]
-            save_portfolios()
-            await update.message.reply_text(f"🗑️ Đã gỡ bỏ mã **{target}** khỏi danh mục theo dõi.", parse_mode="Markdown")
-        else:
-            await update.message.reply_text(f"⚠️ Không tìm thấy mã **{target}** trong danh mục.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("📂 Danh mục của bạn đang trống.")
-
-
-async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
-    msg = await update.message.reply_text("🔍 Đang quét các mã siết nền giá & dòng tiền tích lũy... ⚡")
-    try:
-        top_stocks = run_market_screener()
-        if not top_stocks:
-            await msg.edit_text("⚠️ Hiện tại không có mã nào thỏa mãn tiêu chí.")
-            return
-            
-        text = "🚀 TOP CỔ PHIẾU SIẾT NỀN TÍCH LŨY & DÒNG TIỀN TỔ CHỨC (KHUNG D)\n\n"
-        for idx, item in enumerate(top_stocks, 1):
-            text += f"{idx}. {item['symbol']} | Giá: {item['close']:.1f}k | RVOL: {item['rvol']:.2f}x\n"
-        await msg.edit_text(text)
-    except Exception as e:
-        await msg.edit_text(f"❌ Lỗi khi quét: {str(e)}")
-
-
-async def backtest_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Cú pháp: `/backtest <MÃ_CP>` (VD: `/backtest VHM`)", parse_mode="Markdown")
-        return
-    symbol = args[0].upper().strip()
-    msg = await update.message.reply_text(f"⏳ Đang chạy Backtest cho mã {symbol}...")
-    try:
-        report = run_strategy_backtest(symbol)
-        await msg.edit_text(report)
-    except Exception as e:
-        await msg.edit_text(f"❌ Lỗi backtest: {str(e)}")
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
-    text = update.message.text.strip().upper()
-    if len(text) < 3 or len(text) > 5 or not text.isalpha():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, BSR, HPG)!")
-        return
-
-    keyboard = [
-        [
-            InlineKeyboardButton("⏱️ Khung 1H (Giờ)", callback_data=f"{text}|60|450"),
-            InlineKeyboardButton("📅 Khung 1D (Ngày)", callback_data=f"{text}|D|300"),
-            InlineKeyboardButton("📈 Khung 1W (Tuần)", callback_data=f"{text}|W|250"),
-        ],
-    ]
-    await update.message.reply_text(
-        f"🔍 Đã nhận mã **{text}**. Chọn khung thời gian phân tích:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "run_autobuy_callback":
-        await autobuy_command(update, context)
-        return
-
-    if data == "run_breakout_callback":
-        await breakout_command(update, context)
-        return
-
-    if data == "run_testcung_callback":
-        await testcung_command(update, context)
-        return
-
-    if data == "run_demand_callback":
-        await demand_command(update, context)
-        return
-
-    if data == "run_shakeout_callback":
-        await shakeout_command(update, context)
-        return
-
-    if data == "run_safety_callback":
-        await safety_command(update, context)
-        return
-
-    if data == "show_all_settings":
-        chat_id = query.message.chat_id
-        await show_all_settings_func(query, context, chat_id)
-        return
-
-    parts = data.split("|")
-    if len(parts) == 3:
-        symbol, resolution, count = parts[0], parts[1], int(parts[2])
-        
-        msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution})...")
-
-        def background_task():
-            return analyze_stock(symbol, resolution=resolution, count=count)
-
-        future = executor.submit(background_task)
-        try:
-            text_part1, text_part2, img_buf, reply_markup, err = future.result(timeout=15)
-            if err:
-                await msg.edit_text(f"❌ Lỗi: {err}")
-            else:
-                await msg.delete()
-                await query.message.reply_photo(photo=img_buf)
-                await query.message.reply_text(text_part1, parse_mode="Markdown")
-                await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
-        except Exception as e:
-            await msg.edit_text(f"❌ Lỗi hệ thống: {str(e)}")
-
-
-# ==========================================
-# 5. HTTP SERVER & SELF-PING
-# ==========================================
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Quant Pro Bot with Google Sheets Database is running!")
-
-def run_http_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    server.serve_forever()
-
-def self_ping_thread():
-    app_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if not app_url:
-        return
-    while True:
-        time.sleep(240)
-        try:
-            requests.get(app_url, timeout=10)
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    threading.Thread(target=run_http_server, daemon=True).start()
-    threading.Thread(target=self_ping_thread, daemon=True).start()
-
-    print("🤖 Đang khởi tạo Telegram Bot Pro...")
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_error_handler(global_error_handler)
-
-    threading.Thread(target=background_scheduler_thread, args=(app,), daemon=True).start()
-
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("autobuy", autobuy_command))
-    app.add_handler(CommandHandler("scan", scan_command))
-    app.add_handler(CommandHandler("breakout", breakout_command))
-    app.add_handler(CommandHandler("testcung", testcung_command))
-    app.add_handler(CommandHandler("demand", demand_command))
-    app.add_handler(CommandHandler("shakeout", shakeout_command))
-    app.add_handler(CommandHandler("safety", safety_command))
-    app.add_handler(CommandHandler("backtest", backtest_command))
-    app.add_handler(CommandHandler("setbuy", setbuy_command))
-    app.add_handler(CommandHandler("setstop", setstop_command))
-    app.add_handler(CommandHandler("trail", trail_command))
-    app.add_handler(CommandHandler("portfolio", portfolio_command))
-    app.add_handler(CommandHandler("listall", listall_command))
-    app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    print("🚀 Bot Quant Trading Pro đã hoàn tất nâng cấp chuẩn Top 5%!")
-    app.run_polling(drop_pending_updates=True)
+            text += f"  • Giá vốn: `{entry}k` | Giá hiện tại: `{current_price:.2f}
