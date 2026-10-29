@@ -133,12 +133,11 @@ def save_portfolios():
         logging.error(f"Lỗi ghi portfolio lên Google Sheet: {e}")
 
 USER_PORTFOLIOS = load_portfolios()
-
 executor = ThreadPoolExecutor(max_workers=16)
 
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (TỐI ƯU TỐC ĐỘ)
+# 1. HÀM CALL DATA & TÍNH TOÁN TOÀN DIỆN (NÂNG CẤP SỬA LỖI NẾN TUẦN)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
@@ -164,7 +163,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "X-API-KEY": TCBS_API_KEY,
         }
-        res = requests.get(tcbs_url, headers=headers, timeout=2)
+        res = requests.get(tcbs_url, headers=headers, timeout=2.5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -190,7 +189,7 @@ def fetch_stock_data(symbol, resolution="D", count=250):
                 "User-Agent": "Mozilla/5.0",
                 "Referer": "https://dchart.vndirect.com.vn/",
             }
-            res = requests.get(url, headers=headers, timeout=2)
+            res = requests.get(url, headers=headers, timeout=2.5)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
@@ -212,9 +211,10 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
 
+    # NÂNG CẤP THỰC CHIẾN: Gom nến tuần chuẩn Thứ 6 (W-FRI)
     if resolution == "W":
         df_raw.set_index("time", inplace=True)
-        df_weekly = df_raw.resample("W").agg({
+        df_weekly = df_raw.resample("W-FRI").agg({
             "Open": "first",
             "High": "max",
             "Low": "min",
@@ -374,8 +374,32 @@ def calculate_volume_profile(df, bins=20):
 
 
 # ==========================================
-# CÁC HÀM BỔ SUNG NÂNG CAO (KHỐI NGOẠI, CƠ BẢN, ĐA KHUNG POC & SÓNG NGÀY)
+# CÁC HÀM BỔ SUNG NÂNG CAO (NÂNG CẤP VN-INDEX FILTER & VSA MULTI-TF)
 # ==========================================
+def check_vnindex_health():
+    """Bộ lọc sức khỏe Thị trường Chung (VN-Index)"""
+    df, err = fetch_stock_data("VNINDEX", resolution="D", count=60)
+    if err or df.empty:
+        # Retry lấy chỉ số VNINDEX từ mã thay thế nếu API yêu cầu mã chỉ số
+        df, err = fetch_stock_data("1000", resolution="D", count=60)
+        if err or df.empty:
+            return {"status": "NEUTRAL", "score_modifier": 1.0, "note": "Không lấy được dữ liệu VN-Index"}
+
+    df = calculate_indicators(df)
+    last = df.iloc[-1]
+    close = last["Close"]
+    ema20 = last.get("EMA20", close)
+    ema50 = last.get("EMA50", close)
+    macd_hist = last.get("MACD_Hist", 0)
+
+    if close > ema20 and ema20 > ema50 and macd_hist > 0:
+        return {"status": "BULLISH", "score_modifier": 1.15, "note": "VN-Index Uptrend ủng hộ"}
+    elif close < ema50 or macd_hist < -0.5:
+        return {"status": "BEARISH_RISK", "score_modifier": 0.75, "note": "VN-Index rủi ro / Xu hướng yếu"}
+    else:
+        return {"status": "SIDEWAYS", "score_modifier": 1.0, "note": "VN-Index tích lũy/giằng co"}
+
+
 def get_foreign_trading_flow(symbol):
     url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/foreign-trading?ticker={symbol.upper()}&resolution=D&count=5"
     headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
@@ -409,14 +433,6 @@ def get_fundamental_ratios(symbol):
     return {"pe": 15, "roe": 10}
 
 def analyze_multi_timeframe_poc(symbol):
-    """
-    Phân tích Đa Khung Thời Gian (Multi-Timeframe) kết hợp kiểm định Sóng Ngày (Daily Wave).
-    Tích hợp phân loại trạng thái Sóng Ngày:
-      - STRONG_UPTREND_WAVE: Sóng tăng mạnh bùng nổ
-      - PULLBACK_BUY_ZONE: Sóng điều chỉnh gom mua lành mạnh
-      - ACCUMULATION_WAVE: Sóng tích lũy nền trên POC
-      - WEAK_OR_DOWNTREND_WAVE: Sóng giảm / Hồi kỹ thuật
-    """
     try:
         df_d, err_d = fetch_stock_data(symbol, resolution="D", count=100)
         df_w, err_w = fetch_stock_data(symbol, resolution="W", count=50)
@@ -616,7 +632,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append(f"MACD Histogram âm ({macd_hist:+.2f})")
 
-    confidence_score = min(max(score, 10), 88)
+    # NÂNG CẤP: Điều chỉnh điểm số theo Sức khỏe VN-Index
+    mkt_health = check_vnindex_health()
+    score = score * mkt_health["score_modifier"]
+
+    confidence_score = min(max(int(score), 10), 88)
 
     is_below_val = (close < val)
     if is_below_val:
@@ -632,7 +652,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         nav_rec = "25 - 35% NAV"
         final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng. Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
+        final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng ({mkt_health['note']}). Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
         
         entry_1 = round(min(kijun, val) if is_below_val else max(val, last["EMA20"], close * 0.98), 2)
         entry_2 = round(val if is_below_val else close, 2)
@@ -655,7 +675,7 @@ def analyze_stock(symbol, resolution="D", count=250):
         system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
         nav_rec = "0% (Giữ tiền mặt)"
         final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Thị trường đối mặt rủi ro dòng tiền rút. Đứng ngoài bảo toàn vốn."
+        final_action = f"Thị trường/Mã cổ phiếu đối mặt rủi ro. Đứng ngoài bảo toàn vốn."
         stop_loss = round(close - (1.5 * atr), 2)
         action_note = f"Tuyệt đối không giải ngân mua mới. Stoploss tham chiếu: `{fmt(stop_loss)}`."
 
@@ -674,7 +694,8 @@ def analyze_stock(symbol, resolution="D", count=250):
         sec5_action = "🛡️ **Kịch bản Tích lũy/Giằng co:** Tín hiệu đan xen, tuân thủ kỷ luật."
 
     text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
-    text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n\n"
+    text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n"
+    text_part1 += f"🏛️ Trạng thái VN-Index: **{mkt_health['note']}**\n\n"
 
     text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN (MA & MACD):\n"
     text_part1 += f"• Xu hướng dài hạn (SMA200): {long_term_trend} (Giá: {fmt(close)} vs SMA200: {fmt(sma200)})\n"
@@ -754,22 +775,10 @@ def analyze_stock(symbol, resolution="D", count=250):
 # ==========================================
 # 3. MODULE SCAN, BREAKOUT, TESTCUNG, DEMAND, SHAKEOUT, SAFETY & BACKTEST
 # ==========================================
-def check_market_trend_general():
-    try:
-        df, err = fetch_stock_data("VCB", resolution="D", count=50)
-        if err or df.empty:
-            return True
-        df = calculate_indicators(df)
-        last = df.iloc[-1]
-        if last["Close"] > last["EMA50"]:
-            return True
-    except Exception:
-        pass
-    return True
-
-
 def run_market_screener():
     results = []
+    mkt_health = check_vnindex_health()
+
     def scan_one(symbol):
         df, err = fetch_stock_data(symbol, resolution="D", count=200)
         if err or df.empty or len(df) < 50:
@@ -796,7 +805,7 @@ def run_market_screener():
         is_solid_candle = True if price_range == 0 else (close >= low + price_range * 0.4)
 
         if (rvol >= 1.2 or price_range_pct < 0.08) and cmf > 0.02 and close > ema50 and is_solid_candle:
-            score = (rvol * 2.5) + (cmf * 6) + (max(0, 0.1 - price_range_pct) * 20)
+            score = ((rvol * 2.5) + (cmf * 6) + (max(0, 0.1 - price_range_pct) * 20)) * mkt_health["score_modifier"]
             return {
                 "symbol": symbol,
                 "close": close,
@@ -820,6 +829,8 @@ def run_market_screener():
 
 def run_breakout_screener():
     results = []
+    mkt_health = check_vnindex_health()
+
     def scan_breakout(symbol):
         df, err = fetch_stock_data(symbol, resolution="D", count=200)
         if err or df.empty or len(df) < 50:
@@ -849,7 +860,7 @@ def run_breakout_screener():
         is_breakout_structure = (close >= bb_upper) or (close > cloud_top)
         
         if is_closed_near_high and is_volume_breakout and is_breakout_structure and cmf > 0:
-            score = (rvol * 4.0) + (cmf * 10)
+            score = ((rvol * 4.0) + (cmf * 10)) * mkt_health["score_modifier"]
             return {
                 "symbol": symbol,
                 "close": close,
@@ -915,18 +926,7 @@ def run_test_supply_screener():
     return results[:6]
 
 
-# ==========================================
-# MODULE TÍCH HỢP MỚI: QUÉT DÒNG TIỀN MUA CHỦ ĐỘNG (DEMAND)
-# ==========================================
 def run_demand_confirmation_screener():
-    """
-    Bộ lọc Xác nhận Dòng tiền Mua chủ động (Demand Confirmation)
-    Tiêu chí VSA:
-    1. RVOL vọt lên >= 1.5x (Lực mua tăng đột biến)
-    2. Đóng cửa cao nhất hoặc sát đỉnh (Close >= Low + 70% Candle Range)
-    3. CMF dâng cao >= 0.08 & MFI > 50 (Dòng tiền tổ chức đồng thuận chảy vào)
-    4. Thưởng điểm ưu tiên nếu phiên liền trước đó là No-Supply / Test Cung (RVOL_prev <= 0.70)
-    """
     results = []
     def scan_demand(symbol):
         df, err = fetch_stock_data(symbol, resolution="D", count=150)
@@ -1118,6 +1118,8 @@ def run_hourly_cashflow_screener():
 
 def process_single_stock_for_autobuy(symbol):
     try:
+        mkt_health = check_vnindex_health()
+
         ratios = get_fundamental_ratios(symbol)
         if ratios["pe"] > 45 or ratios["roe"] < 0:
             return None
@@ -1170,7 +1172,6 @@ def process_single_stock_for_autobuy(symbol):
         if is_foreign_buying:
             score += 15
 
-        # Tích hợp đánh giá Sóng Ngày & Multi-timeframe nâng cấp
         is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
         score += wave_info.get("score_bonus", 0)
 
@@ -1179,6 +1180,8 @@ def process_single_stock_for_autobuy(symbol):
             score -= 30
         if is_rsi_bear_div:
             score -= 25
+
+        score = int(score * mkt_health["score_modifier"])
 
         if score >= 60 and cmf > -0.15 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div and is_wave_ok:
             atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
@@ -1429,8 +1432,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   • `/safety`: 🛡️ **Lọc Biên An Toàn Cơ Bản** (P/E hợp lý, ROE > 12%, định giá ngon).\n"
         "   • `/autobuy`: Bộ lọc giải ngân an toàn khắt khe.\n\n"
         "3️⃣ **Cài đặt canh MUA / CẮT LỖ (Real-Time):**\n"
-        "`/setbuy BSR 29.4 28.5 1000` | `/setstop BSR 27.9`\n\n"
-        "4️⃣ **Danh mục & Tiện ích:** `/portfolio` | `/listall` | `/backtest VHM` | `/reset <MÃ>`"
+        "`/setbuy BSR 29.4 28.5 1000` | `/setstop BSR 27.9` | `/trail BSR`\n\n"
+        "4️⃣ **Danh mục & Tiện ích:** `/portfolio` | `/listall` | `/trail <MÃ>` | `/backtest VHM` | `/reset <MÃ>`"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
@@ -1739,6 +1742,37 @@ async def setstop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# TÍNH NĂNG MỚI: Tự động tính Mốc Trailing Stop (Khóa Lãi ATR) cho danh mục
+async def trail_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    args = context.args
+    if not args:
+        await update.message.reply_text("⚠️ Cú pháp: `/trail <MÃ_CP>` (VD: `/trail BSR`)", parse_mode="Markdown")
+        return
+
+    symbol = args[0].upper().strip()
+    df, err = fetch_stock_data(symbol, resolution="D", count=60)
+    if err or df.empty:
+        await update.message.reply_text(f"❌ Không lấy được dữ liệu tính Trailing Stop cho mã {symbol}.")
+        return
+
+    df = calculate_indicators(df)
+    last = df.iloc[-1]
+    close = last["Close"]
+    high_60 = df["High"].max()
+    atr = last["ATR"] if not np.isnan(last["ATR"]) else (close * 0.03)
+
+    trailing_stop = round(high_60 - (2.0 * atr), 2)
+    
+    text = f"🎯 **TÍNH TOÁN MỐC TRAILING STOP (KHÓA LÃI ATR): {symbol}**\n\n"
+    text += f"• Giá hiện tại: `{close:.2f}k` | Đỉnh cao nhất 60 phiên: `{high_60:.2f}k`\n"
+    text += f"• Độ biến động ATR (14): `{atr:.2f}k`\n"
+    text += f"🛡️ **Mốc Trailing Stop đề xuất (2x ATR)**: `{trailing_stop:.2f}k`\n\n"
+    text += f"💡 *Gợi ý thực chiến: Nếu giá rơi gãy qua `{trailing_stop:.2f}k`, hãy tiến hành chốt lời hiện thực hóa lợi nhuận! Lệnh cài nhanh: `/setstop {symbol} {trailing_stop}`*"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
 async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if chat_id not in USER_PORTFOLIOS or not USER_PORTFOLIOS[chat_id]:
@@ -1777,7 +1811,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text += f"🔹 **{symbol.upper()}**: Không lấy được dữ liệu.\n"
 
-    text += "\n💡 Dùng lệnh `/listall` để xem tổng quan nhanh hoặc `/reset <MÃ>` để xóa."
+    text += "\n💡 Dùng lệnh `/listall` để xem tổng quan nhanh, `/trail <MÃ>` để tính Trailing Stop hoặc `/reset <MÃ>` để xóa."
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -1998,11 +2032,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
     app.add_handler(CommandHandler("setstop", setstop_command))
+    app.add_handler(CommandHandler("trail", trail_command))
     app.add_handler(CommandHandler("portfolio", portfolio_command))
     app.add_handler(CommandHandler("listall", listall_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã sẵn sàng với bộ lọc Demand, Shakeout & Google Sheets!")
+    print("🚀 Bot Quant Trading Pro đã hoàn tất nâng cấp chuẩn Top 5%!")
     app.run_polling(drop_pending_updates=True)
+
