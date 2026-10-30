@@ -5,3 +5,4 @@ requests
 matplotlib
 google-genai
 feedparser
+groq
