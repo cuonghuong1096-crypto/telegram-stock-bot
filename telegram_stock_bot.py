@@ -315,7 +315,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
 """
 
             completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",  # Đã cập nhật model chuẩn đang hoạt động trên Groq
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=600
