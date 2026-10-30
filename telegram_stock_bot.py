@@ -292,10 +292,12 @@ def get_latest_stock_news(symbol):
 
         groq_api_key = os.environ.get("GROQ_API_KEY")
         
-        if groq_api_key:
-            client = Groq(api_key=groq_api_key)
-            
-            prompt = f"""
+        if not groq_api_key:
+            return f"⚠️ <b>Lỗi cấu hình:</b> Chưa nhận được biến môi trường <code>GROQ_API_KEY</code> trên Server.\n\n📰 <b>TIN TỨC THÔ {symbol}:</b>\n\n" + raw_news_text
+
+        client = Groq(api_key=groq_api_key)
+        
+        prompt = f"""
 Bạn là chuyên gia phân tích chứng khoán Việt Nam. Hãy đọc danh sách tin tức mới nhất về mã {symbol} dưới đây:
 {raw_news_text}
 
@@ -314,20 +316,20 @@ Hãy tổng hợp ngắn gọn, rõ ràng thành đúng định dạng HTML Tele
 Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiếng Việt, ngắn gọn, súc tích, không dông dài.
 """
 
-            completion = client.chat.completions.create(
-                model="llama3-70b-8192",  # Sử dụng model llama3-70b-8192 ổn định trên Groq
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=600
-            )
-            
-            ai_analysis = completion.choices[0].message.content
-            return f"📰 <b>TỔNG HỢP TIN TỨC: {symbol}</b>\n====================================\n\n" + ai_analysis
-        else:
-            return f"📰 <b>TIN TỨC THÔ {symbol}:</b>\n\n" + raw_news_text
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",  # Đã cấu hình chuẩn model mới nhất trên Groq
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=600
+        )
+        
+        ai_analysis = completion.choices[0].message.content
+        return f"📰 <b>TỔNG HỢP TIN TỨC: {symbol}</b>\n====================================\n\n" + ai_analysis
 
     except Exception as e:
-        return f"❌ Lỗi khi phân tích tin tức: {html.escape(str(e))}"
+        err_msg = str(e)
+        logging.error(f"Groq API Error for {symbol}: {err_msg}")
+        return f"❌ <b>Lỗi khi gọi Groq AI:</b> <code>{html.escape(err_msg)}</code>"
 
 # ==========================================
 # HÀM PHÂN TÍCH KỸ THUẬT & SMC
