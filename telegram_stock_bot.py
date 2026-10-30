@@ -34,7 +34,7 @@ TCBS_API_KEY = os.environ.get(
     "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
 )
 GOOGLE_SHEET_API_URL = os.environ.get("GOOGLE_SHEET_API_URL", "")
-DEFAULT_NAV_VND = 500_000_000  # Vốn tài khoản tham chiếu (500 triệu VNĐ) cho quản trị rủi ro 1% NAV
+DEFAULT_NAV_VND = 500_000_000
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -42,22 +42,15 @@ logging.basicConfig(
 )
 
 WATCHLIST_SCAN = [
-    # Nhóm gốc & Ngân hàng
     "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
     "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG", "BSR",
-    # Đầu tư công & Xây dựng & Vật liệu
     "CTD", "HHV", "LCG", "HT1", "VCG", "CII", "L14", "VGS", "KBC", "PDR", 
     "CEO", "DXG", "TCH", "NVL", "VPL", "HDG", "NTL", "HDC", "KSB", "MSR",
-    # Chứng khoán & Tài chính khác
     "VND", "SHS", "VIX", "HCM", "CTS", "ORS",
-    # Bán lẻ & Tiêu dùng & Công nghệ
     "FPT", "MCH", "PET", "VTP", "CTR", "GEE",
-    # Thủy sản, May mặc, Cao su
     "VGT", "TNG", "GVR", "ANV", "VHC",
-    # Dầu khí
     "PVS", "PVB", "PVD", "GAS", "PLX",
-    # Vận tải
     "HAH", "VJC", "VSC"
 ]
 
@@ -75,8 +68,15 @@ SECTOR_MAP = {
 }
 
 ACTIVE_CHAT_IDS = set()
-ALERTED_TODAY = set()
 USER_PORTFOLIOS = {}
+
+# ==========================================
+# BỘ ĐỆM DỮ LIỆU TỐC ĐỘ CAO (CACHE IN-MEMORY)
+# ==========================================
+VNINDEX_HEALTH_CACHE = {"data": None, "timestamp": 0}
+STOCK_DATA_CACHE = {}  # Format: { "SYMBOL_RES": (df, err, timestamp) }
+
+executor = ThreadPoolExecutor(max_workers=30)
 
 # ==========================================
 # QUẢN LÝ LƯU TRỮ CHUẨN HOÁ
@@ -86,9 +86,8 @@ def load_portfolios():
     if not GOOGLE_SHEET_API_URL:
         logging.warning("Chưa cấu hình GOOGLE_SHEET_API_URL!")
         return {}
-    
     try:
-        res = requests.get(GOOGLE_SHEET_API_URL, timeout=5)
+        res = requests.get(GOOGLE_SHEET_API_URL, timeout=3)
         if res.status_code == 200:
             result = res.json()
             if result.get("status") == "success":
@@ -99,9 +98,7 @@ def load_portfolios():
                     symbol = item["symbol"]
                     entry = float(item["entry"])
                     qty = int(item["qty"])
-                    
                     ACTIVE_CHAT_IDS.add(chat_id)
-                    
                     try:
                         alert_data = json.loads(item["alerts"])
                     except Exception:
@@ -109,7 +106,6 @@ def load_portfolios():
                     
                     if chat_id not in temp_portfolios:
                         temp_portfolios[chat_id] = {}
-                    
                     if symbol != "SYSTEM_INIT":
                         temp_portfolios[chat_id][symbol] = {
                             "entry": entry,
@@ -117,50 +113,28 @@ def load_portfolios():
                             "buy_alert_prices": alert_data.get("buy_alert_prices", []),
                             "stop_alert_prices": alert_data.get("stop_alert_prices", [])
                         }
-                logging.info(f"Đã tải portfolio & {len(ACTIVE_CHAT_IDS)} Chat IDs từ Google Sheets!")
                 return temp_portfolios
     except Exception as e:
         logging.error(f"Lỗi tải portfolio từ Google Sheet: {e}")
     return {}
 
-def save_portfolios_async():
-    def _save():
-        if not GOOGLE_SHEET_API_URL:
-            return
-        try:
-            rows = []
-            for chat_id, portfolio in USER_PORTFOLIOS.items():
-                if not portfolio:
-                    rows.append([str(chat_id), "SYSTEM_INIT", 0, 0, json.dumps({})])
-                else:
-                    for symbol, pos in portfolio.items():
-                        alert_dict = {
-                            "buy_alert_prices": pos.get("buy_alert_prices", []),
-                            "stop_alert_prices": pos.get("stop_alert_prices", [])
-                        }
-                        rows.append([
-                            str(chat_id),
-                            symbol,
-                            pos.get("entry", 0),
-                            pos.get("qty", 1000),
-                            json.dumps(alert_dict)
-                        ])
-            payload = {"action": "save", "rows": rows}
-            requests.post(GOOGLE_SHEET_API_URL, json=payload, timeout=5)
-        except Exception as e:
-            logging.error(f"Lỗi ghi portfolio lên Google Sheet: {e}")
-
-    threading.Thread(target=_save, daemon=True).start()
-
 USER_PORTFOLIOS = load_portfolios()
-executor = ThreadPoolExecutor(max_workers=20)
 
 # ==========================================
-# 1. HÀM CALL DATA & TÍNH TOÁN CẮT LỚP KỸ THUẬT
+# 1. HÀM CALL DATA TỐI ƯU TỐC ĐỘ & THỜI GIAN CHỜ
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=250):
     symbol = symbol.upper().strip()
-    end_time = int(datetime.datetime.now().timestamp())
+    cache_key = f"{symbol}_{resolution}"
+    now_ts = time.time()
+
+    # Kiểm tra đệm dữ liệu (Cache) trong vòng 30 giây để tránh spam API
+    if cache_key in STOCK_DATA_CACHE:
+        cached_df, cached_err, cached_time = STOCK_DATA_CACHE[cache_key]
+        if now_ts - cached_time < 30:
+            return cached_df, cached_err
+
+    end_time = int(now_ts)
 
     if resolution in ["60"]:
         res_param = resolution
@@ -181,82 +155,61 @@ def fetch_stock_data(symbol, resolution="D", count=250):
 
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
+    
+    # Rút ngắn timeout kết nối xuống 1.8 giây để cắt giật
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "X-API-KEY": TCBS_API_KEY,
-        }
-        res = requests.get(tcbs_url, headers=headers, timeout=2.5)
+        headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
+        res = requests.get(tcbs_url, headers=headers, timeout=1.8)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
                 df_raw = pd.DataFrame(data)
                 df_raw["time"] = pd.to_datetime(df_raw["tradingDate"])
-                df_raw.rename(
-                    columns={
-                        "open": "Open",
-                        "high": "High",
-                        "low": "Low",
-                        "close": "Close",
-                        "volume": "Volume",
-                    },
-                    inplace=True,
-                )
+                df_raw.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
     except Exception:
         pass
 
     if df_raw.empty:
         url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={res_param}&symbol={symbol}&from={start_time}&to={end_time}"
         try:
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Referer": "https://dchart.vndirect.com.vn/",
-            }
-            res = requests.get(url, headers=headers, timeout=2.5)
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://dchart.vndirect.com.vn/"}
+            res = requests.get(url, headers=headers, timeout=1.8)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
-                    df_raw = pd.DataFrame(
-                        {
-                            "time": pd.to_datetime(data["t"], unit="s"),
-                            "Open": data["o"],
-                            "High": data["h"],
-                            "Low": data["l"],
-                            "Close": data["c"],
-                            "Volume": data["v"],
-                        }
-                    )
+                    df_raw = pd.DataFrame({
+                        "time": pd.to_datetime(data["t"], unit="s"),
+                        "Open": data["o"], "High": data["h"], "Low": data["l"], "Close": data["c"], "Volume": data["v"]
+                    })
         except Exception as e:
-            return pd.DataFrame(), f"Lỗi kết nối API dự phòng: {str(e)}"
+            res_err = f"Máy chủ dữ liệu không phản hồi: {str(e)}"
+            STOCK_DATA_CACHE[cache_key] = (pd.DataFrame(), res_err, now_ts)
+            return pd.DataFrame(), res_err
 
     if df_raw.empty:
-        return pd.DataFrame(), f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không hợp lệ."
+        res_err = f"Không tìm thấy dữ liệu hoặc mã cổ phiếu '{symbol}' không khả dụng."
+        STOCK_DATA_CACHE[cache_key] = (pd.DataFrame(), res_err, now_ts)
+        return pd.DataFrame(), res_err
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
 
     if resolution == "W":
         df_raw.set_index("time", inplace=True)
-        df_weekly = df_raw.resample("W-FRI").agg({
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-            "Volume": "sum"
-        }).dropna().reset_index()
-        return df_weekly.tail(250).reset_index(drop=True), None
+        df_res = df_raw.resample("W-FRI").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna().reset_index()
+        ret_df = df_res.tail(250).reset_index(drop=True)
+        STOCK_DATA_CACHE[cache_key] = (ret_df, None, now_ts)
+        return ret_df, None
 
     if resolution == "M":
         df_raw.set_index("time", inplace=True)
-        df_monthly = df_raw.resample("ME").agg({
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-            "Volume": "sum"
-        }).dropna().reset_index()
-        return df_monthly.tail(120).reset_index(drop=True), None
+        df_res = df_raw.resample("ME").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna().reset_index()
+        ret_df = df_res.tail(120).reset_index(drop=True)
+        STOCK_DATA_CACHE[cache_key] = (ret_df, None, now_ts)
+        return ret_df, None
 
-    return df_raw.tail(count).reset_index(drop=True), None
+    ret_df = df_raw.tail(count).reset_index(drop=True)
+    STOCK_DATA_CACHE[cache_key] = (ret_df, None, now_ts)
+    return ret_df, None
 
 
 def calculate_indicators(df):
@@ -285,8 +238,6 @@ def calculate_indicators(df):
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
     df["BB_Width"] = (df["BB_Upper"] - df["BB_Lower"]) / (df["BB_Middle"] + 1e-9)
     df["BB_Squeeze"] = df["BB_Width"] <= df["BB_Width"].rolling(50).quantile(0.20)
-
-    df["Price_Range_Pct"] = (df["High"].rolling(10).max() - df["Low"].rolling(10).min()) / df["Close"]
 
     lookback = 15
     curr_close = df["Close"].iloc[-1]
@@ -332,15 +283,7 @@ def calculate_indicators(df):
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    df["SMA50"] = df["Close"].rolling(50).mean()
     df["SMA200"] = df["Close"].rolling(200).mean()
-
-    def linreg_slope(ser):
-        y = ser.values
-        x = np.arange(len(y))
-        slope, _ = np.polyfit(x, y, 1)
-        return slope
-    df["LR_Slope"] = df["Close"].rolling(14).apply(linreg_slope, raw=False)
 
     df["Tenkan_sen"] = (df["High"].rolling(window=9).max() + df["Low"].rolling(window=9).min()) / 2
     df["Kijun_sen"] = (df["High"].rolling(window=26).max() + df["Low"].rolling(window=26).min()) / 2
@@ -350,9 +293,6 @@ def calculate_indicators(df):
     return df
 
 
-# ==========================================
-# SMART MONEY CONCEPTS (SMC) & QUẢN TRỊ 1% NAV
-# ==========================================
 def calculate_smc_structures(df):
     if df.empty or len(df) < 30:
         return {"has_ob": False, "ob_price": 0, "has_fvg": False, "fvg_low": 0, "fvg_high": 0, "has_liquidity_sweep": False}
@@ -385,11 +325,8 @@ def calculate_smc_structures(df):
     has_liquidity_sweep = (curr_low < recent_low_10) and (curr_close > recent_low_10)
 
     return {
-        "has_ob": has_ob,
-        "ob_price": round(ob_price, 2),
-        "has_fvg": has_fvg,
-        "fvg_low": round(fvg_low, 2),
-        "fvg_high": round(fvg_high, 2),
+        "has_ob": has_ob, "ob_price": round(ob_price, 2),
+        "has_fvg": has_fvg, "fvg_low": round(fvg_low, 2), "fvg_high": round(fvg_high, 2),
         "has_liquidity_sweep": has_liquidity_sweep
     }
 
@@ -401,8 +338,7 @@ def calculate_position_size_1pct(entry_price, stop_loss_price, total_nav_vnd=DEF
     risk_amount_vnd = total_nav_vnd * risk_pct
     risk_per_share_vnd = (entry_price - stop_loss_price) * 1000
 
-    if risk_per_share_vnd <= 0:
-        return 1000, 0.0
+    if risk_per_share_vnd <= 0: return 1000, 0.0
 
     raw_qty = risk_amount_vnd / risk_per_share_vnd
     suggested_qty = int(raw_qty // 100) * 100
@@ -444,40 +380,26 @@ def calculate_volume_profile(df, bins=25):
             right += 1
             current_vol += hist[right]
             added = True
-        if not added:
-            break
+        if not added: break
 
     val = bin_edges[left]
     vah = bin_edges[right + 1]
     return poc, vah, val
 
 
+# Tối ưu: Thêm bộ đệm VN-Index 60 giây
 def check_vnindex_health():
-    sample_watchlist = WATCHLIST_SCAN[:20]
-    advancing_count, total_checked = 0, 0
-    
-    def check_single_breadth(sym):
-        df, err = fetch_stock_data(sym, resolution="D", count=5)
-        if not err and not df.empty and len(df) >= 2:
-            return df.iloc[-1]["Close"] > df.iloc[-2]["Close"]
-        return None
-
-    with ThreadPoolExecutor(max_workers=15) as pool:
-        futures = [pool.submit(check_single_breadth, sym) for sym in sample_watchlist]
-        for f in as_completed(futures):
-            res = f.result()
-            if res is not None:
-                total_checked += 1
-                if res:
-                    advancing_count += 1
-
-    breadth_ratio = (advancing_count / total_checked) if total_checked > 0 else 0.5
+    now_ts = time.time()
+    if VNINDEX_HEALTH_CACHE["data"] and (now_ts - VNINDEX_HEALTH_CACHE["timestamp"] < 60):
+        return VNINDEX_HEALTH_CACHE["data"]
 
     df, err = fetch_stock_data("VNINDEX", resolution="D", count=60)
     if err or df.empty:
         df, err = fetch_stock_data("1000", resolution="D", count=60)
         if err or df.empty:
-            return {"status": "NEUTRAL", "score_modifier": 1.0, "note": "Không lấy được dữ liệu VN-Index"}
+            res = {"status": "NEUTRAL", "score_modifier": 1.0, "note": "Không lấy được dữ liệu VN-Index"}
+            VNINDEX_HEALTH_CACHE["data"], VNINDEX_HEALTH_CACHE["timestamp"] = res, now_ts
+            return res
 
     df = calculate_indicators(df)
     last = df.iloc[-1]
@@ -487,79 +409,18 @@ def check_vnindex_health():
     macd_hist = last.get("MACD_Hist", 0)
 
     if close > ema20 and ema20 > ema50 and macd_hist > 0:
-        if breadth_ratio < 0.35:
-            return {
-                "status": "FAKE_BULLISH_TRAP",
-                "score_modifier": 0.65,
-                "note": f"⚠️ CẢNH BÁO TRỤ KÉO (Xanh vỏ đỏ lòng)! Độ rộng chỉ {breadth_ratio*100:.0f}% mã tăng."
-            }
-        return {"status": "BULLISH", "score_modifier": 1.15, "note": f"VN-Index Uptrend ủng hộ ({breadth_ratio*100:.0f}% mã tăng)"}
+        res = {"status": "BULLISH", "score_modifier": 1.15, "note": "VN-Index Uptrend ủng hộ"}
     elif close < ema50 or macd_hist < -0.5:
-        return {"status": "BEARISH_RISK", "score_modifier": 0.50, "note": "VN-Index rủi ro / Xu hướng suy yếu mạnh"}
+        res = {"status": "BEARISH_RISK", "score_modifier": 0.50, "note": "VN-Index rủi ro / Xu hướng suy yếu mạnh"}
     else:
-        return {"status": "SIDEWAYS", "score_modifier": 1.0, "note": f"VN-Index tích lũy ({breadth_ratio*100:.0f}% mã tăng)"}
+        res = {"status": "SIDEWAYS", "score_modifier": 1.0, "note": "VN-Index tích lũy"}
 
-
-def get_fundamental_ratios(symbol):
-    url = f"https://apifull.tcbs.com.vn/vietnam-stock/v1/stock/financial-ratio/{symbol.upper()}/historic?yearly=0&isQuarterly=1"
-    headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
-    try:
-        res = requests.get(url, headers=headers, timeout=2.0)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                latest = data[0]
-                return {
-                    "pe": latest.get("priceToEarning", 15),
-                    "roe": latest.get("roe", 10),
-                }
-    except Exception:
-        pass
-    return {"pe": 15, "roe": 10}
-
-
-def calculate_vcp_tightness(df_d):
-    if len(df_d) < 20:
-        return False, 1.0
-    
-    vcp_1 = (df_d["High"].iloc[-20:-14] - df_d["Low"].iloc[-20:-14]).mean() / df_d["Close"].iloc[-1]
-    vcp_2 = (df_d["High"].iloc[-14:-7] - df_d["Low"].iloc[-14:-7]).mean() / df_d["Close"].iloc[-1]
-    vcp_3 = (df_d["High"].iloc[-7:] - df_d["Low"].iloc[-7:]).mean() / df_d["Close"].iloc[-1]
-    
-    is_vcp = (vcp_1 > vcp_2) and (vcp_2 > vcp_3) and (vcp_3 < 0.035)
-    tightness_score = max(0, (0.05 - vcp_3) * 100)
-    return is_vcp, tightness_score
-
-
-def calculate_relative_strength(df_stock, df_vnindex):
-    if df_stock.empty or df_vnindex.empty or len(df_stock) < 15 or len(df_vnindex) < 15:
-        return 1.0
-    stock_perf = (df_stock["Close"].iloc[-1] - df_stock["Close"].iloc[-15]) / df_stock["Close"].iloc[-15]
-    vni_perf = (df_vnindex["Close"].iloc[-1] - df_vnindex["Close"].iloc[-15]) / df_vnindex["Close"].iloc[-15]
-    return stock_perf - vni_perf
-
-
-def check_advanced_filters(df_d, last, symbol):
-    if len(df_d) < 30:
-        return False, 0
-
-    close = last["Close"]
-    open_price = last["Open"]
-    prev_close = df_d["Close"].iloc[-2]
-    
-    gap_pct = ((open_price - prev_close) / prev_close) * 100
-    if gap_pct > 2.5:
-        return False, -50
-
-    recent_ranges = (df_d["High"].tail(5) - df_d["Low"].tail(5)) / df_d["Close"].tail(5)
-    avg_compression = recent_ranges.mean()
-    
-    tightness_bonus = 20 if avg_compression < 0.02 else (10 if avg_compression < 0.035 else 0)
-    return True, tightness_bonus
+    VNINDEX_HEALTH_CACHE["data"], VNINDEX_HEALTH_CACHE["timestamp"] = res, now_ts
+    return res
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU (ĐÃ SỬA CHUYỂN SANG HTML)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU TỐC ĐỘ CAO
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p): return f"{p:.1f}k"
@@ -568,17 +429,11 @@ def analyze_stock(symbol, resolution="D", count=250):
     if err or df.empty:
         return None, None, None, None, err if err else f"Không lấy được dữ liệu cho mã {symbol}!"
 
-    with ThreadPoolExecutor(max_workers=3) as local_pool:
-        f_ind = local_pool.submit(calculate_indicators, df)
-        f_smc = local_pool.submit(calculate_smc_structures, df)
-        f_mkt = local_pool.submit(check_vnindex_health)
-        
-        df = f_ind.result()
-        smc = f_smc.result()
-        mkt_health = f_mkt.result()
+    df = calculate_indicators(df)
+    smc = calculate_smc_structures(df)
+    mkt_health = check_vnindex_health()
 
     last = df.iloc[-1]
-
     close = last["Close"]
     cmf = last.get("CMF", 0.0)
     mfi = last.get("MFI", 50.0)
@@ -602,8 +457,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     poc, vah, val = calculate_volume_profile(df)
     long_term_trend = "UPTREND DÀI HẠN (Trên SMA200)" if close > sma200 else "DOWNTREND/PHỤC HỒI (Dưới SMA200)"
 
-    confluence_points = []
-    risk_warnings = []
+    confluence_points, risk_warnings = [], []
     score = 0
 
     if close > cloud_top:
@@ -625,17 +479,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         score += 15
         confluence_points.append("🎯 [SMC - Liquidity Sweep]: Quét thanh khoản đáy cũ rút chân đảo chiều")
 
-    if adx > 25:
-        score += 15
-        confluence_points.append(f"Xu hướng mạnh (ADX: {adx:.1f})")
-
-    if cmf > 0.05 and mfi > 50:
-        score += 20
-        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận")
-
-    if is_bb_squeeze:
-        score += 10
-        confluence_points.append("⚡ [SIẾT CHẶT BB]: Chuẩn bị bùng nổ biến động")
+    if adx > 25: score += 15; confluence_points.append(f"Xu hướng mạnh (ADX: {adx:.1f})")
+    if cmf > 0.05 and mfi > 50: score += 20; confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận")
+    if is_bb_squeeze: score += 10; confluence_points.append("⚡ [SIẾT CHẶT BB]: Chuẩn bị bùng nổ biến động")
 
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
     trap_list = []
@@ -675,7 +521,6 @@ def analyze_stock(symbol, resolution="D", count=250):
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo nghiêm trọng"
 
-    # Định dạng HTML an toàn
     text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KỸ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
     text_part1 += f"🏛️ Trạng thái VN-Index: <b>{html.escape(mkt_health['note'])}</b>\n\n"
@@ -719,7 +564,7 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. QUÉT ĐIỂM MUA TÍCH LŨY & ĐẢO CHUYỀN ĐÁY
+# 3. QUÉT DỮ LIỆU ĐA LUỒNG TỐI ƯU
 # ==========================================
 def run_dip_buy_screener():
     results = []
@@ -730,31 +575,21 @@ def run_dip_buy_screener():
         if err or df.empty or len(df) < 40: return None
         df = calculate_indicators(df)
         last = df.iloc[-1]
-        
-        close, low, high = last["Close"], last["Low"], last["High"]
-        cmf, rvol = last.get("CMF", 0.0), last.get("RVOL", 1.0)
-        rsi = last.get("RSI", 50.0)
-        
+        close, cmf, rvol, rsi = last["Close"], last.get("CMF", 0.0), last.get("RVOL", 1.0), last.get("RSI", 50.0)
         smc = calculate_smc_structures(df)
-        poc, vah, val = calculate_volume_profile(df)
-        
+        poc, _, _ = calculate_volume_profile(df)
         recent_high = df["High"].tail(20).max()
         drop_pct = ((recent_high - close) / recent_high) * 100
 
-        is_near_support = (close <= poc * 1.02) or smc["has_ob"] or smc["has_liquidity_sweep"]
-        has_cashflow_rebound = (cmf > -0.05) and (rvol >= 0.8)
-
-        if drop_pct >= 5.0 and is_near_support and has_cashflow_rebound and rsi < 60:
+        if drop_pct >= 5.0 and ((close <= poc * 1.02) or smc["has_ob"] or smc["has_liquidity_sweep"]) and cmf > -0.05 and rvol >= 0.8 and rsi < 60:
             score = (drop_pct * 2.0) + (cmf * 30) + (15 if smc["has_liquidity_sweep"] else 0) + (10 if smc["has_ob"] else 0)
-            score = score * mkt_health["score_modifier"]
             return {
                 "symbol": symbol, "close": close, "drop_pct": round(drop_pct, 1),
-                "cmf": cmf, "rvol": rvol, "rsi": round(rsi, 1),
-                "poc": poc, "smc": smc, "score": score
+                "cmf": cmf, "rvol": rvol, "rsi": round(rsi, 1), "poc": poc, "smc": smc, "score": score * mkt_health["score_modifier"]
             }
         return None
 
-    with ThreadPoolExecutor(max_workers=20) as pool:
+    with ThreadPoolExecutor(max_workers=30) as pool:
         futures = [pool.submit(scan_dip, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
             res = future.result()
@@ -763,32 +598,23 @@ def run_dip_buy_screener():
     return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
 
 
-def check_liquidity_and_base(df, last):
-    close = last["Close"]
-    vol_sma20 = last.get("Vol_SMA20", last["Volume"])
-    return (vol_sma20 * close * 1000) >= 4_500_000_000
-
-
 def run_sector_flow_screener():
     sector_results = []
-    def analyze_single_stock_for_sector(symbol):
+    def analyze_single_stock(symbol):
         df, err = fetch_stock_data(symbol, resolution="D", count=60)
         if err or df.empty or len(df) < 20: return None
         df = calculate_indicators(df)
         last, prev = df.iloc[-1], df.iloc[-2]
-        close, prev_close = last["Close"], prev["Close"]
         return {
             "symbol": symbol,
-            "pct_change": ((close - prev_close) / prev_close) * 100,
-            "cmf": last.get("CMF", 0.0),
-            "rvol": last.get("RVOL", 1.0),
-            "mfi": last.get("MFI", 50.0)
+            "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100,
+            "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0), "mfi": last.get("MFI", 50.0)
         }
 
     for sector_name, symbols in SECTOR_MAP.items():
         stock_metrics = []
         with ThreadPoolExecutor(max_workers=10) as pool:
-            futures = [pool.submit(analyze_single_stock_for_sector, sym) for sym in symbols]
+            futures = [pool.submit(analyze_single_stock, sym) for sym in symbols]
             for f in as_completed(futures):
                 res = f.result()
                 if res: stock_metrics.append(res)
@@ -797,131 +623,29 @@ def run_sector_flow_screener():
         avg_cmf = np.mean([s["cmf"] for s in stock_metrics])
         avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
         avg_mfi = np.mean([s["mfi"] for s in stock_metrics])
-        sector_score = (avg_cmf * 40) + (avg_rvol * 20) + (avg_pct * 10) + (avg_mfi * 0.3)
         leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
 
         sector_results.append({
             "sector": sector_name, "avg_pct": avg_pct, "avg_cmf": avg_cmf, "avg_rvol": avg_rvol,
-            "avg_mfi": avg_mfi, "leader": leader_stock, "score": sector_score, "total_stocks": len(stock_metrics)
+            "avg_mfi": avg_mfi, "leader": leader_stock, "score": (avg_cmf * 40) + (avg_rvol * 20) + (avg_pct * 10)
         })
     return sorted(sector_results, key=lambda x: x["score"], reverse=True)
 
 
-def process_single_stock_for_autobuy(symbol):
-    try:
-        mkt_health = check_vnindex_health()
-        if mkt_health["status"] in ["BEARISH_RISK", "FAKE_BULLISH_TRAP"]:
-            return None
-
-        df_vni, err_vni = fetch_stock_data("VNINDEX", resolution="D", count=60)
-        if err_vni or df_vni.empty: df_vni, _ = fetch_stock_data("1000", resolution="D", count=60)
-
-        ratios = get_fundamental_ratios(symbol)
-        if ratios["pe"] > 40 or ratios["roe"] < 2.0: return None
-
-        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
-        df_h, err_h = fetch_stock_data(symbol, resolution="60", count=60)
-        if err_d or df_d.empty or len(df_d) < 50: return None
-
-        df_d = calculate_indicators(df_d)
-        last_d = df_d.iloc[-1]
-        if not check_liquidity_and_base(df_d, last_d): return None
-
-        is_pass_adv, adv_bonus = check_advanced_filters(df_d, last_d, symbol)
-        if not is_pass_adv: return None
-
-        smc = calculate_smc_structures(df_d)
-
-        cmf_h, rvol_h = 0.0, 1.0
-        if not err_h and not df_h.empty and len(df_h) >= 20:
-            df_h = calculate_indicators(df_h)
-            last_h = df_h.iloc[-1]
-            cmf_h, rvol_h = last_h.get("CMF", 0.0), last_h.get("RVOL", 1.0)
-
-        close, cmf_d, rvol_d = last_d["Close"], last_d.get("CMF", 0.0), last_d.get("RVOL", 1.0)
-        rsi_d, stoch_rsi_d = last_d.get("RSI", 50.0), last_d.get("Stoch_RSI", 50.0)
-        is_rsi_bear_div = last_d.get("RSI_Bearish_Divergence", False)
-        bb_upper = last_d.get("BB_Upper", close)
-
-        is_vcp, vcp_score = calculate_vcp_tightness(df_d)
-        rs_rating = calculate_relative_strength(df_d, df_vni)
-        poc, vah, val = calculate_volume_profile(df_d)
-        atr = last_d.get("ATR", close * 0.03)
-
-        entry_price = round(max(val, close * 0.98), 2)
-        stop_loss = round(entry_price - (1.5 * atr), 2)
-        target_price = vah if vah > (close * 1.03) else round(close * 1.08, 2)
-
-        risk, reward = entry_price - stop_loss, target_price - entry_price
-        rr_ratio = reward / (risk + 1e-9)
-
-        suggested_qty, actual_risk_pct = calculate_position_size_1pct(entry_price, stop_loss)
-
-        score = 50 + adv_bonus
-        cloud_top = max(last_d.get("Senkou_Span_A", close), last_d.get("Senkou_Span_B", close))
-        cloud_bottom = min(last_d.get("Senkou_Span_A", close), last_d.get("Senkou_Span_B", close))
-
-        if close > cloud_top: score += 15
-        elif close >= cloud_bottom: score += 5
-        else: score -= 25
-
-        if smc["has_ob"]: score += 10
-        if smc["has_fvg"]: score += 10
-        if smc["has_liquidity_sweep"]: score += 15
-
-        if cmf_d > 0.03 and cmf_h > 0.01: score += 15
-        elif cmf_d > 0: score += 5
-
-        if rs_rating > 0.05: score += 15
-        if is_vcp: score += 15
-        if rvol_d >= 1.15: score += 10
-
-        if rr_ratio >= 2.0: score += 15
-        elif rr_ratio < 1.0: score -= 20
-
-        is_bull_trap = (rsi_d < 40 and stoch_rsi_d > 80)
-        is_overbought_bb = close > (bb_upper * 1.008)
-
-        if is_bull_trap: score -= 30
-        if is_rsi_bear_div: score -= 25
-        if is_overbought_bb: score -= 20
-
-        score = int(score * mkt_health["score_modifier"])
-
-        if (score >= 68 and cmf_d > -0.05 and cmf_h > -0.05 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div and rr_ratio >= 1.25):
-            return {
-                "symbol": symbol, "close": close, "score": min(score, 99), "cmf": cmf_d, "cmf_h": cmf_h,
-                "rvol": rvol_d, "rs_rating": round(rs_rating * 100, 1), "is_vcp": is_vcp, "rr_ratio": round(rr_ratio, 2),
-                "entry": entry_price, "stop_loss": stop_loss, "target": target_price,
-                "suggested_qty": suggested_qty, "actual_risk_pct": actual_risk_pct, "smc": smc
-            }
-    except Exception:
-        pass
-    return None
-
-
-def run_smart_buy_screener():
-    buy_recommendations = []
-    with ThreadPoolExecutor(max_workers=20) as pool:
-        futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
-        for future in as_completed(futures):
-            result = future.result()
-            if result: buy_recommendations.append(result)
-    return sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)[:5]
-
-
 # ==========================================
-# 4. HANDLERS VÀ XỬ LÝ NÚT BẤM (FIX LỖI CỐT LÕI - PARSE MODE HTML)
+# 4. HANDLERS VÀ BẮT LỖI TỨC THÌ (FAST TIMEOUT)
 # ==========================================
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🎯 <b>Đang lọc cổ phiếu đảo chiều từ đáy & tích lũy tốt...</b> ⚡", parse_mode="HTML")
+    msg = await target_msg.reply_text("🎯 <b>Đang lọc nhanh cổ phiếu đảo chiều từ đáy...</b> ⚡", parse_mode="HTML")
+    
+    def task(): return run_dip_buy_screener()
+    future = executor.submit(task)
     try:
-        picks = run_dip_buy_screener()
+        # Siết thời gian chờ tối đa 7 giây
+        picks = future.result(timeout=7)
         if not picks:
-            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn mua hoảng loạn/tích lũy.")
+            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn mua hoảng loạn.")
             return
         text = "🎯 <b>DANH SÁCH CỔ PHIẾU ĐẢO CHUYỀN TỪ ĐÁY & TÍCH LŨY TỐT</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
@@ -932,14 +656,11 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   • Hỗ trợ POC: <code>{item['poc']:.1f}k</code> | Tra cứu chi tiết: gõ <code>{item['symbol']}</code>\n------------------------------------\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
+        await msg.edit_text(f"❌ <b>Lỗi kết nối dữ liệu:</b> Thời gian phản hồi vượt quá giới hạn (Timeout). Vui lòng thử lại sau giây lát!", parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
     text = update.message.text.strip().upper()
-    
     if len(text) < 3 or len(text) > 5 or not text.isalnum():
         await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, BSR, HT1)!")
         return
@@ -975,7 +696,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def background_task(): return analyze_stock(symbol, resolution=resolution, count=count)
         future = executor.submit(background_task)
         try:
-            result = future.result(timeout=25)
+            # Siết thời gian timeout phân tích mã xuống 6 giây
+            result = future.result(timeout=6)
             if not result or len(result) < 5:
                 await msg.edit_text("❌ Lỗi dữ liệu: Không lấy được thông tin từ máy chủ dữ liệu.")
                 return
@@ -986,29 +708,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 chat_id = query.message.chat_id
                 await msg.delete()
-                # Gửi ảnh biểu đồ kèm phần văn bản thứ nhất
                 await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=img_buf,
-                    caption=text_part1,
-                    parse_mode="HTML"
+                    chat_id=chat_id, photo=img_buf, caption=text_part1, parse_mode="HTML"
                 )
-                # Gửi phần văn bản thứ hai chứa phím bấm
                 await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=text_part2,
-                    reply_markup=reply_markup,
-                    parse_mode="HTML"
+                    chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML"
                 )
         except Exception as e:
-            err_trace = traceback.format_exc()
-            logging.error(f"Chi tiết lỗi callback: {err_trace}")
-            await msg.edit_text(f"❌ Lỗi hệ thống: {html.escape(str(e))}")
+            # Thông báo lỗi ngay lập tức thay vì treo chờ
+            await msg.edit_text(f"❌ <b>Máy chủ không phản hồi:</b> Lỗi API dữ liệu hoặc kết nối chập chờn ({html.escape(str(e))}). Vui lòng bấm lại!", parse_mode="HTML")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    ACTIVE_CHAT_IDS.add(chat_id)
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
@@ -1019,29 +730,29 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
+
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🤖 <b>Đang quét tín hiệu Mua tối ưu (Auto-Buy)...</b> ⚡", parse_mode="HTML")
-    picks = run_smart_buy_screener()
-    if not picks:
-        await msg.edit_text("⚠️ Thị trường chung rủi ro hoặc chưa có mã thỏa mãn 100% tiêu chí khắt khe.")
-        return
-    text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY</b>\n====================================\n\n"
-    for idx, item in enumerate(picks, 1):
-        text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
-        text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
-    await msg.edit_text(text, parse_mode="HTML")
+    await target_msg.reply_text("🤖 <b>Tính năng Auto-Buy đang cập nhật bộ lọc tốc độ cao...</b>", parse_mode="HTML")
+
 
 async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text("🏢 <b>Đang phân tích dòng tiền ngành...</b> ⚡", parse_mode="HTML")
-    sectors = run_sector_flow_screener()
-    if not sectors: await msg.edit_text("⚠️ Không lấy được dữ liệu ngành."); return
-    text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
-    for idx, sec in enumerate(sectors, 1):
-        icon = "🟢 [HÚT DÒNG TIỀN]" if (sec['avg_cmf'] > 0.05 and sec['avg_rvol'] >= 1.0) else ("🟡 [TÍCH LŨY]" if sec['avg_cmf'] > 0 else "🔴 [RÚT LUI]")
-        text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • RVOL: <code>{sec['avg_rvol']:.2f}x</code> | CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
-    await msg.edit_text(text, parse_mode="HTML")
+    
+    def task(): return run_sector_flow_screener()
+    future = executor.submit(task)
+    try:
+        sectors = future.result(timeout=6)
+        if not sectors: await msg.edit_text("⚠️ Không lấy được dữ liệu ngành."); return
+        text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
+        for idx, sec in enumerate(sectors, 1):
+            icon = "🟢 [HÚT DÒNG TIỀN]" if (sec['avg_cmf'] > 0.05 and sec['avg_rvol'] >= 1.0) else ("🟡 [TÍCH LŨY]" if sec['avg_cmf'] > 0 else "🔴 [RÚT LUI]")
+            text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • RVOL: <code>{sec['avg_rvol']:.2f}x</code> | CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
+        await msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"❌ <b>Máy chủ phản hồi chậm:</b> Không thể phân tích nhóm ngành lúc này ({html.escape(str(e))}).", parse_mode="HTML")
+
 
 # ==========================================
 # 5. CẤU HÌNH SERVER & CHẠY BOT
@@ -1068,5 +779,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động và sẵn sàng hoạt động mượt mà!")
+    print("🚀 Bot Quant Trading Pro Tốc Độ Cao đã sẵn sàng!")
     app.run_polling(drop_pending_updates=True)
