@@ -59,6 +59,20 @@ WATCHLIST_SCAN = [
     "HAH", "VJC", "VSC"
 ]
 
+# Map danh mục các nhóm ngành chính trên thị trường
+SECTOR_MAP = {
+    "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB"],
+    "Bất động sản": ["VHM", "VIC", "VRE", "KDH", "NLG", "DIG", "PDR", "CEO", "DXG", "TCH", "NVL", "HDG", "NTL", "HDC"],
+    "Chứng khoán": ["SSI", "VCI", "MBS", "FTS", "VND", "SHS", "VIX", "HCM", "CTS", "ORS"],
+    "Thép & Vật liệu": ["HPG", "HSG", "NKG", "VGS", "HT1", "KSB"],
+    "Xây dựng & Đầu tư công": ["CTD", "HHV", "LCG", "VCG", "CII", "L14", "KBC", "MSR"],
+    "Dầu khí & Energy": ["PVS", "PVB", "PVD", "GAS", "PLX", "BSR"],
+    "Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "PET"],
+    "Công nghệ & Viễn thông": ["FPT", "CTR", "VTP", "GEE"],
+    "Thủy sản & Dệt may & Cao su": ["ANV", "VHC", "VGT", "TNG", "GVR"],
+    "Vận tải & Cảng biển": ["HAH", "VJC", "VSC"]
+}
+
 ACTIVE_CHAT_IDS = set()
 ALERTED_TODAY = set()
 
@@ -151,6 +165,10 @@ def fetch_stock_data(symbol, resolution="D", count=250):
         res_param = "D"
         count = 600 
         start_time = end_time - (count * 86400 * 2)
+    elif resolution == "M":
+        res_param = "D"
+        count = 1200
+        start_time = end_time - (count * 86400 * 2)
     else:
         res_param = "D"
         count = max(count, 200)
@@ -221,6 +239,17 @@ def fetch_stock_data(symbol, resolution="D", count=250):
             "Volume": "sum"
         }).dropna().reset_index()
         return df_weekly.tail(250).reset_index(drop=True), None
+
+    if resolution == "M":
+        df_raw.set_index("time", inplace=True)
+        df_monthly = df_raw.resample("ME").agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum"
+        }).dropna().reset_index()
+        return df_monthly.tail(120).reset_index(drop=True), None
 
     return df_raw.tail(count).reset_index(drop=True), None
 
@@ -486,14 +515,13 @@ def analyze_multi_timeframe_poc(symbol):
 
 
 # ==========================================
-# HÀM BỔ TRỢ MỚI: TÍNH CÁC CHỈ BÁO VCP & RELATIVE STRENGTH (RS)
+# HÀM BỔ TRỢ: TÍNH CÁC CHỈ BÁO VCP & RELATIVE STRENGTH (RS)
 # ==========================================
 def calculate_vcp_tightness(df_d):
     """Kiểm tra mô hình thu hẹp biến độ VCP trong 3 chu kỳ ngắn hạn"""
     if len(df_d) < 20:
         return False, 1.0
     
-    # Tính biến độ 3 giai đoạn: 15-20 phiên trước, 8-14 phiên trước, 1-7 phiên trước
     vcp_1 = (df_d["High"].iloc[-20:-14] - df_d["Low"].iloc[-20:-14]).mean() / df_d["Close"].iloc[-1]
     vcp_2 = (df_d["High"].iloc[-14:-7] - df_d["Low"].iloc[-14:-7]).mean() / df_d["Close"].iloc[-1]
     vcp_3 = (df_d["High"].iloc[-7:] - df_d["Low"].iloc[-7:]).mean() / df_d["Close"].iloc[-1]
@@ -773,6 +801,9 @@ def analyze_stock(symbol, resolution="D", count=250):
         [
             InlineKeyboardButton("🚀 Quét Bùng NỔ (/breakout)", callback_data="run_breakout_callback"),
             InlineKeyboardButton("🤖 Quét Điểm Mua (/autobuy)", callback_data="run_autobuy_callback"),
+        ],
+        [
+            InlineKeyboardButton("🏢 Dòng Tiền Ngành (/sectors)", callback_data="run_sectors_callback"),
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1064,6 +1095,67 @@ def run_safety_value_screener():
     return results[:6]
 
 
+# --- TẦNG BỔ TRỢ MỚI: QUÉT DÒNG TIỀN THEO NHÓM NGÀNH (/sectors) ---
+def run_sector_flow_screener():
+    """Phân tích dòng tiền luân chuyển theo từng nhóm ngành"""
+    sector_results = []
+
+    def analyze_single_stock_for_sector(symbol):
+        df, err = fetch_stock_data(symbol, resolution="D", count=60)
+        if err or df.empty or len(df) < 20:
+            return None
+        df = calculate_indicators(df)
+        last, prev = df.iloc[-1], df.iloc[-2]
+        
+        close, prev_close = last["Close"], prev["Close"]
+        pct_change = ((close - prev_close) / prev_close) * 100
+        cmf = last.get("CMF", 0.0)
+        rvol = last.get("RVOL", 1.0)
+        mfi = last.get("MFI", 50.0)
+
+        return {
+            "symbol": symbol,
+            "pct_change": pct_change,
+            "cmf": cmf,
+            "rvol": rvol,
+            "mfi": mfi
+        }
+
+    for sector_name, symbols in SECTOR_MAP.items():
+        stock_metrics = []
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            futures = [pool.submit(analyze_single_stock_for_sector, sym) for sym in symbols]
+            for f in as_completed(futures):
+                res = f.result()
+                if res:
+                    stock_metrics.append(res)
+
+        if not stock_metrics:
+            continue
+
+        avg_pct = np.mean([s["pct_change"] for s in stock_metrics])
+        avg_cmf = np.mean([s["cmf"] for s in stock_metrics])
+        avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
+        avg_mfi = np.mean([s["mfi"] for s in stock_metrics])
+
+        sector_score = (avg_cmf * 40) + (avg_rvol * 20) + (avg_pct * 10) + (avg_mfi * 0.3)
+        leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
+
+        sector_results.append({
+            "sector": sector_name,
+            "avg_pct": avg_pct,
+            "avg_cmf": avg_cmf,
+            "avg_rvol": avg_rvol,
+            "avg_mfi": avg_mfi,
+            "leader": leader_stock,
+            "score": sector_score,
+            "total_stocks": len(stock_metrics)
+        })
+
+    sector_results = sorted(sector_results, key=lambda x: x["score"], reverse=True)
+    return sector_results
+
+
 def run_hourly_cashflow_screener():
     results = []
     def scan_one(symbol):
@@ -1108,18 +1200,15 @@ def run_hourly_cashflow_screener():
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
-        # 1. Kiểm tra sức khỏe VN-Index & Lấy DF VN-Index tính RS
         mkt_health = check_vnindex_health()
         df_vni, err_vni = fetch_stock_data("VNINDEX", resolution="D", count=60)
         if err_vni or df_vni.empty:
             df_vni, _ = fetch_stock_data("1000", resolution="D", count=60)
 
-        # 2. Lọc cơ bản khắt khe
         ratios = get_fundamental_ratios(symbol)
         if ratios["pe"] > 40 or ratios["roe"] < 2.0:
             return None
 
-        # 3. Lấy dữ liệu Đa khung thời gian (Khung D & Khung 60m)
         df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
         df_h, err_h = fetch_stock_data(symbol, resolution="60", count=60)
         
@@ -1129,11 +1218,9 @@ def process_single_stock_for_autobuy(symbol):
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
 
-        # Lọc thanh khoản & Giá trị giao dịch trung bình > 5 tỷ
         if not check_liquidity_and_base(df_d, last_d):
             return None
 
-        # 4. Tính toán Dòng tiền Khung 60m
         cmf_h = 0.0
         rvol_h = 1.0
         if not err_h and not df_h.empty and len(df_h) >= 20:
@@ -1153,11 +1240,9 @@ def process_single_stock_for_autobuy(symbol):
         is_bb_squeeze = last_d.get("BB_Squeeze", False)
         bb_upper = last_d.get("BB_Upper", close)
 
-        # 5. Phân tích mô hình VCP & Chỉ số RS
         is_vcp, vcp_score = calculate_vcp_tightness(df_d)
         rs_rating = calculate_relative_strength(df_d, df_vni)
 
-        # 6. Lọc Volume Profile & Tỷ lệ Reward/Risk (R:R)
         poc, vah, val = calculate_volume_profile(df_d)
         atr = last_d.get("ATR", close * 0.03)
 
@@ -1169,10 +1254,8 @@ def process_single_stock_for_autobuy(symbol):
         reward = target_price - entry_price
         rr_ratio = reward / (risk + 1e-9)
 
-        # 7. CHẤM ĐIỂM ĐA TẦNG CẢI TIẾN
         score = 50
 
-        # Mây Kumo & Xu hướng
         span_a = last_d.get("Senkou_Span_A", close)
         span_b = last_d.get("Senkou_Span_B", close)
         cloud_top = max(span_a, span_b)
@@ -1185,21 +1268,18 @@ def process_single_stock_for_autobuy(symbol):
         else:
             score -= 25
 
-        # Dòng tiền D & 60m đồng thuận
         if cmf_d > 0.03 and cmf_h > 0.01:
             score += 20
         elif cmf_d > 0:
             score += 10
         elif cmf_h < -0.10:
-            score -= 20  # Xả ngắn hạn ở khung giờ
+            score -= 20
 
-        # Sức mạnh RS & VCP
-        if rs_rating > 0.05: # Khỏe hơn VN-Index 5%
+        if rs_rating > 0.05:
             score += 15
         if is_vcp:
             score += 15
 
-        # RVOL & Tích lũy
         if rvol_d >= 1.15:
             score += 10
         if macd_hist_d > 0:
@@ -1207,32 +1287,26 @@ def process_single_stock_for_autobuy(symbol):
         if is_bb_squeeze:
             score += 10
 
-        # Khối ngoại gom ròng
         if get_foreign_trading_flow(symbol):
             score += 10
 
-        # Phân tích Sóng POC Tuần / Ngày
         is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
         score += wave_info.get("score_bonus", 0)
 
-        # Tỷ lệ Reward / Risk
         if rr_ratio >= 2.0:
             score += 15
         elif rr_ratio < 1.0:
             score -= 20
 
-        # TRỪ ĐIỂM BẪY GIẢ & QUÁ MUA
         is_bull_trap = (rsi_d < 40 and stoch_rsi_d > 80)
-        is_overbought_bb = close > (bb_upper * 1.008) # Phọt ra ngoài BB
+        is_overbought_bb = close > (bb_upper * 1.008)
 
         if is_bull_trap: score -= 30
         if is_rsi_bear_div: score -= 25
         if is_overbought_bb: score -= 20
 
-        # Điều chỉnh theo VN-Index Health
         score = int(score * mkt_health["score_modifier"])
 
-        # 8. TÍNH TỶ TRỌNG NAV ĐỀ XUẤT (DYNAMIC POSITION SIZING)
         atr_pct = (atr / close) * 100
         if atr_pct <= 2.5 and is_vcp:
             suggested_nav = "30 - 35% NAV (Nền siết rất chặt)"
@@ -1241,7 +1315,6 @@ def process_single_stock_for_autobuy(symbol):
         else:
             suggested_nav = "10 - 15% NAV (Biến động rộng)"
 
-        # 9. ĐIỀU KIỆN LOẠI TRỪ CUỐI CÙNG Khắt khe
         if (score >= 68 and 
             cmf_d > -0.05 and 
             cmf_h > -0.05 and 
@@ -1497,6 +1570,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🔄 `/shakeout`: **Tầng 3** - Quét nến rút chân rũ nhỏ lẻ (Bear Trap)\n"
         "   ├ 🚀 `/demand`  : **Tầng 4A** - Xác nhận dòng tiền mua chủ động (Demand)\n"
         "   ├ 🔥 `/breakout`: **Tầng 4B** - Bùng nổ giá & khối lượng (RVOL >= 2.0x)\n"
+        "   ├ 🏢 `/sectors` : **Quét dòng tiền ngành** - Tìm nhóm ngành hút dòng tiền mạnh nhất\n"
         "   └ 🤖 `/autobuy` : **Tầng 5 (Phễu cuối)** - Lọc điểm giải ngân VCP & RS an toàn nhất\n\n"
         "3️⃣ **🛡️ BỘ LỌC CƠ BẢN & ĐỊNH GIÁ:**\n"
         "   └ `/safety`: Lọc cổ phiếu Biên An Toàn (P/E hợp lý, ROE > 12%)\n\n"
@@ -1572,6 +1646,45 @@ async def breakout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi thực thi bộ lọc breakout: {str(e)}")
+
+
+async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    ACTIVE_CHAT_IDS.add(chat_id)
+    
+    if update.message:
+        msg = await update.message.reply_text("🏢 **Đang đo lường và đo đạc dòng tiền luân chuyển giữa các Nhóm Ngành...** ⚡")
+    else:
+        query = update.callback_query
+        msg = await query.message.reply_text("🏢 **Đang đo lường và đo đạc dòng tiền luân chuyển giữa các Nhóm Ngành...** ⚡")
+
+    try:
+        sectors = run_sector_flow_screener()
+        if not sectors:
+            await msg.edit_text("⚠️ Không lấy được dữ liệu phân tích dòng tiền ngành.")
+            return
+
+        text = "🔥 **BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH (SECTOR FLOW)**\n"
+        text += "====================================\n\n"
+
+        for idx, sec in enumerate(sectors, 1):
+            if sec['avg_cmf'] > 0.05 and sec['avg_rvol'] >= 1.0:
+                status_icon = "🟢 **[HÚT DÒNG TIỀN MẠNH]**"
+            elif sec['avg_cmf'] > 0:
+                status_icon = "🟡 **[TÍCH LŨY / PHÂN HÓA]**"
+            else:
+                status_icon = "🔴 **[DÒNG TIỀN RÚT LUI]**"
+
+            text += f"{idx}. 🏢 **{sec['sector'].upper()}** {status_icon}\n"
+            text += f"   • Thay đổi giá TB: `{sec['avg_pct']:+.2f}%` | RVOL TB: `{sec['avg_rvol']:.2f}x`\n"
+            text += f"   • Dòng tiền CMF TB: `{sec['avg_cmf']:.2f}` | MFI TB: `{sec['avg_mfi']:.1f}`\n"
+            text += f"   • 👑 **Cổ phiếu dẫn dắt (Leader)**: `{sec['leader']}`\n"
+            text += "------------------------------------\n"
+
+        text += "\n💡 *Gợi ý dòng tiền: Ưu tiên giải ngân vào các cổ phiếu thuộc Top 3 Nhóm Ngành dẫn dắt!*"
+        await msg.edit_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi thực thi phân tích ngành: {str(e)}")
 
 
 async def testcung_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2028,6 +2141,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safety_command(update, context)
         return
 
+    if data == "run_sectors_callback":
+        await sectors_command(update, context)
+        return
+
     if data == "show_all_settings":
         chat_id = query.message.chat_id
         await show_all_settings_func(query, context, chat_id)
@@ -2101,6 +2218,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("breakout", breakout_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("safety", safety_command))
+    app.add_handler(CommandHandler("sectors", sectors_command))
+    app.add_handler(CommandHandler("nganh", sectors_command))
     app.add_handler(CommandHandler("backtest", backtest_command))
     app.add_handler(CommandHandler("setbuy", setbuy_command))
     app.add_handler(CommandHandler("setstop", setstop_command))
