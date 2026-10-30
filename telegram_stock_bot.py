@@ -6,6 +6,7 @@ import os
 import html
 import threading
 import time
+import asyncio
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -646,14 +647,9 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    
     text = update.message.text.strip().upper()
-    
-    # Cho phép linh động mã từ 2 đến 6 ký tự (bắt tốt cả mã 3 ký tự như TCB, VHM,...)
-    if len(text) < 2 or len(text) > 6 or not text.isalnum():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: TCB, VHM, BSR)!")
+    if len(text) < 3 or len(text) > 5 or not text.isalnum():
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, BSR, HT1)!")
         return
 
     keyboard = [
@@ -663,15 +659,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📈 Khung 1W", callback_data=f"{text}|W|150"),
         ],
     ]
-    
-    try:
-        await update.message.reply_text(
-            f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        print(f"Lỗi phản hồi tin nhắn: {e}")
+    await update.message.reply_text(
+        f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -679,31 +671,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
-    if data == "run_autobuy_callback": await autobuy_command(update, context); return
-    if data == "run_dipbuy_callback": await dipbuy_command(update, context); return
-    if data == "run_sectors_callback": await sectors_command(update, context); return
+    if data == "run_autobuy_callback": 
+        await autobuy_command(update, context)
+        return
+    if data == "run_dipbuy_callback": 
+        await dipbuy_command(update, context)
+        return
+    if data == "run_sectors_callback": 
+        await sectors_command(update, context)
+        return
 
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
         msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution})...")
 
-        def background_task(): return analyze_stock(symbol, resolution=resolution, count=count)
-        future = executor.submit(background_task)
         try:
-            result = future.result(timeout=15)
-            if not result or len(result) < 5:
-                await msg.edit_text("❌ Lỗi dữ liệu: Không lấy được thông tin từ máy chủ dữ liệu.")
+            loop = asyncio.get_running_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(executor, analyze_stock, symbol, resolution, count),
+                timeout=20.0
+            )
+            
+            if not result or len(result) < 5 or result[4] is not None:
+                err_msg = result[4] if (result and len(result) >= 5) else "Không lấy được dữ liệu từ máy chủ."
+                await msg.edit_text(f"❌ <b>Lỗi phân tích:</b> {html.escape(str(err_msg))}", parse_mode="HTML")
                 return
                 
             text_part1, text_part2, img_buf, reply_markup, err = result
-            if err:
-                await msg.edit_text(f"❌ Lỗi: {html.escape(str(err))}")
-            else:
-                chat_id = query.message.chat_id
-                await msg.delete()
-                await context.bot.send_photo(chat_id=chat_id, photo=img_buf, caption=text_part1, parse_mode="HTML")
-                await context.bot.send_message(chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML")
+            chat_id = query.message.chat_id
+            
+            await msg.delete()
+            await context.bot.send_photo(chat_id=chat_id, photo=img_buf, caption=text_part1, parse_mode="HTML")
+            await context.bot.send_message(chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML")
+            
+        except asyncio.TimeoutError:
+            await msg.edit_text("⚠️ <b>Hệ thống quá tải hoặc máy chủ dữ liệu phản hồi chậm.</b> Vui lòng bấm lại nút khung thời gian sau vài giây!", parse_mode="HTML")
         except Exception as e:
             await msg.edit_text(f"❌ <b>Máy chủ không phản hồi:</b> Lỗi API dữ liệu ({html.escape(str(e))}). Vui lòng bấm lại!", parse_mode="HTML")
 
