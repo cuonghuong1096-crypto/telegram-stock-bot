@@ -128,7 +128,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     cache_key = f"{symbol}_{resolution}"
     now_ts = time.time()
 
-    # Kiểm tra đệm dữ liệu (Cache) trong vòng 30 giây để tránh spam API
     if cache_key in STOCK_DATA_CACHE:
         cached_df, cached_err, cached_time = STOCK_DATA_CACHE[cache_key]
         if now_ts - cached_time < 30:
@@ -156,7 +155,6 @@ def fetch_stock_data(symbol, resolution="D", count=250):
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     
-    # Rút ngắn timeout kết nối xuống 1.8 giây để cắt giật
     try:
         headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
         res = requests.get(tcbs_url, headers=headers, timeout=1.8)
@@ -387,7 +385,6 @@ def calculate_volume_profile(df, bins=25):
     return poc, vah, val
 
 
-# Tối ưu: Thêm bộ đệm VN-Index 60 giây
 def check_vnindex_health():
     now_ts = time.time()
     if VNINDEX_HEALTH_CACHE["data"] and (now_ts - VNINDEX_HEALTH_CACHE["timestamp"] < 60):
@@ -564,8 +561,78 @@ def analyze_stock(symbol, resolution="D", count=250):
 
 
 # ==========================================
-# 3. QUÉT DỮ LIỆU ĐA LUỒNG TỐI ƯU
+# 3. QUÉT DỮ LIỆU TÍN HIỆU AUTO-BUY & DIPBUY
 # ==========================================
+def process_single_stock_for_autobuy(symbol):
+    try:
+        mkt_health = check_vnindex_health()
+        if mkt_health["status"] in ["BEARISH_RISK"]:
+            return None
+
+        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
+        if err_d or df_d.empty or len(df_d) < 50: return None
+
+        df_d = calculate_indicators(df_d)
+        last_d = df_d.iloc[-1]
+        close = last_d["Close"]
+        
+        # Lọc thanh khoản tối thiểu
+        vol_sma20 = last_d.get("Vol_SMA20", last_d["Volume"])
+        if (vol_sma20 * close * 1000) < 3_000_000_000: return None
+
+        smc = calculate_smc_structures(df_d)
+        poc, vah, val = calculate_volume_profile(df_d)
+        atr = last_d.get("ATR", close * 0.03)
+        cmf_d, rvol_d = last_d.get("CMF", 0.0), last_d.get("RVOL", 1.0)
+        rsi_d, stoch_rsi_d = last_d.get("RSI", 50.0), last_d.get("Stoch_RSI", 50.0)
+
+        entry_price = round(max(val, close * 0.98), 2)
+        stop_loss = round(entry_price - (1.5 * atr), 2)
+        target_price = vah if vah > (close * 1.03) else round(close * 1.08, 2)
+
+        suggested_qty, actual_risk_pct = calculate_position_size_1pct(entry_price, stop_loss)
+
+        score = 50
+        cloud_top = max(last_d.get("Senkou_Span_A", close), last_d.get("Senkou_Span_B", close))
+        cloud_bottom = min(last_d.get("Senkou_Span_A", close), last_d.get("Senkou_Span_B", close))
+
+        if close > cloud_top: score += 15
+        elif close >= cloud_bottom: score += 5
+
+        if smc["has_ob"]: score += 10
+        if smc["has_fvg"]: score += 10
+        if smc["has_liquidity_sweep"]: score += 15
+
+        if cmf_d > 0.03: score += 15
+        if rvol_d >= 1.15: score += 10
+
+        is_bull_trap = (rsi_d < 40 and stoch_rsi_d > 80)
+        if is_bull_trap: score -= 30
+
+        score = int(score * mkt_health["score_modifier"])
+
+        if score >= 60 and cmf_d > -0.05 and close >= cloud_bottom:
+            return {
+                "symbol": symbol, "close": close, "score": min(score, 99),
+                "cmf": cmf_d, "rvol": rvol_d, "entry": entry_price,
+                "stop_loss": stop_loss, "target": target_price,
+                "suggested_qty": suggested_qty, "actual_risk_pct": actual_risk_pct
+            }
+    except Exception:
+        pass
+    return None
+
+
+def run_smart_buy_screener():
+    buy_recommendations = []
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
+        for future in as_completed(futures):
+            result = future.result()
+            if result: buy_recommendations.append(result)
+    return sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)[:5]
+
+
 def run_dip_buy_screener():
     results = []
     mkt_health = check_vnindex_health()
@@ -635,6 +702,34 @@ def run_sector_flow_screener():
 # ==========================================
 # 4. HANDLERS VÀ BẮT LỖI TỨC THÌ (FAST TIMEOUT)
 # ==========================================
+async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text(
+        "🤖 <b>Đang chạy tiến trình quét phễu Auto-Buy...</b>\n"
+        "⏳ Hệ thống đang phân tích toàn bộ danh sách cổ phiếu, vui lòng chờ trong giây lát...",
+        parse_mode="HTML"
+    )
+    
+    try:
+        def task(): return run_smart_buy_screener()
+        future = executor.submit(task)
+        picks = future.result(timeout=12)
+        
+        if not picks:
+            await msg.edit_text("⚠️ Thị trường chung hiện tại rủi ro hoặc chưa có mã thỏa mãn 100% tiêu chí khắt khe của hệ thống.")
+            return
+            
+        text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY</b>\n====================================\n\n"
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
+            text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
+        
+        await msg.edit_text(text, parse_mode="HTML")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ <b>Lỗi kết nối hoặc timeout:</b> Hệ thống quá tải hoặc API dữ liệu phản hồi chậm. Vui lòng bấm lại sau!", parse_mode="HTML")
+
+
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text("🎯 <b>Đang lọc nhanh cổ phiếu đảo chiều từ đáy...</b> ⚡", parse_mode="HTML")
@@ -642,7 +737,6 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def task(): return run_dip_buy_screener()
     future = executor.submit(task)
     try:
-        # Siết thời gian chờ tối đa 7 giây
         picks = future.result(timeout=7)
         if not picks:
             await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn mua hoảng loạn.")
@@ -696,7 +790,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def background_task(): return analyze_stock(symbol, resolution=resolution, count=count)
         future = executor.submit(background_task)
         try:
-            # Siết thời gian timeout phân tích mã xuống 6 giây
             result = future.result(timeout=6)
             if not result or len(result) < 5:
                 await msg.edit_text("❌ Lỗi dữ liệu: Không lấy được thông tin từ máy chủ dữ liệu.")
@@ -715,7 +808,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML"
                 )
         except Exception as e:
-            # Thông báo lỗi ngay lập tức thay vì treo chờ
             await msg.edit_text(f"❌ <b>Máy chủ không phản hồi:</b> Lỗi API dữ liệu hoặc kết nối chập chờn ({html.escape(str(e))}). Vui lòng bấm lại!", parse_mode="HTML")
 
 
@@ -729,11 +821,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   └ 🏢 /sectors : Dòng tiền Nhóm Ngành\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
-
-
-async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target_msg = update.message if update.message else update.callback_query.message
-    await target_msg.reply_text("🤖 <b>Tính năng Auto-Buy đang cập nhật bộ lọc tốc độ cao...</b>", parse_mode="HTML")
 
 
 async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
