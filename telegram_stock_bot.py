@@ -113,7 +113,6 @@ def fetch_stock_data(symbol, resolution="D", count=150):
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={resolution if resolution=='60' else 'D'}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     
-    # Nâng timeout HTTP lên 4.5 giây để đảm bảo nhận đủ dữ liệu từ API không bị ngắt quãng
     try:
         headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
         res = requests.get(tcbs_url, headers=headers, timeout=4.5)
@@ -345,7 +344,7 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT CÓ THANH TIẾN TRÌNH % CHUẨN XÁC
+# 3. HÀM QUÉT CÓ THANH TIẾN TRÌNH % CHO TẤT CẢ TÍNH NĂNG
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
@@ -396,7 +395,6 @@ async def run_smart_buy_screener_with_progress(msg):
             if res:
                 buy_recommendations.append(res)
             
-            # Cập nhật thanh tiến trình theo phần trăm thời gian thực
             if completed % 5 == 0 or completed == total_symbols:
                 percent = int((completed / total_symbols) * 100)
                 filled_blocks = int(percent / 10)
@@ -415,71 +413,114 @@ async def run_smart_buy_screener_with_progress(msg):
     return sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)[:5]
 
 
-def run_dip_buy_screener():
-    results = []
-    def scan_dip(symbol):
-        df, err = fetch_stock_data(symbol, resolution="D", count=80)
-        if err or df.empty or len(df) < 30: return None
-        df = calculate_indicators(df)
-        last = df.iloc[-1]
-        close, cmf, rvol = last["Close"], last.get("CMF", 0.0), last.get("RVOL", 1.0)
-        smc = calculate_smc_structures(df)
-        poc, _, _ = calculate_volume_profile(df)
-        recent_high = df["High"].tail(15).max()
-        drop_pct = ((recent_high - close) / recent_high) * 100
+def scan_single_dip_stock(symbol):
+    df, err = fetch_stock_data(symbol, resolution="D", count=80)
+    if err or df.empty or len(df) < 30: return None
+    df = calculate_indicators(df)
+    last = df.iloc[-1]
+    close, cmf, rvol = last["Close"], last.get("CMF", 0.0), last.get("RVOL", 1.0)
+    smc = calculate_smc_structures(df)
+    poc, _, _ = calculate_volume_profile(df)
+    recent_high = df["High"].tail(15).max()
+    drop_pct = ((recent_high - close) / recent_high) * 100
 
-        if drop_pct >= 4.0 and (close <= poc * 1.02 or smc["has_ob"] or smc["has_liquidity_sweep"]) and cmf > -0.05:
-            score = (drop_pct * 2.0) + (cmf * 30) + (15 if smc["has_liquidity_sweep"] else 0)
-            return {
-                "symbol": symbol, "close": close, "drop_pct": round(drop_pct, 1),
-                "cmf": cmf, "rvol": rvol, "poc": poc, "smc": smc, "score": score
-            }
-        return None
+    if drop_pct >= 4.0 and (close <= poc * 1.02 or smc["has_ob"] or smc["has_liquidity_sweep"]) and cmf > -0.05:
+        score = (drop_pct * 2.0) + (cmf * 30) + (15 if smc["has_liquidity_sweep"] else 0)
+        return {
+            "symbol": symbol, "close": close, "drop_pct": round(drop_pct, 1),
+            "cmf": cmf, "rvol": rvol, "poc": poc, "smc": smc, "score": score
+        }
+    return None
+
+
+async def run_dip_buy_screener_with_progress(msg):
+    total_symbols = len(WATCHLIST_SCAN)
+    completed = 0
+    results = []
 
     with ThreadPoolExecutor(max_workers=30) as pool:
-        futures = [pool.submit(scan_dip, symbol) for symbol in WATCHLIST_SCAN]
+        futures = {pool.submit(scan_single_dip_stock, symbol): symbol for symbol in WATCHLIST_SCAN}
+        
         for future in as_completed(futures):
+            completed += 1
             res = future.result()
-            if res: results.append(res)
+            if res:
+                results.append(res)
             
+            if completed % 5 == 0 or completed == total_symbols:
+                percent = int((completed / total_symbols) * 100)
+                filled_blocks = int(percent / 10)
+                bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
+                
+                try:
+                    await msg.edit_text(
+                        f"🎯 <b>Đang quét cổ phiếu đảo chiều từ đáy...</b>\n"
+                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
+                        f"⏳ Đang rà soát vùng hỗ trợ...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
     return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
 
 
-def run_sector_flow_screener():
+def analyze_single_sector_stock(symbol):
+    df, err = fetch_stock_data(symbol, resolution="D", count=40)
+    if err or df.empty or len(df) < 15: return None
+    df = calculate_indicators(df)
+    last, prev = df.iloc[-1], df.iloc[-2]
+    return {
+        "symbol": symbol,
+        "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100,
+        "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0)
+    }
+
+
+async def run_sector_flow_screener_with_progress(msg):
+    total_sectors = len(SECTOR_MAP)
+    completed_sectors = 0
     sector_results = []
-    def analyze_single_stock(symbol):
-        df, err = fetch_stock_data(symbol, resolution="D", count=40)
-        if err or df.empty or len(df) < 15: return None
-        df = calculate_indicators(df)
-        last, prev = df.iloc[-1], df.iloc[-2]
-        return {
-            "symbol": symbol,
-            "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100,
-            "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0)
-        }
 
     for sector_name, symbols in SECTOR_MAP.items():
         stock_metrics = []
         with ThreadPoolExecutor(max_workers=10) as pool:
-            futures = [pool.submit(analyze_single_stock, sym) for sym in symbols]
+            futures = [pool.submit(analyze_single_sector_stock, sym) for sym in symbols]
             for f in as_completed(futures):
                 res = f.result()
                 if res: stock_metrics.append(res)
-        if not stock_metrics: continue
-        avg_pct = np.mean([s["pct_change"] for s in stock_metrics])
-        avg_cmf = np.mean([s["cmf"] for s in stock_metrics])
-        avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
-        leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
+        
+        completed_sectors += 1
+        percent = int((completed_sectors / total_sectors) * 100)
+        filled_blocks = int(percent / 10)
+        bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
+        
+        try:
+            await msg.edit_text(
+                f"🏢 <b>Đang phân tích dòng tiền nhóm ngành...</b>\n"
+                f"[{bar}] <b>{percent}%</b> ({completed_sectors}/{total_sectors} ngành: {sector_name})\n"
+                f"⏳ Đang đo lường chỉ số CMF & RVOL...",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
-        sector_results.append({
-            "sector": sector_name, "avg_cmf": avg_cmf, "avg_rvol": avg_rvol,
-            "leader": leader_stock, "score": (avg_cmf * 40) + (avg_rvol * 20)
-        })
+        if stock_metrics:
+            avg_pct = np.mean([s["pct_change"] for s in stock_metrics])
+            avg_cmf = np.mean([s["cmf"] for s in stock_metrics])
+            avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
+            leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
+
+            sector_results.append({
+                "sector": sector_name, "avg_cmf": avg_cmf, "avg_rvol": avg_rvol,
+                "leader": leader_stock, "score": (avg_cmf * 40) + (avg_rvol * 20)
+            })
+
     return sorted(sector_results, key=lambda x: x["score"], reverse=True)
 
 
 # ==========================================
-# 4. HANDLERS ĐÃ NỚI LỎNG THỜI GIAN ĐỢI CHẠY TRỌN VẸN
+# 4. HANDLERS VỚI TIẾN TRÌNH % ĐẦY ĐỦ CHO TẤT CẢ LỆNH
 # ==========================================
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
@@ -491,7 +532,6 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
-        # Chạy trực tiếp hàm tiến trình không bị ràng buộc timeout ngắn
         picks = await run_smart_buy_screener_with_progress(msg)
         
         if not picks:
@@ -511,16 +551,20 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🎯 <b>Đang lọc cổ phiếu đảo chiều từ đáy...</b> ⚡", parse_mode="HTML")
+    msg = await target_msg.reply_text(
+        "🎯 <b>Đang khởi tạo tiến trình lọc Đáy...</b>\n"
+        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
+        "⏳ Đang kết nối máy chủ dữ liệu...",
+        parse_mode="HTML"
+    )
     
-    def task(): return run_dip_buy_screener()
-    future = executor.submit(task)
     try:
-        # Nâng giới hạn thời gian chờ lên 20 giây để chạy mượt mà
-        picks = future.result(timeout=20)
+        picks = await run_dip_buy_screener_with_progress(msg)
+        
         if not picks:
             await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn.")
             return
+            
         text = "🎯 <b>DANH SÁCH CỔ PHIẾU ĐẢO CHIỀN TỪ ĐÁY</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             smc_tag = "🔥 [Sweep]" if item["smc"]["has_liquidity_sweep"] else ("⚡ [OB]" if item["smc"]["has_ob"] else "📊 [POC]")
@@ -528,8 +572,35 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   • Giá: <code>{item['close']:.1f}k</code> | Giảm từ đỉnh: <code>-{item['drop_pct']}%</code>\n"
             text += f"   • CMF: <code>{item['cmf']:.2f}</code> | RVOL: <code>{item['rvol']:.2f}x</code> | Hỗ trợ: <code>{item['poc']:.1f}k</code>\n------------------------------------\n"
         await msg.edit_text(text, parse_mode="HTML")
+        
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi kết nối dữ liệu:</b> Phản hồi quá hạn. Vui lòng thử lại!", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi tiến trình Dip-Buy:</b> {html.escape(str(e))}", parse_mode="HTML")
+
+
+async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text(
+        "🏢 <b>Đang khởi tạo phân tích Nhóm Ngành...</b>\n"
+        "[░░░░░░░░░░] <b>0%</b> (0 ngành)\n"
+        "⏳ Đang kết nối máy chủ dữ liệu...",
+        parse_mode="HTML"
+    )
+    
+    try:
+        sectors = await run_sector_flow_screener_with_progress(msg)
+        
+        if not sectors: 
+            await msg.edit_text("⚠️ Không lấy được dữ liệu ngành.")
+            return
+            
+        text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
+        for idx, sec in enumerate(sectors, 1):
+            icon = "🟢 [HÚT DÒNG TIỀN]" if sec['avg_cmf'] > 0.02 else "🔴 [RÚT LUI]"
+            text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
+        await msg.edit_text(text, parse_mode="HTML")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ <b>Lỗi phân tích Nhóm Ngành:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -569,7 +640,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def background_task(): return analyze_stock(symbol, resolution=resolution, count=count)
         future = executor.submit(background_task)
         try:
-            # Nâng timeout xem chi tiết mã lên 15 giây
             result = future.result(timeout=15)
             if not result or len(result) < 5:
                 await msg.edit_text("❌ Lỗi dữ liệu: Không lấy được thông tin từ máy chủ dữ liệu.")
@@ -599,25 +669,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 
-async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🏢 <b>Đang phân tích dòng tiền ngành...</b> ⚡", parse_mode="HTML")
-    
-    def task(): return run_sector_flow_screener()
-    future = executor.submit(task)
-    try:
-        # Nâng timeout nhóm ngành lên 15 giây
-        sectors = future.result(timeout=15)
-        if not sectors: await msg.edit_text("⚠️ Không lấy được dữ liệu ngành."); return
-        text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
-        for idx, sec in enumerate(sectors, 1):
-            icon = "🟢 [HÚT DÒNG TIỀN]" if sec['avg_cmf'] > 0.02 else "🔴 [RÚT LUI]"
-            text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
-        await msg.edit_text(text, parse_mode="HTML")
-    except Exception as e:
-        await msg.edit_text(f"❌ <b>Máy chủ phản hồi chậm:</b> Không thể phân tích nhóm ngành lúc này.", parse_mode="HTML")
-
-
 # ==========================================
 # 5. CẤU HÌNH SERVER & CHẠY BOT
 # ==========================================
@@ -643,5 +694,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khắc phục xong lỗi timeout và sẵn sàng chạy!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật tiến trình phần trăm cho tất cả lệnh lọc!")
     app.run_polling(drop_pending_updates=True)
