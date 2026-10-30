@@ -317,7 +317,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
 """
 
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",  # Đã thay thế sang model đang hoạt động trên tài khoản Groq của bạn
+            model="openai/gpt-oss-120b",  # Model đang hoạt động ổn định trên Groq của bạn
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=600
@@ -714,7 +714,7 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
-# Handler lệnh /tin <mã> tích hợp Groq AI phân tích
+# Handler lệnh /tin <mã> tích hợp Groq AI phân tích (Đã xử lý chống lỗi thẻ HTML)
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -727,7 +727,14 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         loop = asyncio.get_running_loop()
         news_text = await loop.run_in_executor(executor, get_latest_stock_news, symbol)
-        await msg.edit_text(news_text, parse_mode="HTML", disable_web_page_preview=True)
+        
+        try:
+            await msg.edit_text(news_text, parse_mode="HTML", disable_web_page_preview=True)
+        except Exception:
+            # Fallback tự động gỡ bỏ thẻ HTML nếu AI sinh ra lỗi định dạng thẻ đóng/mở
+            clean_text = news_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
+            await msg.edit_text(clean_text, disable_web_page_preview=True)
+            
     except Exception as e:
         await msg.edit_text(f"❌ Không thể tải tin tức: {html.escape(str(e))}", parse_mode="HTML")
 
