@@ -388,7 +388,31 @@ def calculate_volume_profile(df, bins=25):
 
 
 def check_vnindex_health():
-    """Bộ lọc sức khỏe Thị trường Chung (VN-Index) & Market Breadth"""
+    """
+    NÂNG CẤP BỘ LỌC ĐỘ RỘNG THỊ TRƯỜNG & CHỐNG BẪY XANH VỎ ĐỎ LÒNG (DÙNG CHO TRỤ KÉO VIC, VHM, VCB...)
+    """
+    # 1. Đo độ rộng thực tế từ Watchlist (Mẫu 20 mã)
+    sample_watchlist = WATCHLIST_SCAN[:20]
+    advancing_count, total_checked = 0, 0
+    
+    def check_single_breadth(sym):
+        df, err = fetch_stock_data(sym, resolution="D", count=5)
+        if not err and not df.empty and len(df) >= 2:
+            return df.iloc[-1]["Close"] > df.iloc[-2]["Close"]
+        return None
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [pool.submit(check_single_breadth, sym) for sym in sample_watchlist]
+        for f in as_completed(futures):
+            res = f.result()
+            if res is not None:
+                total_checked += 1
+                if res:
+                    advancing_count += 1
+
+    breadth_ratio = (advancing_count / total_checked) if total_checked > 0 else 0.5
+
+    # 2. Kiểm tra chỉ số VN-Index
     df, err = fetch_stock_data("VNINDEX", resolution="D", count=60)
     if err or df.empty:
         df, err = fetch_stock_data("1000", resolution="D", count=60)
@@ -402,12 +426,19 @@ def check_vnindex_health():
     ema50 = last.get("EMA50", close)
     macd_hist = last.get("MACD_Hist", 0)
 
+    # 3. Kết hợp chỉ số & Độ rộng thực tế
     if close > ema20 and ema20 > ema50 and macd_hist > 0:
-        return {"status": "BULLISH", "score_modifier": 1.15, "note": "VN-Index Uptrend ủng hộ mạnh mẽ"}
+        if breadth_ratio < 0.35: # Bẫy Trụ kéo Xanh vỏ đỏ lòng
+            return {
+                "status": "FAKE_BULLISH_TRAP",
+                "score_modifier": 0.65,
+                "note": f"⚠️ CẢNH BÁO TRỤ KÉO (Xanh vỏ đỏ lòng)! Độ rộng chỉ {breadth_ratio*100:.0f}% mã tăng."
+            }
+        return {"status": "BULLISH", "score_modifier": 1.15, "note": f"VN-Index Uptrend ủng hộ ({breadth_ratio*100:.0f}% mã tăng)"}
     elif close < ema50 or macd_hist < -0.5:
         return {"status": "BEARISH_RISK", "score_modifier": 0.75, "note": "VN-Index rủi ro / Xu hướng suy yếu"}
     else:
-        return {"status": "SIDEWAYS", "score_modifier": 1.0, "note": "VN-Index tích lũy / Giằng co"}
+        return {"status": "SIDEWAYS", "score_modifier": 1.0, "note": f"VN-Index tích lũy ({breadth_ratio*100:.0f}% mã tăng)"}
 
 
 def get_foreign_trading_flow(symbol):
@@ -1199,21 +1230,27 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_portfolios_async()
     welcome_text = (
         "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM (PRO 5%)!**\n\n"
-        "1️⃣ **Phân tích kỹ thuật:** Nhập mã cổ phiếu (VD: `VHM`, `BSR`)\n\n"
-        "2️⃣ **BỘ LỌC PHỄU DÒNG TIỀN (VSA & QUANT):**\n"
-        "   ├ 🟢 `/scan` : Tầng 1 - Tích lũy nền & dòng tiền\n"
-        "   ├ 🔍 `/testcung`: Tầng 2 - Cạn kiệt thanh khoản (No-Supply)\n"
-        "   ├ 🔄 `/shakeout`: Tầng 3 - Nến rút chân rũ bỏ (Bear Trap)\n"
-        "   ├ 🚀 `/demand`  : Tầng 4A - Xác nhận cầu mua chủ động\n"
-        "   ├ 🔥 `/breakout`: Tầng 4B - Bùng nổ giá & khối lượng\n"
-        "   ├ 🏢 `/sectors` : Dòng tiền ngành - Tìm nhóm dẫn dắt\n"
-        "   └ 🤖 `/autobuy` : Tầng 5 - Điểm mua VCP & RS an toàn nhất\n\n"
-        "3️⃣ **BỘ LỌC CƠ BẢN:**\n"
-        "   └ `/safety`: Lọc cổ phiếu Biên An Toàn (P/E & ROE)\n\n"
-        "4️⃣ **CÀI ĐẶT CANH MUA / STOP LOSS:**\n"
-        "   • `/setbuy BSR 29.4 28.5 1000` | `/setstop BSR 27.9` | `/trail BSR`\n\n"
-        "5️⃣ **QUẢN LÝ DANH MỤC & BACKTEST:**\n"
-        "   • `/portfolio` | `/listall` | `/backtest VHM` | `/reset <MÃ>`"
+        "1️⃣ **TRA CỨU NHANH:**\n"
+        "   └ Gửi mã cổ phiếu bất kỳ (VD: `VHM`, `BSR`, `HPG`)\n\n"
+        "2️⃣ **🎯 BỘ LỌC THEO PHONG CÁCH ĐÁNH (VSA & QUANT):**\n"
+        "   ├ 🔥 `/breakout`: Lướt sóng Breakout - Đóng đỉnh, RVOL >= 2.0x\n"
+        "   ├ 🚀 `/demand`  : Bùng nổ Dòng tiền - Xác nhận cầu chủ động mạnh\n"
+        "   ├ 🔍 `/testcung`: Gom Nền Cạn Cung - Thanh khoản kiệt (No-Supply)\n"
+        "   ├ 🔄 `/shakeout`: Săn Nến Rút Chân - Bắt nhịp rũ bỏ Bear Trap\n"
+        "   └ 🤖 `/autobuy` : Mua Tối Ưu Tầng 5 - Điểm mua VCP & RS an toàn nhất\n\n"
+        "3️⃣ **📊 BỘ LỌC DÒNG TIỀN & CƠ BẢN:**\n"
+        "   ├ 🟢 `/scan`    : Quét tích lũy nền & dòng tiền toàn thị trường\n"
+        "   ├ 🏢 `/sectors` : Dòng tiền Nhóm Ngành - Tìm ngành dẫn dắt\n"
+        "   └ 🛡️ `/safety`  : Đầu tư Giá trị - Biên An Toàn (P/E & ROE)\n\n"
+        "4️⃣ **⚙️ CÀI ĐẶT CANH MUA / STOP LOSS:**\n"
+        "   ├ `/setbuy BSR 29.4 28.5 1000` : Cài mốc canh mua\n"
+        "   ├ `/setstop BSR 27.9`          : Cài mốc Stoploss\n"
+        "   └ `/trail BSR`                 : Trailing Stop khóa lãi\n\n"
+        "5️⃣ **📂 QUẢN LÝ DANH MỤC & BACKTEST:**\n"
+        "   ├ `/portfolio` : Xem danh mục & Lãi/Lỗ Real-time\n"
+        "   ├ `/listall`   : Cài đặt toàn bộ mốc theo dõi\n"
+        "   ├ `/reset <MÃ>`: Xóa mốc theo dõi (`/reset ALL` để xóa hết)\n"
+        "   └ `/backtest <MÃ>`: Backtest hiệu suất chiến lược"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
