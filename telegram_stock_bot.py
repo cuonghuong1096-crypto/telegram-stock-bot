@@ -70,18 +70,10 @@ SECTOR_MAP = {
 ACTIVE_CHAT_IDS = set()
 USER_PORTFOLIOS = {}
 
-# ==========================================
-# BỘ ĐỆM DỮ LIỆU TỐC ĐỘ CAO (CACHE IN-MEMORY)
-# ==========================================
 VNINDEX_HEALTH_CACHE = {"data": None, "timestamp": 0}
 STOCK_DATA_CACHE = {} 
-
-# Tăng số luồng đồng thời lên 50 để quét siêu tốc toàn bộ watchlist
 executor = ThreadPoolExecutor(max_workers=50)
 
-# ==========================================
-# QUẢN LÝ LƯU TRỮ CHUẨN HOÁ
-# ==========================================
 def load_portfolios():
     global ACTIVE_CHAT_IDS
     if not GOOGLE_SHEET_API_URL:
@@ -95,7 +87,6 @@ def load_portfolios():
                 temp_portfolios = {}
                 for item in data:
                     chat_id = int(item["chat_id"])
-                    symbol = item["symbol"]
                     ACTIVE_CHAT_IDS.add(chat_id)
                 return temp_portfolios
     except Exception:
@@ -104,17 +95,14 @@ def load_portfolios():
 
 USER_PORTFOLIOS = load_portfolios()
 
-# ==========================================
-# 1. HÀM CALL DATA TỐI ƯU TỐC ĐỘ
-# ==========================================
-def fetch_stock_data(symbol, resolution="D", count=150): # Giảm count mặc định xuống 150 để tăng tốc độ tải DataFrame
+def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
     cache_key = f"{symbol}_{resolution}"
     now_ts = time.time()
 
     if cache_key in STOCK_DATA_CACHE:
         cached_df, cached_err, cached_time = STOCK_DATA_CACHE[cache_key]
-        if now_ts - cached_time < 45: # Tăng thời gian cache lên 45 giây giúp dữ liệu gọi lại tức thì
+        if now_ts - cached_time < 45:
             return cached_df, cached_err
 
     end_time = int(now_ts)
@@ -125,7 +113,7 @@ def fetch_stock_data(symbol, resolution="D", count=150): # Giảm count mặc đ
     
     try:
         headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
-        res = requests.get(tcbs_url, headers=headers, timeout=1.5) # Siết timeout http xuống 1.5s để chuyển nhánh nhanh
+        res = requests.get(tcbs_url, headers=headers, timeout=1.5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -162,7 +150,6 @@ def fetch_stock_data(symbol, resolution="D", count=150): # Giảm count mặc đ
     STOCK_DATA_CACHE[cache_key] = (ret_df, None, now_ts)
     return ret_df, None
 
-
 def calculate_indicators(df):
     if df.empty or len(df) < 30:
         return df
@@ -194,7 +181,6 @@ def calculate_indicators(df):
 
     return df
 
-
 def calculate_smc_structures(df):
     if df.empty or len(df) < 20:
         return {"has_ob": False, "ob_price": 0, "has_liquidity_sweep": False}
@@ -217,7 +203,6 @@ def calculate_smc_structures(df):
 
     return {"has_ob": has_ob, "ob_price": round(ob_price, 2), "has_liquidity_sweep": has_liquidity_sweep}
 
-
 def calculate_position_size_1pct(entry_price, stop_loss_price, total_nav_vnd=DEFAULT_NAV_VND, risk_pct=0.01):
     if entry_price <= stop_loss_price or entry_price <= 0:
         return 1000, 0.0
@@ -230,7 +215,6 @@ def calculate_position_size_1pct(entry_price, stop_loss_price, total_nav_vnd=DEF
     actual_risk_pct_nav = ((suggested_qty * (entry_price - stop_loss_price) * 1000) / total_nav_vnd) * 100
     return suggested_qty, round(actual_risk_pct_nav, 2)
 
-
 def calculate_volume_profile(df, bins=20):
     if df.empty or len(df) < 20:
         return 0, 0, 0
@@ -239,7 +223,6 @@ def calculate_volume_profile(df, bins=20):
     poc_idx = np.argmax(hist)
     poc = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
     return poc, bin_edges[-1], bin_edges[0]
-
 
 def check_vnindex_health():
     now_ts = time.time()
@@ -264,10 +247,6 @@ def check_vnindex_health():
     VNINDEX_HEALTH_CACHE["data"], VNINDEX_HEALTH_CACHE["timestamp"] = res, now_ts
     return res
 
-
-# ==========================================
-# 2. HÀM PHÂN TÍCH CHI TIẾT ĐƠN MÃ
-# ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
 
@@ -363,7 +342,7 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT SIÊU TỐC AUTO-BUY & DIPBUY
+# 3. HÀM QUÉT SIÊU TỐC CÓ THANH TIẾN TRÌNH %
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
@@ -400,14 +379,39 @@ def process_single_stock_for_autobuy(symbol):
     return None
 
 
-def run_smart_buy_screener():
+async def run_smart_buy_screener_with_progress(msg, context):
+    total_symbols = len(WATCHLIST_SCAN)
+    completed = 0
     buy_recommendations = []
-    # Sử dụng ThreadPool 50 luồng để quét cực nhanh toàn bộ danh sách
+
+    def scan_task(symbol):
+        return process_single_stock_for_autobuy(symbol)
+
     with ThreadPoolExecutor(max_workers=50) as pool:
-        futures = [pool.submit(process_single_stock_for_autobuy, symbol) for symbol in WATCHLIST_SCAN]
+        futures = {pool.submit(scan_task, symbol): symbol for symbol in WATCHLIST_SCAN}
+        
         for future in as_completed(futures):
-            result = future.result()
-            if result: buy_recommendations.append(result)
+            completed += 1
+            res = future.result()
+            if res:
+                buy_recommendations.append(res)
+            
+            # Cập nhật thanh tiến trình theo phần trăm mỗi khi hoàn thành một số lượng mã nhất định hoặc định kỳ
+            if completed % 10 == 0 or completed == total_symbols:
+                percent = int((completed / total_symbols) * 100)
+                filled_blocks = int(percent / 10)
+                bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
+                
+                try:
+                    await msg.edit_text(
+                        f"🤖 <b>Đang quét siêu tốc danh sách Auto-Buy...</b>\n"
+                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
+                        f"⏳ Hệ thống đang phân tích chỉ báo, vui lòng chờ...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
     return sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)[:5]
 
 
@@ -480,16 +484,15 @@ def run_sector_flow_screener():
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text(
-        "🤖 <b>Đang quét siêu tốc danh sách Auto-Buy...</b>\n"
-        "⏳ Hệ thống đang chạy đa luồng toàn thị trường, vui lòng chờ trong giây lát...",
+        "🤖 <b>Đang khởi tạo tiến trình quét Auto-Buy...</b>\n"
+        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
+        "⏳ Đang chuẩn bị kết nối dữ liệu...",
         parse_mode="HTML"
     )
     
     try:
-        def task(): return run_smart_buy_screener()
-        future = executor.submit(task)
-        # Tăng timeout lên 15 giây để đảm bảo chạy trọn vẹn 50 mã mà không bị ngắt
-        picks = future.result(timeout=15)
+        # Gọi hàm quét ngầm có kèm thanh tiến trình phần trăm thực tế
+        picks = await run_smart_buy_screener_with_progress(msg, context)
         
         if not picks:
             await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn tiêu chí khắt khe của Auto-Buy.")
@@ -637,5 +640,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro Siêu Tốc đã sẵn sàng hoạt động!")
+    print("🚀 Bot Quant Trading Pro Tốc Độ Cao đã sẵn sàng hoạt động!")
     app.run_polling(drop_pending_updates=True)
