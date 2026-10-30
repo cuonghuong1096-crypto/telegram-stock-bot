@@ -670,7 +670,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 5. CẤU HÌNH SERVER & CHẠY BOT
+# 5. CẤU HÌNH SERVER & CHẠY BOT (ĐÃ FIX CHO RENDER)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -683,7 +683,9 @@ def run_http_server():
     HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler).serve_forever()
 
 if __name__ == "__main__":
+    # Khởi chạy HTTP Server giữ port cho Render
     threading.Thread(target=run_http_server, daemon=True).start()
+    
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start_command))
@@ -694,5 +696,10 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật tiến trình phần trăm cho tất cả lệnh lọc!")
-    app.run_polling(drop_pending_updates=True)
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render!")
+    
+    # Quan trọng: Thêm allowed_updates để đồng bộ dữ liệu chuẩn xác trên môi trường Cloud
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
+    )
