@@ -72,7 +72,7 @@ USER_PORTFOLIOS = {}
 
 VNINDEX_HEALTH_CACHE = {"data": None, "timestamp": 0}
 STOCK_DATA_CACHE = {} 
-executor = ThreadPoolExecutor(max_workers=50)
+executor = ThreadPoolExecutor(max_workers=30)
 
 def load_portfolios():
     global ACTIVE_CHAT_IDS
@@ -84,17 +84,19 @@ def load_portfolios():
             result = res.json()
             if result.get("status") == "success":
                 data = result.get("data", [])
-                temp_portfolios = {}
                 for item in data:
                     chat_id = int(item["chat_id"])
                     ACTIVE_CHAT_IDS.add(chat_id)
-                return temp_portfolios
+                return {}
     except Exception:
         pass
     return {}
 
 USER_PORTFOLIOS = load_portfolios()
 
+# ==========================================
+# 1. HÀM CALL DATA ĐÃ NỚI LỎNG TIMEOUT AN TOÀN
+# ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
     cache_key = f"{symbol}_{resolution}"
@@ -102,7 +104,7 @@ def fetch_stock_data(symbol, resolution="D", count=150):
 
     if cache_key in STOCK_DATA_CACHE:
         cached_df, cached_err, cached_time = STOCK_DATA_CACHE[cache_key]
-        if now_ts - cached_time < 45:
+        if now_ts - cached_time < 60:
             return cached_df, cached_err
 
     end_time = int(now_ts)
@@ -111,9 +113,10 @@ def fetch_stock_data(symbol, resolution="D", count=150):
     tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={resolution if resolution=='60' else 'D'}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     
+    # Nâng timeout HTTP lên 4.5 giây để đảm bảo nhận đủ dữ liệu từ API không bị ngắt quãng
     try:
         headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
-        res = requests.get(tcbs_url, headers=headers, timeout=1.5)
+        res = requests.get(tcbs_url, headers=headers, timeout=4.5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -127,7 +130,7 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={resolution if resolution=='60' else 'D'}&symbol={symbol}&from={start_time}&to={end_time}"
         try:
             headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://dchart.vndirect.com.vn/"}
-            res = requests.get(url, headers=headers, timeout=1.5)
+            res = requests.get(url, headers=headers, timeout=4.5)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
@@ -342,7 +345,7 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT SIÊU TỐC CÓ THANH TIẾN TRÌNH %
+# 3. HÀM QUÉT CÓ THANH TIẾN TRÌNH % CHUẨN XÁC
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
@@ -379,16 +382,13 @@ def process_single_stock_for_autobuy(symbol):
     return None
 
 
-async def run_smart_buy_screener_with_progress(msg, context):
+async def run_smart_buy_screener_with_progress(msg):
     total_symbols = len(WATCHLIST_SCAN)
     completed = 0
     buy_recommendations = []
 
-    def scan_task(symbol):
-        return process_single_stock_for_autobuy(symbol)
-
-    with ThreadPoolExecutor(max_workers=50) as pool:
-        futures = {pool.submit(scan_task, symbol): symbol for symbol in WATCHLIST_SCAN}
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        futures = {pool.submit(process_single_stock_for_autobuy, symbol): symbol for symbol in WATCHLIST_SCAN}
         
         for future in as_completed(futures):
             completed += 1
@@ -396,17 +396,17 @@ async def run_smart_buy_screener_with_progress(msg, context):
             if res:
                 buy_recommendations.append(res)
             
-            # Cập nhật thanh tiến trình theo phần trăm mỗi khi hoàn thành một số lượng mã nhất định hoặc định kỳ
-            if completed % 10 == 0 or completed == total_symbols:
+            # Cập nhật thanh tiến trình theo phần trăm thời gian thực
+            if completed % 5 == 0 or completed == total_symbols:
                 percent = int((completed / total_symbols) * 100)
                 filled_blocks = int(percent / 10)
                 bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
                 
                 try:
                     await msg.edit_text(
-                        f"🤖 <b>Đang quét siêu tốc danh sách Auto-Buy...</b>\n"
+                        f"🤖 <b>Đang quét danh sách Auto-Buy...</b>\n"
                         f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
-                        f"⏳ Hệ thống đang phân tích chỉ báo, vui lòng chờ...",
+                        f"⏳ Đang xử lý dữ liệu thị trường...",
                         parse_mode="HTML"
                     )
                 except Exception:
@@ -436,7 +436,7 @@ def run_dip_buy_screener():
             }
         return None
 
-    with ThreadPoolExecutor(max_workers=50) as pool:
+    with ThreadPoolExecutor(max_workers=30) as pool:
         futures = [pool.submit(scan_dip, symbol) for symbol in WATCHLIST_SCAN]
         for future in as_completed(futures):
             res = future.result()
@@ -479,26 +479,26 @@ def run_sector_flow_screener():
 
 
 # ==========================================
-# 4. HANDLERS VÀ BẮT LỖI TỐC ĐỘ CAO
+# 4. HANDLERS ĐÃ NỚI LỎNG THỜI GIAN ĐỢI CHẠY TRỌN VẸN
 # ==========================================
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text(
         "🤖 <b>Đang khởi tạo tiến trình quét Auto-Buy...</b>\n"
         "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
-        "⏳ Đang chuẩn bị kết nối dữ liệu...",
+        "⏳ Đang kết nối máy chủ dữ liệu...",
         parse_mode="HTML"
     )
     
     try:
-        # Gọi hàm quét ngầm có kèm thanh tiến trình phần trăm thực tế
-        picks = await run_smart_buy_screener_with_progress(msg, context)
+        # Chạy trực tiếp hàm tiến trình không bị ràng buộc timeout ngắn
+        picks = await run_smart_buy_screener_with_progress(msg)
         
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn tiêu chí khắt khe của Auto-Buy.")
+            await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn tiêu chí của Auto-Buy.")
             return
             
-        text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY (SIÊU TỐC)</b>\n====================================\n\n"
+        text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
             text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
@@ -506,17 +506,18 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(text, parse_mode="HTML")
         
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi tiến trình Auto-Buy:</b> Quá thời gian chờ hoặc máy chủ dữ liệu bận. Vui lòng thử lại sau!", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi tiến trình Auto-Buy:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🎯 <b>Đang lọc nhanh cổ phiếu đảo chiều từ đáy...</b> ⚡", parse_mode="HTML")
+    msg = await target_msg.reply_text("🎯 <b>Đang lọc cổ phiếu đảo chiều từ đáy...</b> ⚡", parse_mode="HTML")
     
     def task(): return run_dip_buy_screener()
     future = executor.submit(task)
     try:
-        picks = future.result(timeout=8)
+        # Nâng giới hạn thời gian chờ lên 20 giây để chạy mượt mà
+        picks = future.result(timeout=20)
         if not picks:
             await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn.")
             return
@@ -528,7 +529,7 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   • CMF: <code>{item['cmf']:.2f}</code> | RVOL: <code>{item['rvol']:.2f}x</code> | Hỗ trợ: <code>{item['poc']:.1f}k</code>\n------------------------------------\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi kết nối dữ liệu:</b> Thời gian phản hồi vượt quá giới hạn. Vui lòng thử lại!", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi kết nối dữ liệu:</b> Phản hồi quá hạn. Vui lòng thử lại!", parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -568,7 +569,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def background_task(): return analyze_stock(symbol, resolution=resolution, count=count)
         future = executor.submit(background_task)
         try:
-            result = future.result(timeout=6)
+            # Nâng timeout xem chi tiết mã lên 15 giây
+            result = future.result(timeout=15)
             if not result or len(result) < 5:
                 await msg.edit_text("❌ Lỗi dữ liệu: Không lấy được thông tin từ máy chủ dữ liệu.")
                 return
@@ -604,7 +606,8 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def task(): return run_sector_flow_screener()
     future = executor.submit(task)
     try:
-        sectors = future.result(timeout=6)
+        # Nâng timeout nhóm ngành lên 15 giây
+        sectors = future.result(timeout=15)
         if not sectors: await msg.edit_text("⚠️ Không lấy được dữ liệu ngành."); return
         text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
         for idx, sec in enumerate(sectors, 1):
@@ -640,5 +643,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro Tốc Độ Cao đã sẵn sàng hoạt động!")
+    print("🚀 Bot Quant Trading Pro đã khắc phục xong lỗi timeout và sẵn sàng chạy!")
     app.run_polling(drop_pending_updates=True)
