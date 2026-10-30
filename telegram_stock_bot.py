@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import html
 import threading
 import time
 import traceback
@@ -341,7 +342,6 @@ def calculate_indicators(df):
         return slope
     df["LR_Slope"] = df["Close"].rolling(14).apply(linreg_slope, raw=False)
 
-    # TÍNH TOÁN CÁC ĐƯỜNG ICHIMOKU
     df["Tenkan_sen"] = (df["High"].rolling(window=9).max() + df["Low"].rolling(window=9).min()) / 2
     df["Kijun_sen"] = (df["High"].rolling(window=26).max() + df["Low"].rolling(window=26).min()) / 2
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
@@ -559,7 +559,7 @@ def check_advanced_filters(df_d, last, symbol):
 
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH CHUYÊN SÂU ĐƠN MÃ (TỐI ƯU SỬA LỖI)
+# 2. HÀM PHÂN TÍCH CHUYÊN SÂU (ĐÃ SỬA CHUYỂN SANG HTML)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=250):
     def fmt(p): return f"{p:.1f}k"
@@ -617,10 +617,10 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     if smc["has_ob"]:
         score += 10
-        confluence_points.append(f"🔥 [SMC - Order Block]: Vùng OB hỗ trợ tại `{fmt(smc['ob_price'])}`")
+        confluence_points.append(f"🔥 [SMC - Order Block]: Vùng OB hỗ trợ tại <code>{fmt(smc['ob_price'])}</code>")
     if smc["has_fvg"]:
         score += 10
-        confluence_points.append(f"⚡ [SMC - Fair Value Gap]: FVG `{fmt(smc['fvg_low'])} - {fmt(smc['fvg_high'])}`")
+        confluence_points.append(f"⚡ [SMC - Fair Value Gap]: FVG <code>{fmt(smc['fvg_low'])} - {fmt(smc['fvg_high'])}</code>")
     if smc["has_liquidity_sweep"]:
         score += 15
         confluence_points.append("🎯 [SMC - Liquidity Sweep]: Quét thanh khoản đáy cũ rút chân đảo chiều")
@@ -657,34 +657,35 @@ def analyze_stock(symbol, resolution="D", count=250):
 
     if mkt_health["status"] in ["BEARISH_RISK", "FAKE_BULLISH_TRAP"]:
         system_status = "ĐỨNG NGOÀI (THỊ TRƯỜNG RỦI RO)"
-        final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Thị trường chung xấu)**"
+        final_icon = f"🔴 <b>ĐỨNG NGOÀI QUAN SÁT (Thị trường chung xấu)</b>"
         action_note = f"⚠️ Thị trường chung rủi ro. Khuyên dùng: Giữ tiền mặt hoặc hạ tỷ trọng."
     elif confidence_score >= 65 and close > cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
-        final_icon = f"🟢 **NÊN MUA (Độ tin cậy: {confidence_score}%)**"
-        action_note = f"Mở mua quanh `{fmt(entry_1)} - {fmt(entry_2)}`, Khối lượng: `{sug_qty:,} cổ` (Rủi ro: `{risk_nav_pct}% NAV`), Stoploss tại `{fmt(stop_loss)}`."
+        final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
+        action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code> (Rủi ro: <code>{risk_nav_pct}% NAV</code>), Stoploss tại <code>{fmt(stop_loss)}</code>."
     elif confidence_score >= 45 and not is_bull_trap:
         system_status = "THĂM DÒ / QUAN SÁT"
-        final_icon = f"🟡 **THĂM DÒ TÍCH LŨY (Độ tin cậy: {confidence_score}%)**"
-        action_note = f"Thăm dò nhỏ quanh `{fmt(entry_1)} - {fmt(entry_2)}`, Mua test: `{int(sug_qty*0.5):,} cổ`, Stoploss tại `{fmt(stop_loss)}`."
+        final_icon = f"🟡 <b>THĂM DÒ TÍCH LŨY (Độ tin cậy: {confidence_score}%)</b>"
+        action_note = f"Thăm dò nhỏ quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Mua test: <code>{int(sug_qty*0.5):,} cổ</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
     else:
         system_status = "ĐỨNG NGOÀI"
-        final_icon = f"🔴 **ĐỨNG NGOÀI (Độ tin cậy: {confidence_score}%)**"
-        action_note = f"Tuyệt đối không giải ngân mua mới. Stoploss tham chiếu: `{fmt(stop_loss)}`."
+        final_icon = f"🔴 <b>ĐỨNG NGOÀI (Độ tin cậy: {confidence_score}%)</b>"
+        action_note = f"Tuyệt đối không giải ngân mua mới. Stoploss tham chiếu: <code>{fmt(stop_loss)}</code>."
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ"
     warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo nghiêm trọng"
 
-    text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT & SMC: {symbol.upper()}\n"
+    # Định dạng HTML an toàn
+    text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KỸ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
-    text_part1 += f"🏛️ Trạng thái VN-Index: **{mkt_health['note']}**\n\n"
-    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n• Xu hướng: {long_term_trend}\n• ADX: `{adx:.1f}` | CMF: {cmf:.2f} | RVOL: {rvol:.2f}x\n\n"
-    text_part1 += f"🏛️ 2. CẤU TRÚC NỀN GIÁ DÒNG TIỀN LỚN (SMC):\n• Order Block (OB): `{'🟢 Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else '🔴 Chưa có'}`\n• FVG Imbalance: `{'🟢 Có' if smc['has_fvg'] else '🔴 Không'}` | Liquidity Sweep: `{'🔥 Có Rút Chân' if smc['has_liquidity_sweep'] else '🔴 Không'}`\n\n"
-    text_part1 += f"📊 3. VOLUME PROFILE & PIVOT:\n• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n\n"
-    text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & QUẢN LÝ VỐN 1% NAV:\n• Khuyến nghị: {system_status}\n• {action_note}\n\n"
+    text_part1 += f"🏛️ Trạng thái VN-Index: <b>{html.escape(mkt_health['note'])}</b>\n\n"
+    text_part1 += f"🌐 <b>1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:</b>\n• Xu hướng: {long_term_trend}\n• ADX: <code>{adx:.1f}</code> | CMF: <code>{cmf:.2f}</code> | RVOL: <code>{rvol:.2f}x</code>\n\n"
+    text_part1 += f"🏛️ <b>2. CẤU TRÚC NỀN GIÁ DÒNG TIỀN LỚN (SMC):</b>\n• Order Block (OB): <code>{'🟢 Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else '🔴 Chưa có'}</code>\n• FVG Imbalance: <code>{'🟢 Có' if smc['has_fvg'] else '🔴 Không'}</code> | Liquidity Sweep: <code>{'🔥 Có Rút Chân' if smc['has_liquidity_sweep'] else '🔴 Không'}</code>\n\n"
+    text_part1 += f"📊 <b>3. VOLUME PROFILE & PIVOT:</b>\n• POC: <code>{fmt(poc)}</code> | VAL: <code>{fmt(val)}</code> | VAH: <code>{fmt(vah)}</code>\n\n"
+    text_part1 += f"🎯 <b>4. QUẢN TRỊ RỦI RO & QUẢN LÝ VỐN 1% NAV:</b>\n• Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
 
-    text_part2 = f"⚡ 5. BẪY GIÁ & ĐIỂM HỘI TỤ:\n• Bẫy giá: {' | '.join(trap_list)}\n• Điểm cộng SMC/VSA: {conf_str}\n• Cảnh báo: {warn_str}\n\n"
-    text_part2 += f"🏁 6. TỔNG KẾT CHIẾN LƯỢC:\n• {final_icon}"
+    text_part2 = f"⚡ <b>5. BẪY GIÁ & ĐIỂM HỘI TỤ:</b>\n• Bẫy giá: {' | '.join(trap_list)}\n• Điểm cộng SMC/VSA: {conf_str}\n• Cảnh báo: {warn_str}\n\n"
+    text_part2 += f"🏁 <b>6. TỔNG KẾT CHIẾN LƯỢC:</b>\n• {final_icon}"
 
     keyboard = [
         [
@@ -910,27 +911,28 @@ def run_smart_buy_screener():
 
 
 # ==========================================
-# 4. HANDLERS VÀ XỬ LÝ NÚT BẤM (FIX LỖI CỐT LÕI)
+# 4. HANDLERS VÀ XỬ LÝ NÚT BẤM (FIX LỖI CỐT LÕI - PARSE MODE HTML)
 # ==========================================
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    msg = await (update.message.reply_text("🎯 **Đang lọc cổ phiếu đảo chiều từ đáy & tích lũy tốt...** ⚡") if update.message else update.callback_query.message.reply_text("🎯 **Đang lọc cổ phiếu đảo chiều từ đáy & tích lũy tốt...** ⚡"))
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text("🎯 <b>Đang lọc cổ phiếu đảo chiều từ đáy & tích lũy tốt...</b> ⚡", parse_mode="HTML")
     try:
         picks = run_dip_buy_screener()
         if not picks:
             await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn mua hoảng loạn/tích lũy.")
             return
-        text = "🎯 **DANH SÁCH CỔ PHIẾU ĐẢO CHUYỀN TỪ ĐÁY & TÍCH LŨY TỐT**\n====================================\n\n"
+        text = "🎯 <b>DANH SÁCH CỔ PHIẾU ĐẢO CHUYỀN TỪ ĐÁY & TÍCH LŨY TỐT</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             smc_tag = "🔥 [Quét Đáy Sweep]" if item["smc"]["has_liquidity_sweep"] else ("⚡ [Vùng OrderBlock]" if item["smc"]["has_ob"] else "📊 [Chạm Hỗ Trợ POC]")
-            text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** {smc_tag}\n"
-            text += f"   • Giá: `{item['close']:.1f}k` | Đã chỉnh từ đỉnh: `-{item['drop_pct']}%`\n"
-            text += f"   • CMF: `{item['cmf']:.2f}` | RVOL: `{item['rvol']:.2f}x` | RSI: `{item['rsi']}`\n"
-            text += f"   • Hỗ trợ POC: `{item['poc']:.1f}k` | Tra cứu chi tiết: gõ `{item['symbol']}`\n------------------------------------\n"
-        await msg.edit_text(text, parse_mode="Markdown")
+            text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> {smc_tag}\n"
+            text += f"   • Giá: <code>{item['close']:.1f}k</code> | Đã chỉnh từ đỉnh: <code>-{item['drop_pct']}%</code>\n"
+            text += f"   • CMF: <code>{item['cmf']:.2f}</code> | RVOL: <code>{item['rvol']:.2f}x</code> | RSI: <code>{item['rsi']}</code>\n"
+            text += f"   • Hỗ trợ POC: <code>{item['poc']:.1f}k</code> | Tra cứu chi tiết: gõ <code>{item['symbol']}</code>\n------------------------------------\n"
+        await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi: {str(e)}")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -950,9 +952,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ],
     ]
     await update.message.reply_text(
-        f"🔍 Đã nhận mã **{text}**. Chọn khung thời gian phân tích:",
+        f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -973,60 +975,73 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         def background_task(): return analyze_stock(symbol, resolution=resolution, count=count)
         future = executor.submit(background_task)
         try:
-            # Nâng Timeout lên 20 giây để xử lý đủ dữ liệu Ichimoku/SMC mà không bị ngắt
-            result = future.result(timeout=20)
+            result = future.result(timeout=25)
             if not result or len(result) < 5:
                 await msg.edit_text("❌ Lỗi dữ liệu: Không lấy được thông tin từ máy chủ dữ liệu.")
                 return
                 
             text_part1, text_part2, img_buf, reply_markup, err = result
             if err:
-                await msg.edit_text(f"❌ Lỗi: {err}")
+                await msg.edit_text(f"❌ Lỗi: {html.escape(str(err))}")
             else:
+                chat_id = query.message.chat_id
                 await msg.delete()
-                await query.message.reply_photo(photo=img_buf)
-                await query.message.reply_text(text_part1, parse_mode="Markdown")
-                await query.message.reply_text(text_part2, reply_markup=reply_markup, parse_mode="Markdown")
+                # Gửi ảnh biểu đồ kèm phần văn bản thứ nhất
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=img_buf,
+                    caption=text_part1,
+                    parse_mode="HTML"
+                )
+                # Gửi phần văn bản thứ hai chứa phím bấm
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=text_part2,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML"
+                )
         except Exception as e:
             err_trace = traceback.format_exc()
             logging.error(f"Chi tiết lỗi callback: {err_trace}")
-            await msg.edit_text(f"❌ Lỗi hệ thống: {str(e)}")
+            await msg.edit_text(f"❌ Lỗi hệ thống: {html.escape(str(e))}")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
     welcome_text = (
-        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!**\n\n"
-        "1️⃣ **TRA CỨU NHANH:** Gửi mã cổ phiếu bất kỳ (VD: `VHM`, `HT1`)\n"
-        "2️⃣ **BỘ LỌC CHIẾN LƯỢC:**\n"
-        "   ├ 🎯 `/dipbuy`  : Bắt đáy & Tích lũy sau đợt giảm\n"
-        "   ├ 🤖 `/autobuy` : Tín hiệu mua chuẩn VCP + SMC\n"
-        "   └ 🏢 `/sectors` : Dòng tiền Nhóm Ngành\n"
+        "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
+        "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
+        "2️⃣ <b>BỘ LỌC CHIẾN LƯỢC:</b>\n"
+        "   ├ 🎯 /dipbuy  : Bắt đáy & Tích lũy sau đợt giảm\n"
+        "   ├ 🤖 /autobuy : Tín hiệu mua chuẩn VCP + SMC\n"
+        "   └ 🏢 /sectors : Dòng tiền Nhóm Ngành\n"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await (update.message.reply_text("🤖 **Đang quét tín hiệu Mua tối ưu (Auto-Buy)...** ⚡") if update.message else update.callback_query.message.reply_text("🤖 **Đang quét tín hiệu Mua tối ưu (Auto-Buy)...** ⚡"))
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text("🤖 <b>Đang quét tín hiệu Mua tối ưu (Auto-Buy)...</b> ⚡", parse_mode="HTML")
     picks = run_smart_buy_screener()
     if not picks:
         await msg.edit_text("⚠️ Thị trường chung rủi ro hoặc chưa có mã thỏa mãn 100% tiêu chí khắt khe.")
         return
-    text = "🎯 **DANH SÁCH CỔ PHIẾU AUTO-BUY**\n====================================\n\n"
+    text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY</b>\n====================================\n\n"
     for idx, item in enumerate(picks, 1):
-        text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** | Giá: `{item['close']:.1f}k` | Score: `{item['score']}%`\n"
-        text += f"   • Vùng mua: `{item['entry']}k` | Stoploss: `{item['stop_loss']}k` | Qty: `{item['suggested_qty']:,} cổ`\n"
-    await msg.edit_text(text, parse_mode="Markdown")
+        text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
+        text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
+    await msg.edit_text(text, parse_mode="HTML")
 
 async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await (update.message.reply_text("🏢 **Đang phân tích dòng tiền ngành...** ⚡") if update.message else update.callback_query.message.reply_text("🏢 **Đang phân tích dòng tiền ngành...** ⚡"))
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text("🏢 <b>Đang phân tích dòng tiền ngành...</b> ⚡", parse_mode="HTML")
     sectors = run_sector_flow_screener()
     if not sectors: await msg.edit_text("⚠️ Không lấy được dữ liệu ngành."); return
-    text = "🔥 **BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH**\n====================================\n\n"
+    text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
     for idx, sec in enumerate(sectors, 1):
         icon = "🟢 [HÚT DÒNG TIỀN]" if (sec['avg_cmf'] > 0.05 and sec['avg_rvol'] >= 1.0) else ("🟡 [TÍCH LŨY]" if sec['avg_cmf'] > 0 else "🔴 [RÚT LUI]")
-        text += f"{idx}. 🏢 **{sec['sector'].upper()}** {icon}\n   • RVOL: `{sec['avg_rvol']:.2f}x` | CMF: `{sec['avg_cmf']:.2f}` | Leader: `{sec['leader']}`\n"
-    await msg.edit_text(text, parse_mode="Markdown")
+        text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • RVOL: <code>{sec['avg_rvol']:.2f}x</code> | CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
+    await msg.edit_text(text, parse_mode="HTML")
 
 # ==========================================
 # 5. CẤU HÌNH SERVER & CHẠY BOT
@@ -1053,5 +1068,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã chạy ổn định và sửa xong lỗi!")
+    print("🚀 Bot Quant Trading Pro đã khởi động và sẵn sàng hoạt động mượt mà!")
     app.run_polling(drop_pending_updates=True)
