@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import requests
+import feedparser  # Thư viện phục vụ cào tin tức RSS
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -271,6 +272,38 @@ def check_vnindex_health():
     return res
 
 # ==========================================
+# HÀM CÀO TIN TỨC MỚI NHẤT QUA GOOGLE RSS
+# ==========================================
+def get_latest_stock_news(symbol):
+    symbol = symbol.upper().strip()
+    url = f"https://news.google.com/rss/search?q=cổ+phiếu+{symbol}+tin+mới+nhất&hl=vi&gl=VN&ceid=VN:vi"
+    
+    try:
+        feed = feedparser.parse(url)
+        if not feed.entries:
+            return f"⚠️ Hiện không tìm thấy bài báo mới nào về mã <b>{symbol}</b>."
+            
+        text = f"📰 <b>TIN TỨC MỚI NHẤT VỀ: {symbol}</b>\n====================================\n\n"
+        
+        count = 0
+        for entry in feed.entries[:3]:
+            title = entry.title
+            link = entry.link
+            published = entry.get("published", "Hôm nay")
+            
+            text += f"• <b>{html.escape(title)}</b>\n"
+            text += f"  🔗 <a href='{link}'>Đọc chi tiết bài gốc</a>\n"
+            text += f"  ⏱️ <i>{published}</i>\n\n"
+            count += 1
+            
+        if count == 0:
+            return f"⚠️ Không có thông tin mới cập nhật cho mã {symbol}."
+            
+        return text
+    except Exception as e:
+        return f"❌ Lỗi khi tải tin tức: {html.escape(str(e))}"
+
+# ==========================================
 # HÀM PHÂN TÍCH KỸ THUẬT & SMC
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
@@ -362,7 +395,6 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     text_part2 = f"⚡ <b>4. TÍN HIỆU HỘI TỤ:</b> {conf_str}\n🏁 <b>5. KẾT LUẬN:</b> {final_icon}"
 
-    # 🎛️ BẢNG ĐIỀU KHIỂN TỐI ƯU NHÃN NGẮN GỌN (CHỐNG TRÀN CHỮ)
     keyboard = [
         [
             InlineKeyboardButton("⏱️ 1H", callback_data=f"{symbol}|60|300"),
@@ -393,7 +425,7 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT CÓ BỘ LỌC CHẶN RỦI RO CHO AUTO-BUY
+# 3. HÀM QUÉT CÓ BỘ LỌC CHẶN RỦI RO CHO AUTO-BUY & DIP-BUY
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
@@ -436,7 +468,6 @@ def process_single_stock_for_autobuy(symbol):
     except Exception:
         pass
     return None
-
 
 async def run_smart_buy_screener_with_progress(msg):
     total_symbols = len(WATCHLIST_SCAN)
@@ -493,7 +524,6 @@ def scan_single_dip_stock(symbol):
         }
     return None
 
-
 async def run_dip_buy_screener_with_progress(msg):
     total_symbols = len(WATCHLIST_SCAN)
     completed = 0
@@ -536,7 +566,6 @@ def analyze_single_sector_stock(symbol):
         "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100,
         "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0)
     }
-
 
 async def run_sector_flow_screener_with_progress(msg):
     total_sectors = len(SECTOR_MAP)
@@ -594,20 +623,17 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         picks = await run_smart_buy_screener_with_progress(msg)
-        
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại không có mã nào đủ chuẩn an toàn (Tất cả đang nằm dưới xu hướng dài hạn hoặc thiếu dòng tiền).")
+            await msg.edit_text("⚠️ Hiện tại không có mã nào đủ chuẩn an toàn.")
             return
             
         text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY AN TOÀN</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
             text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
-        
         await msg.edit_text(text, parse_mode="HTML")
-        
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi tiến trình Auto-Buy:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -621,9 +647,8 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         picks = await run_dip_buy_screener_with_progress(msg)
-        
         if not picks:
-            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn an toàn.")
+            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn.")
             return
             
         text = "🎯 <b>DANH SÁCH CỔ PHIẾU TÍCH LŨY AN TOÀN</b>\n====================================\n\n"
@@ -633,9 +658,8 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   • Giá: <code>{item['close']:.1f}k</code> | Giảm từ đỉnh: <code>-{item['drop_pct']}%</code>\n"
             text += f"   • CMF: <code>{item['cmf']:.2f}</code> | RVOL: <code>{item['rvol']:.2f}x</code> | Hỗ trợ: <code>{item['poc']:.1f}k</code>\n------------------------------------\n"
         await msg.edit_text(text, parse_mode="HTML")
-        
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi tiến trình Dip-Buy:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -649,7 +673,6 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         sectors = await run_sector_flow_screener_with_progress(msg)
-        
         if not sectors: 
             await msg.edit_text("⚠️ Không lấy được dữ liệu ngành.")
             return
@@ -659,9 +682,26 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             icon = "🟢 [HÚT DÒNG TIỀN]" if sec['avg_cmf'] > 0.02 else "🔴 [RÚT LUI]"
             text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
         await msg.edit_text(text, parse_mode="HTML")
-        
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi phân tích Nhóm Ngành:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+
+
+# Handler lệnh /tin <mã>
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("⚠️ Vui lòng nhập mã cổ phiếu cần xem tin. Ví dụ: <code>/tin VCG</code>", parse_mode="HTML")
+        return
+        
+    symbol = args[0].upper()
+    msg = await update.message.reply_text(f"⏳ Đang tổng hợp mặt báo mới nhất của <b>{symbol}</b>...", parse_mode="HTML")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        news_text = await loop.run_in_executor(executor, get_latest_stock_news, symbol)
+        await msg.edit_text(news_text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        await msg.edit_text(f"❌ Không thể tải tin tức: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -725,16 +765,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML")
             
         except asyncio.TimeoutError:
-            await msg.edit_text("⚠️ <b>Hệ thống quá tải hoặc máy chủ dữ liệu phản hồi chậm.</b> Vui lòng bấm lại nút khung thời gian sau vài giây!", parse_mode="HTML")
+            await msg.edit_text("⚠️ <b>Hệ thống quá tải hoặc máy chủ phản hồi chậm.</b> Vui lòng bấm lại!", parse_mode="HTML")
         except Exception as e:
-            await msg.edit_text(f"❌ <b>Máy chủ không phản hồi:</b> Lỗi API dữ liệu ({html.escape(str(e))}). Vui lòng bấm lại!", parse_mode="HTML")
+            await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
-        "2️⃣ <b>BỘ LỌC CHIẾN LƯỢC:</b>\n"
+        "2️⃣ <b>CẬP NHẬT TIN TỨC:</b> Gửi lệnh <code>/tin VCG</code> để lấy tin mới nhất\n"
+        "3️⃣ <b>BỘ LỌC CHIẾN LƯỢC:</b>\n"
         "   ├ 🎯 /dipbuy  : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy : Tín hiệu mua chuẩn VCP + SMC\n"
         "   └ 🏢 /sectors : Dòng tiền Nhóm Ngành\n"
@@ -756,7 +797,6 @@ def run_http_server():
     HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler).serve_forever()
 
 def self_ping_thread():
-    """Luồng ngầm tự gọi API chính mình mỗi 3 giây để chống Render ngủ đông (Sleep Mode)"""
     app_url = os.environ.get("RENDER_EXTERNAL_URL")
     if not app_url:
         return
@@ -768,23 +808,23 @@ def self_ping_thread():
             pass
 
 if __name__ == "__main__":
-    # Khởi chạy HTTP Server cho Render
     threading.Thread(target=run_http_server, daemon=True).start()
-    
-    # Khởi chạy luồng Self-Ping đánh thức bot mỗi 3 giây
     threading.Thread(target=self_ping_thread, daemon=True).start()
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
+    # Đăng ký các Command Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
     app.add_handler(CommandHandler("sectors", sectors_command))
     app.add_handler(CommandHandler("nganh", sectors_command))
+    app.add_handler(CommandHandler("tin", news_command))  # Thêm lệnh /tin cào báo mới
+    
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm mô đun Tin Tức!")
     
     app.run_polling(
         drop_pending_updates=True,
