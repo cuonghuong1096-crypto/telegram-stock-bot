@@ -249,6 +249,9 @@ def check_vnindex_health():
     VNINDEX_HEALTH_CACHE["data"], VNINDEX_HEALTH_CACHE["timestamp"] = res, now_ts
     return res
 
+# ==========================================
+# HÀM PHÂN TÍCH ĐÃ TÍCH HỢP 3 ĐIỂM MÙ THỰC CHIẾN
+# ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
 
@@ -274,37 +277,63 @@ def analyze_stock(symbol, resolution="D", count=200):
     cloud_bottom = min(span_a, span_b)
 
     poc, vah, val = calculate_volume_profile(df)
-    long_term_trend = "UPTREND (Trên SMA200)" if close > sma200 else "DOWNTREND/PHỤC HỒI"
+    
+    # 🛡️ CẢI TIẾN 1: Nới lỏng thông minh cho phép sát SMA200 (trong 3%) nếu CMF tốt
+    is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
+    is_downtrend_heavy = (close < sma200) and not (is_near_sma200 and cmf > 0.03)
 
     confluence_points = []
     score = 50
 
-    if close > cloud_top: score += 20; confluence_points.append("Giá nằm trên mây Kumo")
-    elif close >= cloud_bottom: score += 10; confluence_points.append("Giá trong mây Kumo")
+    if close > cloud_top: 
+        score += 20; confluence_points.append("Giá nằm trên mây Kumo")
+    elif close >= cloud_bottom: 
+        score += 10; confluence_points.append("Giá trong mây Kumo")
+    else: 
+        confluence_points.append("⚠️ Giá nằm dưới mây Kumo (Downtrend)")
     
     if smc["has_ob"]: score += 10; confluence_points.append(f"🔥 [Order Block tại {fmt(smc['ob_price'])}]")
     if smc["has_liquidity_sweep"]: score += 15; confluence_points.append("🎯 [Quét thanh khoản rút chân]")
-    if cmf > 0.03: score += 15; confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) tốt")
+    
+    if cmf > 0.03: 
+        score += 15
+        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) tốt")
+    elif cmf < -0.1:
+        score -= 20
+        confluence_points.append(f"🚨 Dòng tiền rút ròng mạnh (CMF: {cmf:.2f})")
 
-    confidence_score = min(max(int(score * mkt_health["score_modifier"]), 15), 90)
+    # Kích hoạt khiên chống Downtrend nặng
+    if is_downtrend_heavy and cmf < 0:
+        score = min(score, 40)
+        confluence_points.append("🛡️ [Kích hoạt khiên chống Downtrend: Cấm bắt đáy]")
 
-    entry_1 = round(max(val, last.get("EMA20", close), close * 0.98), 2)
+    confidence_score = min(max(int(score * mkt_health["score_modifier"]), 10), 90)
+
+    entry_1 = round(min(close, max(val, close * 0.98)), 2)
     entry_2 = round(close, 2)
     entry_avg = (entry_1 + entry_2) / 2
-    stop_loss = round(entry_avg * 0.93, 2)
+    
+    # 🛡️ CẢI TIẾN 3: Đặt Stoploss chuẩn cấu trúc SMC (Dưới đáy thấp nhất 10 phiên gần nhất trừ đệm an toàn)
+    recent_swing_low = df["Low"].tail(10).min()
+    stop_loss = round(min(entry_avg * 0.93, recent_swing_low * 0.98), 2)
 
     sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
 
-    if confidence_score >= 60:
+    if confidence_score >= 65 and not is_downtrend_heavy:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
         final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
+    elif confidence_score >= 50:
+        system_status = "THĂM DÒ THẬN TRỌNG"
+        final_icon = f"🟡 <b>THĂM DÒ THẬN TRỌNG (Độ tin cậy: {confidence_score}%)</b>"
+        action_note = f"Tỷ trọng nhỏ, quan sát kỹ vùng hỗ trợ, Stoploss tại <code>{fmt(stop_loss)}</code>."
     else:
-        system_status = "THĂM DÒ / QUAN SÁT"
-        final_icon = f"🟡 <b>THĂM DÒ TÍCH LŨY (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = f"Thăm dò nhỏ quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
+        system_status = "ĐỨNG NGOÀI / QUAN SÁT (NO TRADE)"
+        final_icon = f"🔴 <b>CHƯA ĐỦ ĐIỀU KIỆN MUA (Độ tin cậy: {confidence_score}%)</b>"
+        action_note = f"Cổ phiếu đang xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài, không bắt đáy!</b>"
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Tích lũy ổn định"
+    long_term_trend = "UPTREND (Trên SMA200)" if not is_downtrend_heavy else "DOWNTREND / RƠI MẠNH"
 
     text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KỸ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
@@ -344,33 +373,42 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT CÓ THANH TIẾN TRÌNH % CHO TẤT CẢ TÍNH NĂNG
+# 3. HÀM QUÉT CÓ BỘ LỌC CHẶN RỦI RO CHO AUTO-BUY
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
-        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=100)
-        if err_d or df_d.empty or len(df_d) < 30: return None
+        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
+        if err_d or df_d.empty or len(df_d) < 50: return None
 
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
         close = last_d["Close"]
-        
+        sma200 = last_d.get("SMA200", close)
         cmf_d = last_d.get("CMF", 0.0)
         rvol_d = last_d.get("RVOL", 1.0)
+        
+        # 🛡️ CẢI TIẾN 1 & 2: Kiểm tra linh hoạt SMA200 và yêu cầu RVOL bứt phá thực tế (>= 1.3)
+        is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
+        if close < sma200 and not (is_near_sma200 and cmf_d > 0.03):
+            return None
+        if rvol_d < 1.3:
+            return None
+
         smc = calculate_smc_structures(df_d)
         poc, vah, val = calculate_volume_profile(df_d)
 
-        entry_price = round(max(val, close * 0.98), 2)
-        stop_loss = round(entry_price * 0.93, 2)
+        entry_price = round(close, 2)
+        recent_swing_low = df_d["Low"].tail(10).min()
+        stop_loss = round(min(entry_price * 0.93, recent_swing_low * 0.98), 2)
         suggested_qty, actual_risk_pct = calculate_position_size_1pct(entry_price, stop_loss)
 
         score = 50
         if smc["has_ob"]: score += 15
         if smc["has_liquidity_sweep"]: score += 20
         if cmf_d > 0.02: score += 15
-        if rvol_d >= 1.1: score += 10
+        if rvol_d >= 1.5: score += 10
 
-        if score >= 65:
+        if score >= 65 and cmf_d > 0:
             return {
                 "symbol": symbol, "close": close, "score": min(score, 95),
                 "entry": entry_price, "stop_loss": stop_loss,
@@ -402,9 +440,9 @@ async def run_smart_buy_screener_with_progress(msg):
                 
                 try:
                     await msg.edit_text(
-                        f"🤖 <b>Đang quét danh sách Auto-Buy...</b>\n"
+                        f"🤖 <b>Đang quét danh sách Auto-Buy an toàn tuyệt đối...</b>\n"
                         f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
-                        f"⏳ Đang xử lý dữ liệu thị trường...",
+                        f"⏳ Đang áp dụng bộ lọc khối lượng & xu hướng chuyên sâu...",
                         parse_mode="HTML"
                     )
                 except Exception:
@@ -414,17 +452,21 @@ async def run_smart_buy_screener_with_progress(msg):
 
 
 def scan_single_dip_stock(symbol):
-    df, err = fetch_stock_data(symbol, resolution="D", count=80)
+    df, err = fetch_stock_data(symbol, resolution="D", count=100)
     if err or df.empty or len(df) < 30: return None
     df = calculate_indicators(df)
     last = df.iloc[-1]
     close, cmf, rvol = last["Close"], last.get("CMF", 0.0), last.get("RVOL", 1.0)
+    sma200 = last.get("SMA200", close)
+    
+    if close < sma200 * 0.95: return None
+
     smc = calculate_smc_structures(df)
     poc, _, _ = calculate_volume_profile(df)
     recent_high = df["High"].tail(15).max()
     drop_pct = ((recent_high - close) / recent_high) * 100
 
-    if drop_pct >= 4.0 and (close <= poc * 1.02 or smc["has_ob"] or smc["has_liquidity_sweep"]) and cmf > -0.05:
+    if drop_pct >= 4.0 and (close <= poc * 1.02 or smc["has_ob"] or smc["has_liquidity_sweep"]) and cmf > 0:
         score = (drop_pct * 2.0) + (cmf * 30) + (15 if smc["has_liquidity_sweep"] else 0)
         return {
             "symbol": symbol, "close": close, "drop_pct": round(drop_pct, 1),
@@ -454,7 +496,7 @@ async def run_dip_buy_screener_with_progress(msg):
                 
                 try:
                     await msg.edit_text(
-                        f"🎯 <b>Đang quét cổ phiếu đảo chiều từ đáy...</b>\n"
+                        f"🎯 <b>Đang quét cổ phiếu tích lũy an toàn...</b>\n"
                         f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
                         f"⏳ Đang rà soát vùng hỗ trợ...",
                         parse_mode="HTML"
@@ -535,10 +577,10 @@ async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         picks = await run_smart_buy_screener_with_progress(msg)
         
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn tiêu chí của Auto-Buy.")
+            await msg.edit_text("⚠️ Hiện tại không có mã nào đủ chuẩn an toàn (Tất cả đang nằm dưới xu hướng dài hạn hoặc thiếu dòng tiền).")
             return
             
-        text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY</b>\n====================================\n\n"
+        text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY AN TOÀN</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
             text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
@@ -562,10 +604,10 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         picks = await run_dip_buy_screener_with_progress(msg)
         
         if not picks:
-            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn.")
+            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn an toàn.")
             return
             
-        text = "🎯 <b>DANH SÁCH CỔ PHIẾU ĐẢO CHIỀN TỪ ĐÁY</b>\n====================================\n\n"
+        text = "🎯 <b>DANH SÁCH CỔ PHIẾU TÍCH LŨY AN TOÀN</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             smc_tag = "🔥 [Sweep]" if item["smc"]["has_liquidity_sweep"] else ("⚡ [OB]" if item["smc"]["has_ob"] else "📊 [POC]")
             text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> {smc_tag}\n"
@@ -662,7 +704,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
         "2️⃣ <b>BỘ LỌC CHIẾN LƯỢC:</b>\n"
-        "   ├ 🎯 /dipbuy  : Bắt đáy & Tích lũy sau đợt giảm\n"
+        "   ├ 🎯 /dipbuy  : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy : Tín hiệu mua chuẩn VCP + SMC\n"
         "   └ 🏢 /sectors : Dòng tiền Nhóm Ngành\n"
     )
@@ -698,7 +740,6 @@ if __name__ == "__main__":
 
     print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render!")
     
-    # Quan trọng: Thêm allowed_updates để đồng bộ dữ liệu chuẩn xác trên môi trường Cloud
     app.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES
