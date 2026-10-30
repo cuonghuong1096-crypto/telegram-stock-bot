@@ -96,10 +96,15 @@ def load_portfolios():
 USER_PORTFOLIOS = load_portfolios()
 
 # ==========================================
-# 1. HÀM CALL DATA ĐÃ NỚI LỎNG TIMEOUT AN TOÀN
+# 1. HÀM CALL DATA & GỘP KHUNG THỜI GIAN CHUẨN
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
+    
+    # Khung W và M lấy nguồn dữ liệu Daily 'D' từ API sau đó tự resample gộp nến chuẩn xác từ T2 đến T6
+    api_resolution = "60" if resolution == "60" else "D"
+    fetch_count = count * 7 if resolution in ["W", "M"] else count
+
     cache_key = f"{symbol}_{resolution}"
     now_ts = time.time()
 
@@ -109,9 +114,9 @@ def fetch_stock_data(symbol, resolution="D", count=150):
             return cached_df, cached_err
 
     end_time = int(now_ts)
-    start_time = end_time - (count * 86400 * 2)
+    start_time = end_time - (fetch_count * 86400 * 2)
 
-    tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={resolution if resolution=='60' else 'D'}&ticker={symbol}&from={start_time}&to={end_time}"
+    tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={api_resolution}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     
     try:
@@ -127,7 +132,7 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         pass
 
     if df_raw.empty:
-        url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={resolution if resolution=='60' else 'D'}&symbol={symbol}&from={start_time}&to={end_time}"
+        url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={api_resolution}&symbol={symbol}&from={start_time}&to={end_time}"
         try:
             headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://dchart.vndirect.com.vn/"}
             res = requests.get(url, headers=headers, timeout=4.5)
@@ -149,7 +154,24 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         return pd.DataFrame(), res_err
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
-    ret_df = df_raw.tail(count).reset_index(drop=True)
+    
+    # ⚙️ GỘP NẾN KHUNG TUẦN (W) VÀ KHUNG THÁNG (M)
+    if resolution in ["W", "M"]:
+        df_raw.set_index("time", inplace=True)
+        rule = "W-FRI" if resolution == "W" else "ME"
+        
+        agg_dict = {
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum"
+        }
+        df_resampled = df_raw.resample(rule).agg(agg_dict).dropna().reset_index()
+        ret_df = df_resampled.tail(count).reset_index(drop=True)
+    else:
+        ret_df = df_raw.tail(count).reset_index(drop=True)
+
     STOCK_DATA_CACHE[cache_key] = (ret_df, None, now_ts)
     return ret_df, None
 
@@ -251,7 +273,7 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM PHÂN TÍCH ĐÃ TÍCH HỢP 3 ĐIỂM MÙ THỰC CHIẾN
+# HÀM PHÂN TÍCH KỸ THUẬT & SMC
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
@@ -279,7 +301,6 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     poc, vah, val = calculate_volume_profile(df)
     
-    # 🛡️ CẢI TIẾN 1: Nới lỏng thông minh cho phép sát SMA200 (trong 3%) nếu CMF tốt
     is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
     is_downtrend_heavy = (close < sma200) and not (is_near_sma200 and cmf > 0.03)
 
@@ -303,7 +324,6 @@ def analyze_stock(symbol, resolution="D", count=200):
         score -= 20
         confluence_points.append(f"🚨 Dòng tiền rút ròng mạnh (CMF: {cmf:.2f})")
 
-    # Kích hoạt khiên chống Downtrend nặng
     if is_downtrend_heavy and cmf < 0:
         score = min(score, 40)
         confluence_points.append("🛡️ [Kích hoạt khiên chống Downtrend: Cấm bắt đáy]")
@@ -314,7 +334,6 @@ def analyze_stock(symbol, resolution="D", count=200):
     entry_2 = round(close, 2)
     entry_avg = (entry_1 + entry_2) / 2
     
-    # 🛡️ CẢI TIẾN 3: Đặt Stoploss chuẩn cấu trúc SMC (Dưới đáy thấp nhất 10 phiên gần nhất trừ đệm an toàn)
     recent_swing_low = df["Low"].tail(10).min()
     stop_loss = round(min(entry_avg * 0.93, recent_swing_low * 0.98), 2)
 
@@ -345,11 +364,13 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     text_part2 = f"⚡ <b>4. TÍN HIỆU HỘI TỤ:</b> {conf_str}\n🏁 <b>5. KẾT LUẬN:</b> {final_icon}"
 
+    # 🎛️ BẢNG ĐIỀU KHIỂN TÍCH HỢP ĐỦ 4 KHUNG THỜI GIAN
     keyboard = [
         [
             InlineKeyboardButton("⏱️ Khung 1H", callback_data=f"{symbol}|60|300"),
             InlineKeyboardButton("📅 Khung 1D", callback_data=f"{symbol}|D|200"),
-            InlineKeyboardButton("📈 Khung 1W", callback_data=f"{symbol}|W|150"),
+            InlineKeyboardButton("📈 Khung 1W", callback_data=f"{symbol}|W|100"),
+            InlineKeyboardButton("🗓️ Khung 1M", callback_data=f"{symbol}|M|50"),
         ],
         [
             InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy (/dipbuy)", callback_data="run_dipbuy_callback"),
@@ -388,7 +409,6 @@ def process_single_stock_for_autobuy(symbol):
         cmf_d = last_d.get("CMF", 0.0)
         rvol_d = last_d.get("RVOL", 1.0)
         
-        # 🛡️ CẢI TIẾN 1 & 2: Kiểm tra linh hoạt SMA200 và yêu cầu RVOL bứt phá thực tế (>= 1.3)
         is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
         if close < sma200 and not (is_near_sma200 and cmf_d > 0.03):
             return None
@@ -563,7 +583,7 @@ async def run_sector_flow_screener_with_progress(msg):
 
 
 # ==========================================
-# 4. HANDLERS VỚI TIẾN TRÌNH % ĐẦY ĐỦ CHO TẤT CẢ LỆNH
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
 # ==========================================
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
@@ -656,7 +676,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("⏱️ Khung 1H", callback_data=f"{text}|60|300"),
             InlineKeyboardButton("📅 Khung 1D", callback_data=f"{text}|D|200"),
-            InlineKeyboardButton("📈 Khung 1W", callback_data=f"{text}|W|150"),
+            InlineKeyboardButton("📈 Khung 1W", callback_data=f"{text}|W|100"),
+            InlineKeyboardButton("🗓️ Khung 1M", callback_data=f"{text}|M|50"),
         ],
     ]
     await update.message.reply_text(
@@ -724,7 +745,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 5. CẤU HÌNH SERVER & CHẠY BOT (ĐÃ FIX CHO RENDER)
+# 5. CẤU HÌNH SERVER & CHẠY BOT
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -737,7 +758,6 @@ def run_http_server():
     HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler).serve_forever()
 
 if __name__ == "__main__":
-    # Khởi chạy HTTP Server giữ port cho Render
     threading.Thread(target=run_http_server, daemon=True).start()
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
