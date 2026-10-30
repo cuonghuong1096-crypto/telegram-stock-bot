@@ -317,7 +317,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
 """
 
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",  # Đã cấu hình chuẩn model mới nhất trên Groq
+            model="openai/gpt-oss-120b",  # Đã thay thế sang model đang hoạt động trên tài khoản Groq của bạn
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=600
