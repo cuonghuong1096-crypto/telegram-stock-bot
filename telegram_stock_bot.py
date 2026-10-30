@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import requests
 import feedparser  # Thư viện phục vụ cào tin tức RSS
+from groq import Groq  # Thư viện gọi Groq AI phân tích tin tức
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -272,36 +273,61 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM CÀO TIN TỨC MỚI NHẤT QUA GOOGLE RSS
+# HÀM CÀO & PHÂN TÍCH TIN TỨC THÔNG MINH (GROQ AI)
 # ==========================================
 def get_latest_stock_news(symbol):
     symbol = symbol.upper().strip()
-    url = f"https://news.google.com/rss/search?q=cổ+phiếu+{symbol}+tin+mới+nhất&hl=vi&gl=VN&ceid=VN:vi"
+    url = f"https://news.google.com/rss/search?q=cổ+phiếu+{symbol}+when:7d&hl=vi&gl=VN&ceid=VN:vi"
     
     try:
         feed = feedparser.parse(url)
         if not feed.entries:
-            return f"⚠️ Hiện không tìm thấy bài báo mới nào về mã <b>{symbol}</b>."
+            return f"⚠️ Hiện không tìm thấy bài báo mới nào gần đây về mã <b>{symbol}</b>."
             
-        text = f"📰 <b>TIN TỨC MỚI NHẤT VỀ: {symbol}</b>\n====================================\n\n"
+        news_items = []
+        for entry in feed.entries[:5]:
+            news_items.append(f"- Tiêu đề: {entry.title} (Thời gian: {entry.get('published', 'Mới đây')})")
+            
+        raw_news_text = "\n".join(news_items)
+
+        groq_api_key = os.environ.get("GROQ_API_KEY")
         
-        count = 0
-        for entry in feed.entries[:3]:
-            title = entry.title
-            link = entry.link
-            published = entry.get("published", "Hôm nay")
+        if groq_api_key:
+            client = Groq(api_key=groq_api_key)
             
-            text += f"• <b>{html.escape(title)}</b>\n"
-            text += f"  🔗 <a href='{link}'>Đọc chi tiết bài gốc</a>\n"
-            text += f"  ⏱️ <i>{published}</i>\n\n"
-            count += 1
+            prompt = f"""
+Bạn là chuyên gia phân tích chứng khoán Việt Nam. Hãy đọc danh sách tin tức mới nhất về mã {symbol} dưới đây:
+{raw_news_text}
+
+Hãy tổng hợp ngắn gọn, rõ ràng thành đúng định dạng HTML Telegram như sau:
+
+🟢 <b>TIN TÍCH CỰC (TIN TỐT):</b>
+• (Ý chính 1)
+• (Ý chính 2 - nếu có)
+
+🔴 <b>TIN TIÊU CỰC / RỦI RO (TIN XẤU):</b>
+• (Ý chính 1)
+• (Ý chính 2 - nếu có)
+
+📌 <b>ĐÁNH GIÁ CHUNG:</b> (Tóm tắt 1 câu tác động ngắn hạn tới giá)
+
+Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiếng Việt, ngắn gọn, súc tích, không dông dài.
+"""
+
+            completion = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=600
+            )
             
-        if count == 0:
-            return f"⚠️ Không có thông tin mới cập nhật cho mã {symbol}."
-            
-        return text
+            ai_analysis = completion.choices[0].message.content
+            return f"📰 <b>TỔNG HỢP TIN TỨC: {symbol}</b>\n====================================\n\n" + ai_analysis
+        else:
+            return f"📰 <b>TIN TỨC THÔ {symbol}:</b>\n\n" + raw_news_text
+
     except Exception as e:
-        return f"❌ Lỗi khi tải tin tức: {html.escape(str(e))}"
+        return f"❌ Lỗi khi phân tích tin tức: {html.escape(str(e))}"
 
 # ==========================================
 # HÀM PHÂN TÍCH KỸ THUẬT & SMC
@@ -686,7 +712,7 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
-# Handler lệnh /tin <mã>
+# Handler lệnh /tin <mã> tích hợp Groq AI phân tích
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -694,7 +720,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     symbol = args[0].upper()
-    msg = await update.message.reply_text(f"⏳ Đang tổng hợp mặt báo mới nhất của <b>{symbol}</b>...", parse_mode="HTML")
+    msg = await update.message.reply_text(f"⏳ Groq AI đang phân tích tin tức mới nhất của <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
@@ -774,7 +800,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
-        "2️⃣ <b>CẬP NHẬT TIN TỨC:</b> Gửi lệnh <code>/tin VCG</code> để lấy tin mới nhất\n"
+        "2️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
         "3️⃣ <b>BỘ LỌC CHIẾN LƯỢC:</b>\n"
         "   ├ 🎯 /dipbuy  : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy : Tín hiệu mua chuẩn VCP + SMC\n"
@@ -819,12 +845,12 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
     app.add_handler(CommandHandler("sectors", sectors_command))
     app.add_handler(CommandHandler("nganh", sectors_command))
-    app.add_handler(CommandHandler("tin", news_command))  # Thêm lệnh /tin cào báo mới
+    app.add_handler(CommandHandler("tin", news_command))  # Lệnh cào và phân tích tin tức AI
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm mô đun Tin Tức!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm Groq AI News Analyzer!")
     
     app.run_polling(
         drop_pending_updates=True,
