@@ -646,9 +646,14 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    
     text = update.message.text.strip().upper()
-    if len(text) < 3 or len(text) > 5 or not text.isalnum():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, BSR, HT1)!")
+    
+    # Cho phép linh động mã từ 2 đến 6 ký tự (bắt tốt cả mã 3 ký tự như TCB, VHM,...)
+    if len(text) < 2 or len(text) > 6 or not text.isalnum():
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: TCB, VHM, BSR)!")
         return
 
     keyboard = [
@@ -658,11 +663,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📈 Khung 1W", callback_data=f"{text}|W|150"),
         ],
     ]
-    await update.message.reply_text(
-        f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="HTML"
-    )
+    
+    try:
+        await update.message.reply_text(
+            f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"Lỗi phản hồi tin nhắn: {e}")
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
