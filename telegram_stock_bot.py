@@ -101,7 +101,6 @@ USER_PORTFOLIOS = load_portfolios()
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
     
-    # Khung W và M lấy nguồn dữ liệu Daily 'D' từ API sau đó tự resample gộp nến chuẩn xác từ T2 đến T6
     api_resolution = "60" if resolution == "60" else "D"
     fetch_count = count * 7 if resolution in ["W", "M"] else count
 
@@ -155,7 +154,6 @@ def fetch_stock_data(symbol, resolution="D", count=150):
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
     
-    # ⚙️ GỘP NẾN KHUNG TUẦN (W) VÀ KHUNG THÁNG (M)
     if resolution in ["W", "M"]:
         df_raw.set_index("time", inplace=True)
         rule = "W-FRI" if resolution == "W" else "ME"
@@ -364,19 +362,19 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     text_part2 = f"⚡ <b>4. TÍN HIỆU HỘI TỤ:</b> {conf_str}\n🏁 <b>5. KẾT LUẬN:</b> {final_icon}"
 
-    # 🎛️ BẢNG ĐIỀU KHIỂN TÍCH HỢP ĐỦ 4 KHUNG THỜI GIAN
+    # 🎛️ BẢNG ĐIỀU KHIỂN TỐI ƯU NHÃN NGẮN GỌN (CHỐNG TRÀN CHỮ)
     keyboard = [
         [
-            InlineKeyboardButton("⏱️ Khung 1H", callback_data=f"{symbol}|60|300"),
-            InlineKeyboardButton("📅 Khung 1D", callback_data=f"{symbol}|D|200"),
-            InlineKeyboardButton("📈 Khung 1W", callback_data=f"{symbol}|W|100"),
-            InlineKeyboardButton("🗓️ Khung 1M", callback_data=f"{symbol}|M|50"),
+            InlineKeyboardButton("⏱️ 1H", callback_data=f"{symbol}|60|300"),
+            InlineKeyboardButton("📅 1D", callback_data=f"{symbol}|D|200"),
+            InlineKeyboardButton("📈 1W", callback_data=f"{symbol}|W|100"),
+            InlineKeyboardButton("🗓️ 1M", callback_data=f"{symbol}|M|50"),
         ],
         [
-            InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy (/dipbuy)", callback_data="run_dipbuy_callback"),
-            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy (/autobuy)", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy", callback_data="run_dipbuy_callback"),
+            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
         ],
-        [InlineKeyboardButton("🏢 Dòng Tiền Ngành (/sectors)", callback_data="run_sectors_callback")]
+        [InlineKeyboardButton("🏢 Dòng Tiền Ngành", callback_data="run_sectors_callback")]
     ]
 
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
@@ -674,10 +672,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [
-            InlineKeyboardButton("⏱️ Khung 1H", callback_data=f"{text}|60|300"),
-            InlineKeyboardButton("📅 Khung 1D", callback_data=f"{text}|D|200"),
-            InlineKeyboardButton("📈 Khung 1W", callback_data=f"{text}|W|100"),
-            InlineKeyboardButton("🗓️ Khung 1M", callback_data=f"{text}|M|50"),
+            InlineKeyboardButton("⏱️ 1H", callback_data=f"{text}|60|300"),
+            InlineKeyboardButton("📅 1D", callback_data=f"{text}|D|200"),
+            InlineKeyboardButton("📈 1W", callback_data=f"{text}|W|100"),
+            InlineKeyboardButton("🗓️ 1M", callback_data=f"{text}|M|50"),
         ],
     ]
     await update.message.reply_text(
@@ -745,7 +743,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 5. CẤU HÌNH SERVER & CHẠY BOT
+# 5. CẤU HÌNH SERVER, SELF-PING & CHẠY BOT
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -757,8 +755,24 @@ def run_http_server():
     port = int(os.environ.get("PORT", 8080))
     HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler).serve_forever()
 
+def self_ping_thread():
+    """Luồng ngầm tự gọi API chính mình mỗi 3 giây để chống Render ngủ đông (Sleep Mode)"""
+    app_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not app_url:
+        return
+    while True:
+        time.sleep(3)
+        try:
+            requests.get(app_url, timeout=5)
+        except Exception:
+            pass
+
 if __name__ == "__main__":
+    # Khởi chạy HTTP Server cho Render
     threading.Thread(target=run_http_server, daemon=True).start()
+    
+    # Khởi chạy luồng Self-Ping đánh thức bot mỗi 3 giây
+    threading.Thread(target=self_ping_thread, daemon=True).start()
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
