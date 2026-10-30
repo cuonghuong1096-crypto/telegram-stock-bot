@@ -33,6 +33,7 @@ TCBS_API_KEY = os.environ.get(
     "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
 )
 GOOGLE_SHEET_API_URL = os.environ.get("GOOGLE_SHEET_API_URL", "")
+DEFAULT_NAV_VND = 500_000_000  # Vốn tài khoản tham chiếu (500 triệu VNĐ) cho quản trị rủi ro 1% NAV
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -80,7 +81,6 @@ USER_PORTFOLIOS = {}
 # QUẢN LÝ LƯU TRỮ CHUẨN HOÁ
 # ==========================================
 def load_portfolios():
-    """Tải danh mục và danh sách Chat ID chủ động từ Google Sheet khi bot khởi động"""
     global ACTIVE_CHAT_IDS
     if not GOOGLE_SHEET_API_URL:
         logging.warning("Chưa cấu hình GOOGLE_SHEET_API_URL!")
@@ -123,7 +123,6 @@ def load_portfolios():
     return {}
 
 def save_portfolios_async():
-    """Lưu không bất đồng bộ (Background Thread) để tránh gây trễ Bot"""
     def _save():
         if not GOOGLE_SHEET_API_URL:
             return
@@ -288,7 +287,6 @@ def calculate_indicators(df):
 
     df["Price_Range_Pct"] = (df["High"].rolling(10).max() - df["Low"].rolling(10).min()) / df["Close"]
 
-    # THUẬT TOÁN PIVOT DIVERGENCE QUAN SÁT 15 PHIÊN
     lookback = 15
     curr_close = df["Close"].iloc[-1]
     curr_rsi = df["RSI"].iloc[-1]
@@ -351,8 +349,88 @@ def calculate_indicators(df):
     return df
 
 
+# ==========================================
+# THUẬT TOÁN BỔ SUNG: SMART MONEY CONCEPTS (SMC) & QUẢN TRỊ 1% NAV
+# ==========================================
+def calculate_smc_structures(df):
+    """
+    TÍNH TOÁN CẤU TRÚC PHẦN 2: SMART MONEY CONCEPTS (SMC)
+    - Order Block (OB): Vùng cản / hỗ trợ của cá mập
+    - Fair Value Gap (FVG): Khoảng trống thanh khoản chưa lấp
+    - Liquidity Sweep: Quét sạch Stop-loss đáy cũ
+    """
+    if df.empty or len(df) < 30:
+        return {"has_ob": False, "ob_price": 0, "has_fvg": False, "fvg_low": 0, "fvg_high": 0, "has_liquidity_sweep": False}
+
+    last_idx = len(df) - 1
+    curr_close = df["Close"].iloc[-1]
+
+    # 1. Quét Fair Value Gap (FVG Tăng giá) trong 5 nến gần nhất
+    has_fvg = False
+    fvg_low, fvg_high = 0.0, 0.0
+    for i in range(last_idx - 4, last_idx):
+        if i >= 2:
+            high_i_minus_2 = df["High"].iloc[i - 2]
+            low_i = df["Low"].iloc[i]
+            if low_i > high_i_minus_2 * 1.005:  # Khoảng trống giá rõ rệt > 0.5%
+                has_fvg = True
+                fvg_low, fvg_high = high_i_minus_2, low_i
+                break
+
+    # 2. Tìm Bullish Order Block (OB) gần nhất (Nến giảm cuối cùng trước đà bùng nổ)
+    has_ob = False
+    ob_price = 0.0
+    for i in range(last_idx - 10, last_idx - 2):
+        if df["Close"].iloc[i] < df["Open"].iloc[i]:  # Nến đỏ
+            if df["Close"].iloc[i + 1] > df["High"].iloc[i] and df["Volume"].iloc[i + 1] > df["Vol_SMA20"].iloc[i + 1]:
+                has_ob = True
+                ob_price = df["Low"].iloc[i]
+                break
+
+    # 3. Liquidity Sweep (Bẫy quét Stop-loss đáy cũ - Quét Thanh khoản)
+    recent_low_10 = df["Low"].iloc[-15:-3].min()
+    curr_low = df["Low"].iloc[-1]
+    has_liquidity_sweep = (curr_low < recent_low_10) and (curr_close > recent_low_10)
+
+    return {
+        "has_ob": has_ob,
+        "ob_price": round(ob_price, 2),
+        "has_fvg": has_fvg,
+        "fvg_low": round(fvg_low, 2),
+        "fvg_high": round(fvg_high, 2),
+        "has_liquidity_sweep": has_liquidity_sweep
+    }
+
+
+def calculate_position_size_1pct(entry_price, stop_loss_price, total_nav_vnd=DEFAULT_NAV_VND, risk_pct=0.01):
+    """
+    TÍNH TOÁN PHẦN 3: QUẢN TRỊ RỦI RO & KHỐI LƯỢNG MUA DỰA TRÊN 1% NAV
+    Công thức: Qty = (NAV * 1%) / (Entry - StopLoss)
+    Làm tròn xuống bội số 100 cổ phiếu chuẩn HOSE/HNX.
+    """
+    if entry_price <= stop_loss_price or entry_price <= 0:
+        return 1000, 0.0
+
+    risk_amount_vnd = total_nav_vnd * risk_pct  # Tiền rủi ro tối đa cho phép mất
+    risk_per_share_vnd = (entry_price - stop_loss_price) * 1000  # Rủi ro trên 1 cổ phiếu (đơn vị nghìn đồng -> VNĐ)
+
+    if risk_per_share_vnd <= 0:
+        return 1000, 0.0
+
+    raw_qty = risk_amount_vnd / risk_per_share_vnd
+    suggested_qty = int(raw_qty // 100) * 100  # Làm tròn xuống lô 100 cổ
+
+    max_capital_per_trade = total_nav_vnd * 0.30
+    if (suggested_qty * entry_price * 1000) > max_capital_per_trade:
+        suggested_qty = int((max_capital_per_trade / (entry_price * 1000)) // 100) * 100
+
+    suggested_qty = max(suggested_qty, 100)
+    actual_risk_pct_nav = ((suggested_qty * (entry_price - stop_loss_price) * 1000) / total_nav_vnd) * 100
+
+    return suggested_qty, round(actual_risk_pct_nav, 2)
+
+
 def calculate_volume_profile(df, bins=25):
-    """Tính Volume Profile chuẩn với Value Area 70%"""
     if df.empty or len(df) < 30:
         return 0, 0, 0
     sub_df = df.tail(60)
@@ -388,10 +466,6 @@ def calculate_volume_profile(df, bins=25):
 
 
 def check_vnindex_health():
-    """
-    NÂNG CẤP BỘ LỌC ĐỘ RỘNG THỊ TRƯỜNG & CHỐNG BẪY XANH VỎ ĐỎ LÒNG (DÙNG CHO TRỤ KÉO VIC, VHM, VCB...)
-    """
-    # 1. Đo độ rộng thực tế từ Watchlist (Mẫu 20 mã)
     sample_watchlist = WATCHLIST_SCAN[:20]
     advancing_count, total_checked = 0, 0
     
@@ -412,7 +486,6 @@ def check_vnindex_health():
 
     breadth_ratio = (advancing_count / total_checked) if total_checked > 0 else 0.5
 
-    # 2. Kiểm tra chỉ số VN-Index
     df, err = fetch_stock_data("VNINDEX", resolution="D", count=60)
     if err or df.empty:
         df, err = fetch_stock_data("1000", resolution="D", count=60)
@@ -426,9 +499,8 @@ def check_vnindex_health():
     ema50 = last.get("EMA50", close)
     macd_hist = last.get("MACD_Hist", 0)
 
-    # 3. Kết hợp chỉ số & Độ rộng thực tế
     if close > ema20 and ema20 > ema50 and macd_hist > 0:
-        if breadth_ratio < 0.35: # Bẫy Trụ kéo Xanh vỏ đỏ lòng
+        if breadth_ratio < 0.35:
             return {
                 "status": "FAKE_BULLISH_TRAP",
                 "score_modifier": 0.65,
@@ -531,7 +603,6 @@ def analyze_multi_timeframe_poc(symbol):
 
 
 def calculate_vcp_tightness(df_d):
-    """Kiểm tra mô hình thu hẹp biến độ VCP trong 3 chu kỳ ngắn hạn"""
     if len(df_d) < 20:
         return False, 1.0
     
@@ -545,7 +616,6 @@ def calculate_vcp_tightness(df_d):
 
 
 def calculate_relative_strength(df_stock, df_vnindex):
-    """Tính Sức mạnh tương đối RS (Cổ phiếu vs VN-Index) trong 15 phiên"""
     if df_stock.empty or df_vnindex.empty or len(df_stock) < 15 or len(df_vnindex) < 15:
         return 1.0
     stock_perf = (df_stock["Close"].iloc[-1] - df_stock["Close"].iloc[-15]) / df_stock["Close"].iloc[-15]
@@ -554,11 +624,6 @@ def calculate_relative_strength(df_stock, df_vnindex):
 
 
 def check_advanced_filters(df_d, last, symbol):
-    """
-    BỘ LỌC CHUYÊN GIA TOP 5%:
-    1. Tránh mua đuổi Gap-Up hưng phấn đầu phiên (> 2.5%)
-    2. Đo độ nén biến động 5 phiên (Volatility Compression)
-    """
     if len(df_d) < 30:
         return False, 0
 
@@ -566,12 +631,10 @@ def check_advanced_filters(df_d, last, symbol):
     open_price = last["Open"]
     prev_close = df_d["Close"].iloc[-2]
     
-    # Lọc chống bẫy hưng phấn (Gap-Up Trap)
     gap_pct = ((open_price - prev_close) / prev_close) * 100
     if gap_pct > 2.5:
         return False, -50
 
-    # Độ nén biến động 5 phiên
     recent_ranges = (df_d["High"].tail(5) - df_d["Low"].tail(5)) / df_d["Close"].tail(5)
     avg_compression = recent_ranges.mean()
     
@@ -606,12 +669,14 @@ def analyze_stock(symbol, resolution="D", count=250):
     macd_hist = last.get("MACD_Hist", 0.0)
     bb_upper = last.get("BB_Upper", close)
     bb_lower = last.get("BB_Lower", close)
-    bb_width = last.get("BB_Width", 0.1)
 
     is_bb_squeeze = last.get("BB_Squeeze", False)
     is_rsi_bear_div = last.get("RSI_Bearish_Divergence", False)
     is_rsi_bull_div = last.get("RSI_Bullish_Divergence", False)
     is_out_bb = close > bb_upper
+
+    # Phân tích SMC & Quản trị rủi ro 1% NAV
+    smc = calculate_smc_structures(df)
 
     tenkan = last.get("Tenkan_sen", close)
     kijun = last.get("Kijun_sen", close)
@@ -643,105 +708,77 @@ def analyze_stock(symbol, resolution="D", count=250):
     else:
         risk_warnings.append("Giá nằm dưới mây Kumo (Rủi ro cao)")
 
-    if adx < 20:
-        score -= 10
-        risk_warnings.append(f"Thị trường đi ngang / thiếu xu hướng (ADX: {adx:.1f} < 20)")
-    elif adx > 25:
+    # Bổ sung điểm cộng từ SMC
+    if smc["has_ob"]:
+        score += 10
+        confluence_points.append(f"🔥 [SMC - Order Block]: Đã thiết lập vùng OB hỗ trợ tại `{fmt(smc['ob_price'])}`")
+    if smc["has_fvg"]:
+        score += 10
+        confluence_points.append(f"⚡ [SMC - Fair Value Gap]: Xuất hiện khoảng trống FVG `{fmt(smc['fvg_low'])} - {fmt(smc['fvg_high'])}`")
+    if smc["has_liquidity_sweep"]:
+        score += 15
+        confluence_points.append("🎯 [SMC - Liquidity Sweep]: Vừa quét thanh khoản rút chân đảo chiều mạnh mẽ")
+
+    if adx > 25:
         score += 15
         confluence_points.append(f"Xu hướng mạnh được xác nhận (ADX: {adx:.1f})")
 
     if cmf > 0.05 and mfi > 50:
         score += 20
         confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) & MFI ({mfi:.1f}) đồng thuận")
-    elif rvol > 1.5 and cmf < 0:
-        score -= 15
-        risk_warnings.append(f"Cảnh báo Dòng tiền đầu cơ: RVOL cao ({rvol:.2f}x) nhưng CMF âm ({cmf:.2f})")
 
     if is_bb_squeeze:
         score += 10
-        confluence_points.append("⚡ [SIẾT CHẶT BB]: Dải Bollinger siết hẹp, chuẩn bị bùng nổ xu hướng")
-    if is_rsi_bull_div:
-        score += 15
-        confluence_points.append("🎯 [PHÂN KỲ DƯƠNG RSI]: Tín hiệu tóm đáy / Đảo chiều tăng giá")
+        confluence_points.append("⚡ [SIẾT CHẶT BB]: Dải Bollinger siết hẹp, chuẩn bị bùng nổ")
 
     is_bull_trap = (rsi < 40 and stoch_rsi > 80)
-    is_bear_trap = (rsi > 65 and stoch_rsi < 20)
-    is_exhaustion_trap = (lr_slope > 0 and macd_hist < 0)
     is_overbought_full = (stoch_rsi > 90 and rsi > 70)
 
     trap_list = []
-    if is_bull_trap:
-        score -= 25
-        trap_list.append("⚡ [BẪY TĂNG GIẢ - BULL TRAP]: Kéo giá ảo, xung lực suy yếu.")
-    if is_bear_trap:
-        score += 10
-        trap_list.append("⚡ [BẪY GIẢM GIẢ - BEAR TRAP]: Nhịp đạp rũ bỏ kỹ thuật.")
-    if is_exhaustion_trap:
-        score -= 10
-        trap_list.append("⚠️ [BẪY KIỆT SỨC]: Giá rướn tăng nhưng Histogram MACD suy yếu.")
-    if is_overbought_full:
-        score -= 15
-        trap_list.append("⚠️ [QUÁ MUA TOÀN DIỆN]: Rủi ro hưng phấn cực độ.")
-    if is_rsi_bear_div:
-        score -= 20
-        trap_list.append("⚠️ [PHÂN KỲ ÂM RSI]: Rủi ro đảo chiều cao.")
-    if is_out_bb:
-        score -= 10
-        trap_list.append("⚠️ [VƯỢT BOLUNGER TOP]: Rủi ro điều chỉnh kỹ thuật.")
+    if is_bull_trap: score -= 25; trap_list.append("⚡ [BẪY TĂNG GIẢ - BULL TRAP]: Kéo giá ảo.")
+    if is_rsi_bear_div: score -= 20; trap_list.append("⚠️ [PHÂN KỲ ÂM RSI]: Rủi ro đảo chiều cao.")
+    if is_out_bb: score -= 10; trap_list.append("⚠️ [VƯỢT BOLUNGER TOP]: Rủi ro điều chỉnh kỹ thuật.")
 
-    if not trap_list:
-        trap_list.append("🛡️ Không phát hiện cấu trúc bẫy giá nguy hiểm đáng kể.")
-
-    if close > sma200: score += 15
-    if macd_hist > 0: score += 15
+    if not trap_list: trap_list.append("🛡️ Không phát hiện bẫy giá nguy hiểm.")
 
     mkt_health = check_vnindex_health()
     score = score * mkt_health["score_modifier"]
     confidence_score = min(max(int(score), 10), 88)
 
-    is_below_val = (close < val)
-    zone_desc = f"Vùng **{fmt(val)} - {fmt(vah)}** (Dưới VAL): KHÁNG CỰ MẠNH." if is_below_val else f"Vùng **{fmt(val)} - {fmt(vah)}**: Vùng tích lũy an toàn."
+    entry_1 = round(max(val, last.get("EMA20", close), close * 0.98), 2)
+    entry_2 = round(close, 2)
+    entry_avg = (entry_1 + entry_2) / 2
+    stop_loss = round(entry_avg - (1.5 * atr), 2)
 
-    if confidence_score >= 65 and not is_below_val and close > cloud_bottom and not is_overbought_full and not is_bull_trap and not is_rsi_bear_div:
+    # Tính toán Quản trị vốn 1% NAV
+    sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
+
+    if confidence_score >= 65 and close > cloud_bottom and not is_bull_trap and not is_rsi_bear_div:
         system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
-        nav_rec = "25 - 35% NAV"
-        final_icon = f"🟢 **NÊN MUA / GIA TĂNG TỶ TRỌNG (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Các chỉ báo đồng thuận ủng hộ đà tăng ({mkt_health['note']}). Ưu tiên gom quanh hỗ trợ `{fmt(val)} - {fmt(poc)}`."
-        entry_1 = round(max(val, last.get("EMA20", close), close * 0.98), 2)
-        entry_2 = round(close, 2)
-        stop_loss = round(((entry_1 + entry_2) / 2) - (1.5 * atr), 2)
-        action_note = f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, Stoploss ATR tại `{fmt(stop_loss)}`."
-    elif confidence_score >= 45 and not is_bull_trap and cmf >= -0.2:
-        system_status = "QUAN SÁT / THẬN TRỌNG RUNG LẮC"
-        nav_rec = "10 - 15% NAV (Thăm dò)"
-        final_icon = f"🟡 **GIAO DỊCH THĂM DÒ / QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Kiên nhẫn chờ chiết khấu an toàn hoặc test đường Kijun-sen (`{fmt(kijun)}`)."
-        entry_1, entry_2 = round(close * 0.97, 2), round(close, 2)
-        stop_loss = round(((entry_1 + entry_2) / 2) - (1.5 * atr), 2)
-        action_note = f"Thăm dò tỷ trọng nhỏ quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, Stoploss tại `{fmt(stop_loss)}`."
+        final_icon = f"🟢 **NÊN MUA (Độ tin cậy: {confidence_score}%)**"
+        action_note = f"Giải ngân quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, Khuyến nghị mua: `{sug_qty:,} cổ` (Rủi ro: `{risk_nav_pct}% NAV`), Stoploss tại `{fmt(stop_loss)}`."
+    elif confidence_score >= 45 and not is_bull_trap:
+        system_status = "THĂM DÒ / QUAN SÁT"
+        final_icon = f"🟡 **THĂM DÒ / QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
+        action_note = f"Thăm dò nhỏ quanh mức `{fmt(entry_1)} - {fmt(entry_2)}`, Mua test: `{int(sug_qty*0.5):,} cổ`, Stoploss tại `{fmt(stop_loss)}`."
     else:
-        system_status = "ĐỨNG NGOÀI (BẢO TOÀN VỐN)"
-        nav_rec = "0% (Giữ tiền mặt)"
-        final_icon = f"🔴 **ĐỨNG NGOÀI QUAN SÁT (Độ tin cậy: {confidence_score}%)**"
-        final_action = f"Thị trường/Mã cổ phiếu đối mặt rủi ro. Đứng ngoài bảo toàn vốn."
-        stop_loss = round(close - (1.5 * atr), 2)
+        system_status = "ĐỨNG NGOÀI"
+        final_icon = f"🔴 **ĐỨNG NGOÀI (Độ tin cậy: {confidence_score}%)**"
         action_note = f"Tuyệt đối không giải ngân mua mới. Stoploss tham chiếu: `{fmt(stop_loss)}`."
 
-    conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ mạnh"
-    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo rủi ro nghiêm trọng"
+    conf_str = "; ".join(confluence_points) if confluence_points else "Chưa có tín hiệu hội tụ"
+    warn_str = "; ".join(risk_warnings) if risk_warnings else "Không có cảnh báo nghiêm trọng"
 
-    text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}\n"
+    text_part1 = f"📊 BÁO CÁO PHÂN TÍCH KỸ THUẬT & SMC: {symbol.upper()}\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá hiện tại: {fmt(close)}\n"
     text_part1 += f"🏛️ Trạng thái VN-Index: **{mkt_health['note']}**\n\n"
-    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN (MA & MACD):\n• Xu hướng: {long_term_trend}\n• ADX: `{adx:.1f}` | CMF: {cmf:.2f} | MFI: {mfi:.1f} | RVOL: {rvol:.2f}x\n\n"
-    text_part1 += f"☁️ 2. ICHIMOKU & ĐỘNG LƯỢNG:\n• Mây: {ichi_status}\n• RSI: {rsi:.1f} | StochRSI: {stoch_rsi:.1f}\n\n"
-    text_part1 += f"📊 3. VOLUME PROFILE:\n• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n• {zone_desc}\n\n"
-    text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & NAV:\n• Khuyến nghị: {system_status} | NAV: {nav_rec}\n• {action_note}\n\n"
+    text_part1 += f"🌐 1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:\n• Xu hướng: {long_term_trend}\n• ADX: `{adx:.1f}` | CMF: {cmf:.2f} | RVOL: {rvol:.2f}x\n\n"
+    text_part1 += f"🏛️ 2. CẤU TRÚC NỀN GIÁ DÒNG TIỀN LỚN (SMC):\n• Order Block (OB): `{'🟢 Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else '🔴 Chưa có'}`\n• FVG Imbalance: `{'🟢 Có' if smc['has_fvg'] else '🔴 Không'}` | Liquidity Sweep: `{'🔥 Có Rút Chân' if smc['has_liquidity_sweep'] else '🔴 Không'}`\n\n"
+    text_part1 += f"📊 3. VOLUME PROFILE & PIVOT:\n• POC: {fmt(poc)} | VAL: {fmt(val)} | VAH: {fmt(vah)}\n\n"
+    text_part1 += f"🎯 4. QUẢN TRỊ RỦI RO & QUẢN LÝ VỐN 1% NAV:\n• Khuyến nghị: {system_status}\n• {action_note}\n\n"
 
-    text_part2 = f"⚡ 5. NHẬN DIỆN BẪY GIÁ & PHÂN KỲ:\n• {' | '.join(trap_list)}\n\n"
-    text_part2 += f"⚡ 6. ĐIỂM CỘNG & CẢNH BÁO:\n• Điểm cộng: {conf_str}\n• Cảnh báo: {warn_str}\n\n"
-    text_part2 += f"📈 7. BOLINGER BANDS & SQUEEZE:\n• Dải trên: {fmt(bb_upper)} | Dưới: {fmt(bb_lower)} | Squeeze: {'🟢 Có' if is_bb_squeeze else '🔴 Không'}\n\n"
-    text_part2 += f"🏁 8. TỔNG KẾT CHIẾN LƯỢC:\n• {final_icon}\n• {final_action}"
+    text_part2 = f"⚡ 5. BẪY GIÁ & ĐIỂM HỘI TỤ:\n• Bẫy giá: {' | '.join(trap_list)}\n• Điểm cộng SMC/VSA: {conf_str}\n• Cảnh báo: {warn_str}\n\n"
+    text_part2 += f"🏁 6. TỔNG KẾT CHIẾN LƯỢC:\n• {final_icon}"
 
     keyboard = [
         [
@@ -769,7 +806,7 @@ def analyze_stock(symbol, resolution="D", count=250):
     ax.plot(df["time"], df["Tenkan_sen"], label="Tenkan", color="blue", linestyle="--", alpha=0.5)
     ax.plot(df["time"], df["Kijun_sen"], label="Kijun", color="orange", linestyle="--", alpha=0.5)
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
-    ax.set_title(f"Phân Tích Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold")
+    ax.set_title(f"Phân Tích Kỹ Thuật & SMC - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -1000,7 +1037,7 @@ def run_hourly_cashflow_screener():
 
 
 # ==========================================
-# 4. TẦNG 5: AUTOBUY PHỄU LỌC TỐI ƯU
+# 4. TẦNG 5: AUTOBUY PHỄU LỌC TỐI ƯU SỬ DỤNG VSA + SMC + 1% NAV
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
@@ -1019,10 +1056,13 @@ def process_single_stock_for_autobuy(symbol):
         last_d = df_d.iloc[-1]
         if not check_liquidity_and_base(df_d, last_d): return None
 
-        # TÍCH HỢP BỘ LỌC CHUYÊN GIA (CHỐNG GAP-UP & TIGHTNESS)
+        # BỘ LỌC CHUYÊN GIA (CHỐNG GAP-UP & TIGHTNESS)
         is_pass_adv, adv_bonus = check_advanced_filters(df_d, last_d, symbol)
         if not is_pass_adv:
             return None
+
+        # TÍNH TOÁN SMC (PART 2)
+        smc = calculate_smc_structures(df_d)
 
         cmf_h, rvol_h = 0.0, 1.0
         if not err_h and not df_h.empty and len(df_h) >= 20:
@@ -1047,6 +1087,9 @@ def process_single_stock_for_autobuy(symbol):
         risk, reward = entry_price - stop_loss, target_price - entry_price
         rr_ratio = reward / (risk + 1e-9)
 
+        # TÍNH KHỐI LƯỢNG MUA THEO 1% NAV (PART 3)
+        suggested_qty, actual_risk_pct = calculate_position_size_1pct(entry_price, stop_loss)
+
         score = 50 + adv_bonus
         cloud_top = max(last_d.get("Senkou_Span_A", close), last_d.get("Senkou_Span_B", close))
         cloud_bottom = min(last_d.get("Senkou_Span_A", close), last_d.get("Senkou_Span_B", close))
@@ -1055,16 +1098,18 @@ def process_single_stock_for_autobuy(symbol):
         elif close >= cloud_bottom: score += 5
         else: score -= 25
 
-        if cmf_d > 0.03 and cmf_h > 0.01: score += 20
-        elif cmf_d > 0: score += 10
-        elif cmf_h < -0.10: score -= 20
+        # Bổ sung điểm cộng từ cấu trúc SMC
+        if smc["has_ob"]: score += 10
+        if smc["has_fvg"]: score += 10
+        if smc["has_liquidity_sweep"]: score += 15
+
+        if cmf_d > 0.03 and cmf_h > 0.01: score += 15
+        elif cmf_d > 0: score += 5
 
         if rs_rating > 0.05: score += 15
         if is_vcp: score += 15
         if rvol_d >= 1.15: score += 10
         if macd_hist_d > 0: score += 10
-        if is_bb_squeeze: score += 10
-        if get_foreign_trading_flow(symbol): score += 10
 
         is_wave_ok, wave_info = analyze_multi_timeframe_poc(symbol)
         score += wave_info.get("score_bonus", 0)
@@ -1080,14 +1125,13 @@ def process_single_stock_for_autobuy(symbol):
         if is_overbought_bb: score -= 20
 
         score = int(score * mkt_health["score_modifier"])
-        atr_pct = (atr / close) * 100
-        suggested_nav = "30 - 35% NAV" if (atr_pct <= 2.5 and is_vcp) else ("20 - 25% NAV" if atr_pct <= 4.0 else "10 - 15% NAV")
 
         if (score >= 68 and cmf_d > -0.05 and cmf_h > -0.05 and close >= cloud_bottom and not is_bull_trap and not is_rsi_bear_div and not is_overbought_bb and is_wave_ok and rr_ratio >= 1.25):
             return {
                 "symbol": symbol, "close": close, "score": min(score, 99), "cmf": cmf_d, "cmf_h": cmf_h,
                 "rvol": rvol_d, "rs_rating": round(rs_rating * 100, 1), "is_vcp": is_vcp, "rr_ratio": round(rr_ratio, 2),
-                "entry": entry_price, "stop_loss": stop_loss, "target": target_price, "suggested_nav": suggested_nav
+                "entry": entry_price, "stop_loss": stop_loss, "target": target_price,
+                "suggested_qty": suggested_qty, "actual_risk_pct": actual_risk_pct, "smc": smc
             }
     except Exception:
         pass
@@ -1229,25 +1273,25 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ACTIVE_CHAT_IDS.add(chat_id)
     save_portfolios_async()
     welcome_text = (
-        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM (PRO 5%)!**\n\n"
+        "👋 **CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!**\n\n"
         "1️⃣ **TRA CỨU NHANH:**\n"
         "   └ Gửi mã cổ phiếu bất kỳ (VD: `VHM`, `BSR`, `HPG`)\n\n"
-        "2️⃣ **🎯 BỘ LỌC THEO PHONG CÁCH ĐÁNH (VSA & QUANT):**\n"
-        "   ├ 🔥 `/breakout`: Lướt sóng Breakout - Đóng đỉnh, RVOL >= 2.0x\n"
-        "   ├ 🚀 `/demand`  : Bùng nổ Dòng tiền - Xác nhận cầu chủ động mạnh\n"
-        "   ├ 🔍 `/testcung`: Gom Nền Cạn Cung - Thanh khoản kiệt (No-Supply)\n"
-        "   ├ 🔄 `/shakeout`: Săn Nến Rút Chân - Bắt nhịp rũ bỏ Bear Trap\n"
-        "   └ 🤖 `/autobuy` : Mua Tối Ưu Tầng 5 - Điểm mua VCP & RS an toàn nhất\n\n"
+        "2️⃣ **🎯 BỘ LỌC CHIẾN LƯỢC (VSA + SMC + 1% NAV):**\n"
+        "   ├ 🔥 `/breakout`: Lướt sóng Breakout - RVOL >= 2.0x\n"
+        "   ├ 🚀 `/demand`  : Bùng nổ Dòng tiền Demand\n"
+        "   ├ 🔍 `/testcung`: Gom Nền Cạn Cung (No-Supply)\n"
+        "   ├ 🔄 `/shakeout`: Săn Nến Rút Chân (Liquidity Sweep)\n"
+        "   └ 🤖 `/autobuy` : Mua Tối Ưu Tầng 5 - Điểm mua VCP & SMC (Quản trị 1% NAV)\n\n"
         "3️⃣ **📊 BỘ LỌC DÒNG TIỀN & CƠ BẢN:**\n"
-        "   ├ 🟢 `/scan`    : Quét tích lũy nền & dòng tiền toàn thị trường\n"
-        "   ├ 🏢 `/sectors` : Dòng tiền Nhóm Ngành - Tìm ngành dẫn dắt\n"
-        "   └ 🛡️ `/safety`  : Đầu tư Giá trị - Biên An Toàn (P/E & ROE)\n\n"
+        "   ├ 🟢 `/scan`    : Quét tích lũy toàn thị trường\n"
+        "   ├ 🏢 `/sectors` : Dòng tiền Nhóm Ngành\n"
+        "   └ 🛡️ `/safety`  : Đầu tư Giá trị (P/E & ROE)\n\n"
         "4️⃣ **⚙️ CÀI ĐẶT CANH MUA / STOP LOSS:**\n"
         "   ├ `/setbuy BSR 29.4 28.5 1000` : Cài mốc canh mua\n"
         "   ├ `/setstop BSR 27.9`          : Cài mốc Stoploss\n"
         "   └ `/trail BSR`                 : Trailing Stop khóa lãi\n\n"
         "5️⃣ **📂 QUẢN LÝ DANH MỤC & BACKTEST:**\n"
-        "   ├ `/portfolio` : Xem danh mục & Lãi/Lỗ Real-time\n"
+        "   ├ `/portfolio` : Xem danh mục Real-time\n"
         "   ├ `/listall`   : Cài đặt toàn bộ mốc theo dõi\n"
         "   ├ `/reset <MÃ>`: Xóa mốc theo dõi (`/reset ALL` để xóa hết)\n"
         "   └ `/backtest <MÃ>`: Backtest hiệu suất chiến lược"
@@ -1258,19 +1302,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ACTIVE_CHAT_IDS.add(chat_id)
-    msg = await (update.message.reply_text("🤖 **Đang kích hoạt radar AI quét siêu tốc điểm mua VCP & RS...** ⚡") if update.message else update.callback_query.message.reply_text("🤖 **Đang kích hoạt radar AI quét siêu tốc điểm mua VCP & RS...** ⚡"))
+    msg = await (update.message.reply_text("🤖 **Đang kích hoạt AI quét điểm mua VSA + SMC & Quản trị 1% NAV...** ⚡") if update.message else update.callback_query.message.reply_text("🤖 **Đang kích hoạt AI quét điểm mua VSA + SMC & Quản trị 1% NAV...** ⚡"))
     try:
         picks = run_smart_buy_screener()
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn 100% tiêu chuẩn khắt khe (Cơ bản + VCP + RS + Chống Gap-Up + R:R >= 1.25).")
+            await msg.edit_text("⚠️ Hiện tại chưa có mã nào thỏa mãn 100% tiêu chuẩn khắt khe (Cơ bản + VCP + SMC + RS + Quản trị R:R >= 1.25).")
             return
         text = "🎯 **DANH SÁCH CỔ PHIẾU ĐẠT ĐIỂM MUA AN TOÀN CAO NHẤT (AUTO-BUY)**\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
-            text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** {'🔥 [Nền VCP]' if item['is_vcp'] else '⚡ [Tích Lũy Chuẩn]'} (Độ tin cậy: `{item['score']}%`)\n"
+            smc_info = item["smc"]
+            smc_tag = "🔥 [SMC Liquidity Sweep]" if smc_info["has_liquidity_sweep"] else ("⚡ [SMC OB/FVG]" if smc_info["has_ob"] or smc_info["has_fvg"] else "")
+            
+            text += f"{idx}. 🔹 **Mã: {item['symbol'].upper()}** {smc_tag} (Độ tin cậy: `{item['score']}%`)\n"
             text += f"   • Giá: `{item['close']:.1f}k` | RS: `{item['rs_rating']:+.1f}%` | R:R: `{item['rr_ratio']}x`\n"
-            text += f"   • CMF (D): `{item['cmf']:.2f}` | CMF (60m): `{item['cmf_h']:.2f}` | NAV: `{item['suggested_nav']}`\n"
+            text += f"   • CMF (D): `{item['cmf']:.2f}` | CMF (60m): `{item['cmf_h']:.2f}`\n"
             text += f"   • 🎯 **Vùng mua**: `{item['entry']}k` | **Chốt lời**: `{item['target']}k` | 🛡️ **Stoploss**: `{item['stop_loss']}k`\n"
-            text += f"   • Lệnh cài: `/setbuy {item['symbol']} {item['close']} {item['entry']} 1000`\n------------------------------------\n"
+            text += f"   • 💰 **Khối lượng chuẩn 1% NAV**: `{item['suggested_qty']:,} cổ` (Rủi ro: `{item['actual_risk_pct']}% NAV`)\n"
+            text += f"   • Lệnh cài: `/setbuy {item['symbol']} {item['entry']} {item['entry']} {item['suggested_qty']}`\n------------------------------------\n"
         await msg.edit_text(text, parse_mode="Markdown")
     except Exception as e: await msg.edit_text(f"❌ Lỗi: {str(e)}")
 
@@ -1385,7 +1433,7 @@ async def setbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_portfolios_async()
     list_buys_str = ", ".join([f"{p}k" for p in USER_PORTFOLIOS[chat_id][symbol]["buy_alert_prices"]])
-    await update.message.reply_text(f"✅ Đã cài CANH MUA **{symbol}**\n• Giá vốn: `{entry_price}k` | Qty: {qty}\n• Mốc canh mua: `{list_buys_str}`", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ Đã cài CANH MUA **{symbol}**\n• Giá vốn: `{entry_price}k` | Qty: {qty:,}\n• Mốc canh mua: `{list_buys_str}`", parse_mode="Markdown")
 
 
 async def setstop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1437,7 +1485,7 @@ async def portfolio_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qty, entry = pos.get("qty", 1000), pos["entry"]
             pnl_pct = ((current_price - entry) / entry) * 100
             pnl_vnd = (current_price - entry) * qty
-            text += f"🔹 **{symbol.upper()}** ({qty} cổ) | Vốn: `{entry}k` -> Giá HT: `{current_price:.2f}k` ({pnl_pct:+.2f}% / `{pnl_vnd:+,.0f} VNĐ`)\n"
+            text += f"🔹 **{symbol.upper()}** ({qty:,} cổ) | Vốn: `{entry}k` -> Giá HT: `{current_price:.2f}k` ({pnl_pct:+.2f}% / `{pnl_vnd:+,.0f} VNĐ`)\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -1447,7 +1495,7 @@ async def show_all_settings_func(update_or_query, context, chat_id):
     else:
         text = "📋 **TOÀN BỘ MÃ & MỐC CÀI ĐẶT**\n\n"
         for idx, (symbol, pos) in enumerate(USER_PORTFOLIOS[chat_id].items(), 1):
-            text += f"{idx}. 🔹 **Mã: {symbol.upper()}** | Vốn: `{pos.get('entry', 0)}k` | Qty: `{pos.get('qty', 1000)}`\n   • Mốc Mua: `{pos.get('buy_alert_prices', [])}` | Stoploss: `{pos.get('stop_alert_prices', [])}`\n"
+            text += f"{idx}. 🔹 **Mã: {symbol.upper()}** | Vốn: `{pos.get('entry', 0)}k` | Qty: `{pos.get('qty', 1000):,}`\n   • Mốc Mua: `{pos.get('buy_alert_prices', [])}` | Stoploss: `{pos.get('stop_alert_prices', [])}`\n"
     if hasattr(update_or_query, "message") and update_or_query.message: await update_or_query.message.reply_text(text, parse_mode="Markdown")
     else: await update_or_query.edit_message_text(text, parse_mode="Markdown")
 
@@ -1582,7 +1630,7 @@ if __name__ == "__main__":
     threading.Thread(target=run_http_server, daemon=True).start()
     threading.Thread(target=self_ping_thread, daemon=True).start()
 
-    print("🤖 Đang khởi tạo Telegram Bot Pro...")
+    print("🤖 Đang khởi tạo Telegram Bot Pro (VSA + SMC)...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_error_handler(global_error_handler)
 
@@ -1608,5 +1656,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã hoàn tất nâng cấp chuẩn Top 5%!")
+    print("🚀 Bot Quant Trading Pro (VSA + SMC + 1% NAV) đã khởi chạy!")
     app.run_polling(drop_pending_updates=True)
