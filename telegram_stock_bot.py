@@ -287,24 +287,36 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM LẤY DỮ LIỆU KHỐI NGOẠI (TRẢ VỀ LỖI TƯỜNG MINH NẾU THẤT BẠI)
+# HÀM CÀO DỮ LIỆU KHỐI NGOẠI TỪ 24HMONEY
 # ==========================================
 def get_foreign_trading_data():
-    url = "https://apifull.tcbs.com.vn/stock-insight/v1/market/top-mover?type=ForeignTrading&size=10"
+    # 24hmoney sử dụng API ngầm để trả về JSON giao dịch khối ngoại
+    url = "https://api.24hmoney.vn/v1/web/index/foreign-trading?symbol=VNINDEX"
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-API-KEY": TCBS_API_KEY,
-            "Referer": "https://tcbs.com.vn/"
+            "Referer": "https://24hmoney.vn/indices/vn-index/giao-dich-khoi-ngoai"
         }
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=6)
         if res.status_code == 200:
             data = res.json()
-            if isinstance(data, list) and len(data) > 0:
+            # Trích xuất dữ liệu trả về từ 24hmoney API
+            if "data" in data and data["data"]:
+                return data["data"], None
+            elif isinstance(data, list):
                 return data, None
+        
+        # Fallback dự phòng: Thử gọi qua endpoint API tổng hợp khác nếu API trên thay đổi cấu trúc
+        alt_url = "https://apifull.tcbs.com.vn/stock-insight/v1/market/top-mover?type=ForeignTrading&size=10"
+        res_alt = requests.get(alt_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
+        if res_alt.status_code == 200:
+            alt_data = res_alt.json()
+            if isinstance(alt_data, list) and len(alt_data) > 0:
+                return alt_data, None
+
         return None, f"HTTP Status Code: {res.status_code}"
     except Exception as e:
-        logging.error(f"Error fetching foreign trading data: {e}")
+        logging.error(f"Error fetching 24hmoney foreign trading data: {e}")
         return None, str(e)
 
 # ==========================================
@@ -798,27 +810,29 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("⏳ Đang tải dữ liệu giao dịch khối ngoại từ TCBS...", parse_mode="HTML")
+    msg = await target_msg.reply_text("⏳ Đang cào dữ liệu khối ngoại từ 24hmoney...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
         data, err = await loop.run_in_executor(executor, get_foreign_trading_data)
         
         if not data:
-            error_detail = html.escape(err) if err else "Không nhận được phản hồi từ API TCBS"
+            error_detail = html.escape(err) if err else "Không nhận được phản hồi từ nguồn 24hmoney"
             await msg.edit_text(
-                f"⚠️ <b>Không lấy được dữ liệu khối ngoại từ máy chủ.</b>\n"
+                f"⚠️ <b>Không lấy được dữ liệu khối ngoại.</b>\n"
                 f"🔍 <i>Chi tiết lỗi:</i> <code>{error_detail}</code>", 
                 parse_mode="HTML"
             )
             return
             
-        text = "🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI</b>\n====================================\n\n"
+        text = "🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI (24HMONEY)</b>\n====================================\n\n"
         
         if isinstance(data, list):
             for idx, item in enumerate(data[:10], 1):
-                ticker = item.get("ticker", "N/A")
-                net_val = item.get("netValue", 0) / 1e9  
+                # Tương thích linh hoạt các key dữ liệu trả về từ API
+                ticker = item.get("ticker") or item.get("symbol") or "N/A"
+                net_val_raw = item.get("netValue") or item.get("net_value") or item.get("netVal") or 0
+                net_val = net_val_raw / 1e9 if abs(net_val_raw) > 1e6 else net_val_raw
                 action_icon = "🟢 Mua ròng" if net_val > 0 else "🔴 Bán ròng"
                 text += f"{idx}. <b>{ticker}</b>: <code>{net_val:+.2f} tỷ</code> ({action_icon})\n"
         else:
@@ -930,7 +944,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
-        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại\n"
+        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
         "   └ 📜 /quytec    : Xem bộ quy tắc sống còn của nhóm 5%\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
@@ -979,7 +993,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với Danh sách 'Thùng đặc' mới!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng cào dữ liệu khối ngoại từ 24hmoney!")
     
     app.run_polling(
         drop_pending_updates=True,
