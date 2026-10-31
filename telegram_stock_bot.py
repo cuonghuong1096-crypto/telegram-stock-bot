@@ -1,3 +1,4 @@
+
 import datetime
 import io
 import json
@@ -686,39 +687,38 @@ async def run_sector_flow_screener_with_progress(msg):
 
 
 # ==========================================
-# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (CẨM NANG TOÀN DIỆN CHI TIẾT & NÂNG CAO)
 # ==========================================
 
 async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     rules_text = (
-        "🚗 <b>CẨM NANG SINH TỒN TOÀN DIỆN: LÁI XE CHỨNG KHOÁN</b>\n"
+        "🚗 <b>CẨM NANG SINH TỒN TOÀN DIỆN & NÂNG CAO: LÁI XE CHỨNG KHOÁN</b>\n"
         "====================================\n\n"
         
-        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy)</b>\n"
-        "• <b>Tiền là xăng xe:</b> Luôn giữ xăng dự phòng (tiền mặt), không phóng bạt mạng hết sạch xăng dọc đường.\n"
-        "• <b>Bình NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng. Đạp lút cán lúc bão lũ là nổ bình xăng (Call Margin).\n\n"
+        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy Margin)</b>\n"
+        "• <b>Tiền là xăng xe:</b> Luôn giữ bình xăng dự phòng (tiền mặt), không bao giờ phóng bạt mạng hết sạch xăng dọc đường.\n"
+        "• <b>Bình tăng tốc NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng và mắt thấy đèn xanh xác nhận. Tuyệt đối không bật Margin khi xe đang lệch làn hoặc trượt dốc, tránh cháy xe (Call Margin).\n\n"
         
-        "🛣️ <b>2. CON ĐƯỜNG & TÍN HIỆU (Cổ phiếu & Thị trường)</b>\n"
-        "• <b>Mỗi con đường là 1 cổ phiếu:</b> Đại lộ to (Cp cơ bản) đi êm ru; đường làng ổ gà (Penny) xóc óc.\n"
-        "• <b>Đèn Đỏ / Đèn Xanh:</b> Thị trường rủi ro $\rightarrow$ <b>Đạp phanh dừng xe</b>; Đèn xanh $\rightarrow$ <b>Tăng ga</b>.\n"
-        "• <b>Ổ gà, nắp cống:</b> Nhịp rũ bỏ (shake-out). Bám đường lớn mà đi, không hốt hoảng bẻ lái.\n"
-        "• <b>Kẹt xe giờ cao điểm (FOMO):</b> Thấy đám đông chen chúc hưng phấn tột độ $\rightarrow$ <b>Tuyệt đối tránh xa</b>, không cố chen chân kẻo dẫm đạp.\n\n"
+        "🛣️ <b>2. CON ĐƯỜNG, VỊ TRÍ NHẬP LÀN & TÍN HIỆU (Cổ phiếu & Timing)</b>\n"
+        "• <b>Chọn đường quốc lộ lớn:</b> Chọn cổ phiếu cơ bản 'thùng đặc' (VRE, TCB) có nền tảng vững chắc, xe chạy đầm chắc.\n"
+        "• <b>Thời điểm bước ra lòng đường:</b> Đứng ở lề đường quan sát. Nếu chờ đúng lúc xe bon bon chạy thẳng (đèn xanh) thì bước ra nhập làn mượt mà. Ngược lại, đúng lúc xe container phi ra khỏi dải phân cách (đạp giá/hoảng loạn) mà lao ra cản đường thì 'die' ngay lập tức!\n"
+        "• <b>Bẫy dừng đèn đỏ quá sớm:</b> Gom hàng đoán đáy quá sớm khiến xe đứng lình xình chôn vốn, phải kiên nhẫn chờ cú giật dứt khoát xác nhận dòng tiền.\n\n"
         
-        "🚛 <b>3. CÁC LỰC LƯỢNG TRÊN ĐƯỜNG (Tạo lập, Khối ngoại, Vĩ mô)</b>\n"
-        "• <b>Xe container (Tạo lập):</b> Mở đường lớn. Nhìn xi-nhan của họ để đi theo đuôi, cấm chèn ép điểm mù.\n"
-        "• <b>Thời tiết (Vĩ mô):</b> Nắng ráo phóng nhanh; bão lũ (vĩ mô xấu) phải tấp xe vào lề trú ẩn.\n"
-        "• <b>Biển báo (Tin tức):</b> Tin tốt ra lúc kẹt xe là bẫy; tin xấu bất ngờ thì nhìn gương chiếu hậu xử lý bình tĩnh.\n\n"
+        "🚛 <b>3. GIAO THƯỜNG VỚI XE CONTAINER (Tạo lập & Điểm mù)</b>\n"
+        "• <b>Xe tải lớn (Tạo lập / Cá mập):</b> Có tầm nhìn xa và vốn khủng. Họ chủ động đánh lái ôm cua gấp hoặc ép sát lề đường (đạp giá rũ bỏ - shakeout).\n"
+        "• <b>Xử lý khi xe container bẻ lái:</b> Đừng bám đuôi quá sát điểm mù khi họ ôm cua gấp. Hãy chờ xe container đánh lái gấp quay vào trong và trở lại đường thẳng, lúc đó mới thong thả bám theo đi cùng an toàn.\n"
+        "• <b>Cơ hội sửa sai (Rút chân):</b> Nhịp nhún xuống rồi rút chân thực chất là cơ hội để xe con thoát hiểm hoặc cơ cấu lại vị thế lệch làn chứ không phải lúc lao đầu mua đuổi.\n\n"
         
-        "🗺️ <b>4. KỸ NĂNG LÁI & TÂM LÝ SINH TỒN (PTKT, PTCB & Cắt lỗ)</b>\n"
-        "• <b>Sổ kiểm định (PTCB):</b> Kiểm tra động cơ. Xe tốt gặp bão chỉ xước sơn, qua bão lại chạy tiếp.\n"
-        "• <b>GPS & Kính chiếu hậu (PTKT):</b> Soi lại quá khứ để nhận biết khúc cua, kháng cự, hỗ trợ.\n"
-        "• <b>Cắt lỗ (Stop-loss):</b> Kỹ năng phanh gấp khi gặp chướng ngại vật. Túi khí cứu mạng tài khoản!\n"
-        "• <b>Cấm bắt đáy xe mất phanh (Panic/Bottom):</b> Đợi xe dừng hẳn ở chân dốc rồi mới bước lên, tuyệt đối không thò tay cản đầu xe đang lao dốc.\n"
-        "• <b>Không hoảng loạn bẻ lái (Panic Selling):</b> Thấy ổ gà nhỏ không đạp chết phanh liên hoàn giữa cao tốc gây tai nạn dây chuyền.\n"
+        "🏗️ <b>4. CHẤT LƯỢNG MẶT ĐƯỜNG & BỘ MÁY QUẢN TRỊ (Nội tại doanh nghiệp)</b>\n"
+        "• <b>Đường to nhưng không sửa chữa:</b> Doanh nghiệp lớn nhưng ban lãnh đạo tham ô, quản trị yếu kém, không tái đầu tư $\rightarrow$ Mặt đường hỏng nhanh, chi chít ổ gà, nhà đầu tư liên tục gặp tai nạn.\n"
+        "• <b>Đường được thanh lọc & nâng cấp:</b> Doanh nghiệp minh bạch, ban lãnh đạo có tầm nhìn, dòng tiền kinh doanh khỏe $\rightarrow$ Mặt đường láng mịn, xe cộ tấp nập phóng phơi phới về đích.\n\n"
+        "🗺️ <b>5. KỸ NĂNG LÁI & TÂM LÝ SINH TỒN (Stoploss & Kỷ luật)</b>\n"
+        "• <b>Cắt lỗ (Stop-loss):</b> Túi khí cứu mạng tài khoản. Khi xe tông thủng mặt đường cứng hỗ trợ, phải đạp phanh khẩn cấp dứt khoát, không tiếc nuối.\n"
+        "• <b>Cấm bắt đáy xe mất phanh:</b> Đợi xe dừng hẳn ở chân dốc, xác nhận có lực đỡ rồi mới bước lên, không bao giờ thò tay cản đầu xe đang lao dốc.\n"
         "====================================\n"
-        "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn!</i>"
+        "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn cùng chiếc xe nguyên vẹn!</i>"
     )
     
     keyboard = [
@@ -936,7 +936,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
         "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
-        "   └ 📜 /quytec    : Cẩm nang sinh tồn \"Lái xe chứng khoán\"\n"
+        "   └ 📜 /quytec    : Cẩm nang sinh tồn nâng cao \"Lái xe chứng khoán\"\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -984,7 +984,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật hoàn thiện bộ cẩm nang lái xe chứng khoán!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật trọn vẹn cẩm nang lái xe nâng cao!")
     
     app.run_polling(
         drop_pending_updates=True,
