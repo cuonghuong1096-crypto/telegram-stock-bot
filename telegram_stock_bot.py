@@ -30,7 +30,7 @@ from telegram.ext import (
 )
 
 # ==========================================
-# CẤU HÌNH TOKEN & API KEY
+# CẤU HÌNH TOKEN & API KEY CHUẨN TCBS OPENAPI
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TCBS_API_KEY = os.environ.get("TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670")
@@ -80,7 +80,7 @@ STOCK_DATA_CACHE = {}
 executor = ThreadPoolExecutor(max_workers=30)
 
 # ==========================================
-# 1. HÀM GỌI DỮ LIỆU NẾN HOÀN TOÀN TỪ TCBS API
+# 1. HÀM GỌI DỮ LIỆU NẾN HOÀN TOÀN TỪ TCBS OPENAPI CHÍNH THỨC
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
@@ -108,14 +108,16 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         res_param = "D"
         start_time = end_time - (count * 86400 * 2)
 
-    tcbs_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
+    # Sử dụng đúng domain openapi.tcbs.com.vn theo chuẩn tài liệu chính thức
+    tcbs_url = f"https://openapi.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     try:
         headers = {
             "User-Agent": "Mozilla/5.0",
-            "X-API-KEY": TCBS_API_KEY
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TCBS_API_KEY}"
         }
-        res = requests.get(tcbs_url, headers=headers, timeout=4.5)
+        res = requests.get(tcbs_url, headers=headers, timeout=5.0)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -128,7 +130,7 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         return pd.DataFrame(), err_msg
 
     if df_raw.empty:
-        err_msg = "Không có dữ liệu từ TCBS API"
+        err_msg = "Không có dữ liệu từ TCBS OpenAPI"
         STOCK_DATA_CACHE[cache_key] = (pd.DataFrame(), err_msg, now_ts)
         return pd.DataFrame(), err_msg
 
@@ -241,19 +243,19 @@ def check_vnindex_health():
 
 
 # ==========================================
-# 2. LẤY THÔNG TIN KHỐI NGOẠI CHUẨN TCBS OPENAPI (`tickerSnaps`)
+# 2. LẤY THÔNG TIN ROOM NƯỚC NGOÀI CHUẨN TÀI LIỆU TCBS OPENAPI (`/tartarus/v1/tickerSnaps`)
 # ==========================================
 def get_foreign_trading_data():
     """
-    Sử dụng API TCBS OpenAPI: https://apigateway.tcbs.com.vn/tartarus/v1/tickerSnaps?index=1 (1 = HOSE)
-    Trích xuất các trường buyForeignQtty, sellForeignQtty, matchPrice/refPrice để tính giá trị ròng.
+    Sử dụng endpoint chính thức: GET /tartarus/v1/tickerSnaps?index=1 (1 = HOSE, 2 = VN30)
+    Trích xuất buyForeignQtty, sellForeignQtty, matchPrice theo tài liệu OpenAPI.
     """
     parsed_list = []
-    # Index HOSE (1), VN30 (2), HNX (3)
+    # Rổ chứng khoán: 1 = HOSE, 2 = VN30
     indexes_to_fetch = [1, 2] 
     
     for idx_val in indexes_to_fetch:
-        url = f"https://apigateway.tcbs.com.vn/tartarus/v1/tickerSnaps?index={idx_val}"
+        url = f"https://openapi.tcbs.com.vn/tartarus/v1/tickerSnaps?index={idx_val}"
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0",
@@ -274,7 +276,7 @@ def get_foreign_trading_data():
                     sell_qtty = float(item.get("sellForeignQtty", 0) or 0)
                     net_qtty = buy_qtty - sell_qtty
                     
-                    # Quy đổi giá trị ròng ra tỷ VNĐ (giá cổ phiếu tính theo nghìn đồng nên nhân price * net_qtty / 1e6)
+                    # Giá trị ròng tính theo tỷ VNĐ
                     net_val = (net_qtty * price) / 1000.0 if price > 0 else 0.0
                     
                     if net_val != 0:
@@ -288,7 +290,7 @@ def get_foreign_trading_data():
     if not parsed_list:
         return None, "Không lấy được dữ liệu room nước ngoài từ TCBS OpenAPI."
 
-    # Lọc bỏ các bản ghi trùng lặp mã (nếu có ở cả Hose và VN30)
+    # Lọc bỏ trùng lặp mã giữa HOSE và VN30
     unique_dict = {}
     for item in parsed_list:
         ticker = item["ticker"]
@@ -488,7 +490,7 @@ def process_single_stock_for_autobuy(symbol):
 
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🤖 **Đang quét tín hiệu mua chuẩn VCP + SMC từ TCBS...**", parse_mode="Markdown")
+    msg = await target_msg.reply_text("🤖 **Đang quét tín hiệu mua chuẩn VCP + SMC từ TCBS OpenAPI...**", parse_mode="Markdown")
     try:
         picks = []
         with ThreadPoolExecutor(max_workers=20) as pool:
@@ -660,7 +662,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
-        msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution}) từ TCBS...")
+        msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution}) từ TCBS OpenAPI...")
         try:
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(executor, analyze_stock, symbol, resolution, count)
