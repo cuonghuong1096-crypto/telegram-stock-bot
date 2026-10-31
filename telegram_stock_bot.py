@@ -44,30 +44,44 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+# ==========================================
+# DANH SÁCH WATCHLIST ĐÃ TINH GỌN ("THÙNG ĐẶC")
+# ==========================================
 WATCHLIST_SCAN = [
-    "VHM", "VIC", "VRE", "HPG", "HSG", "NKG", "SSI", "VCI", "MBS", "FTS",
-    "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB",
-    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "KDH", "NLG", "DIG", "BSR",
-    "CTD", "HHV", "LCG", "HT1", "VCG", "CII", "L14", "VGS", "KBC", "PDR", 
-    "CEO", "DXG", "TCH", "NVL", "VPL", "HDG", "NTL", "HDC", "KSB", "MSR",
-    "VND", "SHS", "VIX", "HCM", "CTS", "ORS",
-    "FPT", "MCH", "PET", "VTP", "CTR", "GEE",
-    "VGT", "TNG", "GVR", "ANV", "VHC",
-    "PVS", "PVB", "PVD", "GAS", "PLX",
-    "HAH", "VJC", "VSC"
+    # Ngân hàng (Trụ cột tín dụng)
+    "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB",
+    
+    # Bất động sản & KCN chất lượng cao ("Thùng đặc")
+    "VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "VGC", "HDG",
+    
+    # Chứng khoán đầu ngành
+    "SSI", "VCI", "MBS", "FTS", "HCM", "VND", "SHS",
+    
+    # Thép & Vật liệu xây dựng cốt lõi
+    "HPG", "HSG", "VCG", "HT1", "KSB", "CTD", "HHV",
+    
+    # Bán lẻ & Tiêu dùng thiết yếu
+    "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "QNS",
+    
+    # Công nghệ & Viễn thông & Hạ tầng điện
+    "FPT", "CTR", "VTP", "GEE", "REE", "POW",
+    
+    # Dầu khí & Năng lượng lớn
+    "GAS", "PLX", "PVS", "PVD", "BSR",
+    
+    # Vận tải & Cảng biển & Hàng không
+    "HAH", "VJC", "VSC", "GMD"
 ]
 
 SECTOR_MAP = {
-    "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "SHB", "TPB"],
-    "Bất động sản": ["VHM", "VIC", "VRE", "KDH", "NLG", "DIG", "PDR", "CEO", "DXG", "TCH", "NVL", "HDG", "NTL", "HDC"],
-    "Chứng khoán": ["SSI", "VCI", "MBS", "FTS", "VND", "SHS", "VIX", "HCM", "CTS", "ORS"],
-    "Thép & Vật liệu": ["HPG", "HSG", "NKG", "VGS", "HT1", "KSB"],
-    "Xây dựng & Đầu tư công": ["CTD", "HHV", "LCG", "VCG", "CII", "L14", "KBC", "MSR"],
-    "Dầu khí & Energy": ["PVS", "PVB", "PVD", "GAS", "PLX", "BSR"],
-    "Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "PET"],
+    "Ngân hàng": ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB"],
+    "Bất động sản & KCN": ["VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "VGC", "HDG"],
+    "Chứng khoán": ["SSI", "VCI", "MBS", "FTS", "HCM", "VND", "SHS"],
+    "Thép & Xây dựng": ["HPG", "HSG", "VCG", "HT1", "KSB", "CTD", "HHV"],
+    "Dầu khí & Hạ tầng": ["PVS", "PVD", "GAS", "PLX", "BSR", "REE", "POW"],
+    "Bán lẻ & Tiêu dùng": ["MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "QNS"],
     "Công nghệ & Viễn thông": ["FPT", "CTR", "VTP", "GEE"],
-    "Thủy sản & Dệt may & Cao su": ["ANV", "VHC", "VGT", "TNG", "GVR"],
-    "Vận tải & Cảng biển": ["HAH", "VJC", "VSC"]
+    "Vận tải & Cảng biển": ["HAH", "VJC", "VSC", "GMD"]
 }
 
 ACTIVE_CHAT_IDS = set()
@@ -665,9 +679,6 @@ async def run_sector_flow_screener_with_progress(msg):
 # 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
 # ==========================================
 
-# ==========================================
-# HÀM HIỂN THỊ BỘ QUY TẮC GIAO DỊCH 5%
-# ==========================================
 async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
@@ -785,7 +796,6 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
-# Handler lệnh /khoingoai xem top mua/bán ròng khối ngoại (báo lỗi tường minh nếu mất kết nối)
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text("⏳ Đang tải dữ liệu giao dịch khối ngoại từ TCBS...", parse_mode="HTML")
@@ -808,7 +818,7 @@ async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if isinstance(data, list):
             for idx, item in enumerate(data[:10], 1):
                 ticker = item.get("ticker", "N/A")
-                net_val = item.get("netValue", 0) / 1e9  # Quy đổi ra Tỷ VND
+                net_val = item.get("netValue", 0) / 1e9  
                 action_icon = "🟢 Mua ròng" if net_val > 0 else "🔴 Bán ròng"
                 text += f"{idx}. <b>{ticker}</b>: <code>{net_val:+.2f} tỷ</code> ({action_icon})\n"
         else:
@@ -819,7 +829,6 @@ async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ <b>Lỗi hệ thống:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
-# Handler lệnh /tin <mã> tích hợp Groq AI phân tích
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -846,7 +855,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalnum():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, BSR, HT1)!")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, HPG, TCB)!")
         return
 
     keyboard = [
@@ -915,7 +924,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
-        "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
+        "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
         "2️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
         "3️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
@@ -957,7 +966,6 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Đăng ký các Command Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
@@ -965,13 +973,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("nganh", sectors_command))
     app.add_handler(CommandHandler("khoingoai", foreign_command))  
     app.add_handler(CommandHandler("tin", news_command))
-    app.add_handler(CommandHandler("quytec", quytec_command))   # <--- Đã tích hợp lệnh /quytec
-    app.add_handler(CommandHandler("quytrach", quytec_command)) # <--- Đã tích hợp lệnh /quytrach
+    app.add_handler(CommandHandler("quytec", quytec_command))
+    app.add_handler(CommandHandler("quytrach", quytec_command))
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm Khối Ngoại, Groq AI & Bộ Quy Tắc 5%!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với Danh sách 'Thùng đặc' mới!")
     
     app.run_polling(
         drop_pending_updates=True,
