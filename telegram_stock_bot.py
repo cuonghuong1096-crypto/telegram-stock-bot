@@ -270,49 +270,51 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM LẤY DỮ LIỆU KHỐI NGOẠI CHUẨN TỪ API TCBS (SỬ DỤNG BUY/SELL FOREIGN QTTY)
+# HÀM LẤY DỮ LIỆU KHỐI NGOẠI CHUẨN TỪ TCBS OPENAPI (TICKERSNAP)
 # ==========================================
-def fetch_single_tcbs_foreign(symbol):
-    url = f"https://apipap.tcbs.com.vn/stock-insight/v1/stock/bars-long-term?ticker={symbol}&type=stock"
-    # Hoặc gọi qua API bảng giá / thông tin mã của TCBS
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        # API tổng hợp thông tin mã chứng khoán của TCBS chứa thông tin giao dịch khối ngoại mới nhất
-        api_url = f"https://finance.tcbs.com.vn/v1/stock/overview?ticker={symbol}"
-        res = requests.get(api_url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            # Trích xuất các trường theo gợi ý: buyForeignQtty, sellForeignQtty, giá hiện tại để quy đổi ra tỷ đồng
-            price = float(data.get("price", 0) or data.get("closePrice", 0) or 0)
-            buy_qtty = float(data.get("buyForeignQtty", 0) or 0)
-            sell_qtty = float(data.get("sellForeignQtty", 0) or 0)
-            net_qtty = buy_qtty - sell_qtty
-            
-            # Giá trị ròng tính bằng tỷ VNĐ (giá đơn vị cổ phiếu thường tính theo nghìn đồng nên nhân price * net_qtty / 1e6)
-            net_val = (net_qtty * price) / 1000.0 if price > 0 else 0.0
-            return {"ticker": symbol.upper(), "netValue": round(net_val, 2)}
-    except Exception:
-        pass
-    return None
-
 def get_foreign_trading_data():
+    # Sử dụng API chính thức từ TCBS OpenAPI (index=1 cho HOSE)
+    url = "https://openapi.tcbs.com.vn/tartarus/v1/tickerSnap?index=1"
     try:
-        parsed_list = []
-        # Quét song song qua các mã trong watchlist để lấy dữ liệu khối ngoại thời gian thực từ TCBS API
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            futures = [pool.submit(fetch_single_tcbs_foreign, sym) for sym in WATCHLIST_SCAN[:25]]
-            for f in as_completed(futures):
-                res = f.result()
-                if res and res["netValue"] != 0:
-                    parsed_list.append(res)
-                    
-        if not parsed_list:
-            return None, "Không trích xuất được dữ liệu khối ngoại từ API TCBS."
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json"
+        }
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            result_json = res.json()
+            items = result_json.get("data", [])
+            if not items:
+                return None, "API TCBS tickerSnap trả về danh sách dữ liệu trống."
             
-        parsed_list.sort(key=lambda x: abs(x["netValue"]), reverse=True)
-        return parsed_list, None
+            parsed_list = []
+            target_symbols = set(WATCHLIST_SCAN)
+            
+            for item in items:
+                ticker = (item.get("symbol") or "").upper()
+                if ticker in target_symbols:
+                    buy_qtty = float(item.get("buyForeignQtty", 0) or 0)
+                    sell_qtty = float(item.get("sellForeignQtty", 0) or 0)
+                    match_price = float(item.get("matchPrice", 0) or item.get("refPrice", 0) or 0)
+                    
+                    net_qtty = buy_qtty - sell_qtty
+                    # Quy đổi giá trị ròng ra tỷ VNĐ (matchPrice thường tính theo nghìn đồng nên nhân net_qtty * match_price / 1e6)
+                    net_val = (net_qtty * match_price) / 1000.0 if match_price > 0 else 0.0
+                    
+                    parsed_list.append({
+                        "ticker": ticker,
+                        "netValue": round(net_val, 2)
+                    })
+            
+            if not parsed_list:
+                return None, "Không khớp được mã nào trong Watchlist từ dữ liệu TCBS."
+                
+            parsed_list.sort(key=lambda x: abs(x["netValue"]), reverse=True)
+            return parsed_list, None
+        else:
+            return None, f"Lỗi phản hồi từ API TCBS OpenAPI (HTTP Status {res.status_code})"
     except Exception as e:
-        return None, f"Lỗi kết nối API TCBS: {str(e)}"
+        return None, f"Lỗi kết nối API TCBS OpenAPI: {str(e)}"
 
 # ==========================================
 # HÀM CÀO & PHÂN TÍCH TIN TỨC THÔNG MINH (GROQ AI)
@@ -804,14 +806,14 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("⏳ Đang truy vấn dữ liệu khối ngoại từ API TCBS...", parse_mode="HTML")
+    msg = await target_msg.reply_text("⏳ Đang truy vấn dữ liệu khối ngoại từ TCBS OpenAPI...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
         data, err = await loop.run_in_executor(executor, get_foreign_trading_data)
         
         if not data:
-            error_detail = html.escape(err) if err else "Không nhận được phản hồi dữ liệu từ TCBS"
+            error_detail = html.escape(err) if err else "Không nhận được phản hồi dữ liệu từ TCBS OpenAPI"
             await msg.edit_text(
                 f"⚠️ <b>LỖI TRUY VẤN DỮ LIỆU KHỐI NGOẠI:</b>\n"
                 f"🔍 <i>Chi tiết lỗi:</i> <code>{error_detail}</code>", 
@@ -932,7 +934,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
-        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (TCBS)\n"
+        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (TCBS OpenAPI)\n"
         "   └ 📜 /quytec    : Xem bộ quy tắc sống còn của nhóm 5%\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
@@ -981,7 +983,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với API khối ngoại TCBS!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với TCBS OpenAPI tickerSnap!")
     
     app.run_polling(
         drop_pending_updates=True,
