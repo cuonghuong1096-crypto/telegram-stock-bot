@@ -273,6 +273,21 @@ def check_vnindex_health():
     return res
 
 # ==========================================
+# BỔ SUNG HÀM LẤY DỮ LIỆU KHỐI NGOẠI TỪ TCBS
+# ==========================================
+def get_foreign_trading_data():
+    url = "https://apifull.tcbs.com.vn/stock-insight/v1/market/top-mover?type=ForeignTrading&size=10"
+    try:
+        headers = {"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            return data
+    except Exception as e:
+        logging.error(f"Error fetching foreign trading data: {e}")
+    return None
+
+# ==========================================
 # HÀM CÀO & PHÂN TÍCH TIN TỨC THÔNG MINH (GROQ AI)
 # ==========================================
 def get_latest_stock_news(symbol):
@@ -317,7 +332,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
 """
 
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",  # Model đang hoạt động ổn định trên Groq của bạn
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=600
@@ -434,7 +449,10 @@ def analyze_stock(symbol, resolution="D", count=200):
             InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy", callback_data="run_dipbuy_callback"),
             InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
         ],
-        [InlineKeyboardButton("🏢 Dòng Tiền Ngành", callback_data="run_sectors_callback")]
+        [
+            InlineKeyboardButton("🏢 Dòng Tiền Ngành", callback_data="run_sectors_callback"),
+            InlineKeyboardButton("🌍 Khối Ngoại Mua/Bán", callback_data="run_foreign_callback")
+        ]
     ]
 
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
@@ -714,7 +732,37 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
-# Handler lệnh /tin <mã> tích hợp Groq AI phân tích (Đã xử lý chống lỗi thẻ HTML)
+# Handler lệnh /khoingoai xem top mua/bán ròng khối ngoại
+async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text("⏳ Đang tải dữ liệu giao dịch khối ngoại từ TCBS...", parse_mode="HTML")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        data = await loop.run_in_executor(executor, get_foreign_trading_data)
+        
+        if not data:
+            await msg.edit_text("⚠️ Không lấy được dữ liệu khối ngoại từ máy chủ.")
+            return
+            
+        text = "🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI</b>\n====================================\n\n"
+        
+        # Duyệt qua dữ liệu trả về từ API top-mover khối ngoại
+        if isinstance(data, list):
+            for idx, item in enumerate(data[:10], 1):
+                ticker = item.get("ticker", "N/A")
+                net_val = item.get("netValue", 0) / 1e9  # Quy đổi ra Tỷ VND
+                action_icon = "🟢 Mua ròng" if net_val > 0 else "🔴 Bán ròng"
+                text += f"{idx}. <b>{ticker}</b>: <code>{net_val:+.2f} tỷ</code> ({action_icon})\n"
+        else:
+            text += f"<code>{html.escape(str(data))}</code>"
+            
+        await msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+
+
+# Handler lệnh /tin <mã> tích hợp Groq AI phân tích
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -731,7 +779,6 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await msg.edit_text(news_text, parse_mode="HTML", disable_web_page_preview=True)
         except Exception:
-            # Fallback tự động gỡ bỏ thẻ HTML nếu AI sinh ra lỗi định dạng thẻ đóng/mở
             clean_text = news_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
             await msg.edit_text(clean_text, disable_web_page_preview=True)
             
@@ -774,6 +821,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "run_sectors_callback": 
         await sectors_command(update, context)
         return
+    if data == "run_foreign_callback":
+        await foreign_command(update, context)
+        return
 
     parts = data.split("|")
     if len(parts) == 3:
@@ -810,10 +860,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>VHM</code>, <code>HT1</code>)\n"
         "2️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
-        "3️⃣ <b>BỘ LỌC CHIẾN LƯỢC:</b>\n"
-        "   ├ 🎯 /dipbuy  : Bắt đáy an toàn sau đợt giảm\n"
-        "   ├ 🤖 /autobuy : Tín hiệu mua chuẩn VCP + SMC\n"
-        "   └ 🏢 /sectors : Dòng tiền Nhóm Ngành\n"
+        "3️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
+        "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
+        "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
+        "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
+        "   └ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -854,12 +905,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
     app.add_handler(CommandHandler("sectors", sectors_command))
     app.add_handler(CommandHandler("nganh", sectors_command))
-    app.add_handler(CommandHandler("tin", news_command))  # Lệnh cào và phân tích tin tức AI
+    app.add_handler(CommandHandler("khoingoai", foreign_command))  # Thêm lệnh xem khối ngoại
+    app.add_handler(CommandHandler("tin", news_command))
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm Groq AI News Analyzer!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm Khối Ngoại & Groq AI!")
     
     app.run_polling(
         drop_pending_updates=True,
