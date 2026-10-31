@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import requests
 import feedparser  # Thư viện phục vụ cào tin tức RSS
+from bs4 import BeautifulSoup  # Thư viện cào HTML 24hmoney
 from groq import Groq  # Thư viện gọi Groq AI phân tích tin tức
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -287,36 +288,43 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM CÀO DỮ LIỆU KHỐI NGOẠI TỪ 24HMONEY
+# HÀM CÀO DỮ LIỆU KHỐI NGOẠI TRỰC TIẾP TỪ 24HMONEY
 # ==========================================
 def get_foreign_trading_data():
-    # 24hmoney sử dụng API ngầm để trả về JSON giao dịch khối ngoại
-    url = "https://api.24hmoney.vn/v1/web/index/foreign-trading?symbol=VNINDEX"
+    url = "https://24hmoney.vn/indices/vn-index/giao-dich-khoi-ngoai"
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://24hmoney.vn/indices/vn-index/giao-dich-khoi-ngoai"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
         }
-        res = requests.get(url, headers=headers, timeout=6)
-        if res.status_code == 200:
-            data = res.json()
-            # Trích xuất dữ liệu trả về từ 24hmoney API
-            if "data" in data and data["data"]:
-                return data["data"], None
-            elif isinstance(data, list):
-                return data, None
-        
-        # Fallback dự phòng: Thử gọi qua endpoint API tổng hợp khác nếu API trên thay đổi cấu trúc
-        alt_url = "https://apifull.tcbs.com.vn/stock-insight/v1/market/top-mover?type=ForeignTrading&size=10"
-        res_alt = requests.get(alt_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        if res_alt.status_code == 200:
-            alt_data = res_alt.json()
-            if isinstance(alt_data, list) and len(alt_data) > 0:
-                return alt_data, None
+        res = requests.get(url, headers=headers, timeout=8)
+        if res.status_code != 200:
+            return None, f"HTTP Status Code: {res.status_code}"
 
-        return None, f"HTTP Status Code: {res.status_code}"
+        soup = BeautifulSoup(res.text, 'html.parser')
+        results = []
+        
+        # Quét các dòng bảng (tr, td) trong HTML của trang 24hmoney
+        rows = soup.find_all("tr")
+        for row in rows:
+            cols = row.find_all("td")
+            if len(cols) >= 3:
+                ticker = cols[0].get_text(strip=True)
+                if ticker.isalnum() and 3 <= len(ticker) <= 4:
+                    val_text = cols[-1].get_text(strip=True).replace(",", "").replace("+", "")
+                    try:
+                        net_val = float(val_text)
+                        results.append({"ticker": ticker, "netValue": net_val})
+                    except ValueError:
+                        pass
+
+        if results:
+            return results[:10], None
+
+        return None, "Không tìm thấy cấu trúc bảng dữ liệu khối ngoại (trang web có thể dùng JavaScript render động)."
+
     except Exception as e:
-        logging.error(f"Error fetching 24hmoney foreign trading data: {e}")
+        logging.error(f"Error scraping 24hmoney foreign trading data: {e}")
         return None, str(e)
 
 # ==========================================
@@ -829,7 +837,6 @@ async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if isinstance(data, list):
             for idx, item in enumerate(data[:10], 1):
-                # Tương thích linh hoạt các key dữ liệu trả về từ API
                 ticker = item.get("ticker") or item.get("symbol") or "N/A"
                 net_val_raw = item.get("netValue") or item.get("net_value") or item.get("netVal") or 0
                 net_val = net_val_raw / 1e9 if abs(net_val_raw) > 1e6 else net_val_raw
@@ -993,7 +1000,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng cào dữ liệu khối ngoại từ 24hmoney!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với hàm cào 24hmoney mới!")
     
     app.run_polling(
         drop_pending_updates=True,
