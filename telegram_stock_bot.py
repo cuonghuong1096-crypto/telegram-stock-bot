@@ -664,6 +664,53 @@ async def run_sector_flow_screener_with_progress(msg):
 # ==========================================
 # 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
 # ==========================================
+
+# ==========================================
+# HÀM HIỂN THỊ BỘ QUY TẮC GIAO DỊCH 5%
+# ==========================================
+async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    
+    rules_text = (
+        "📜 <b>HỆ THỐNG QUY TẮC SỐNG CÒN CỦA NHÓM 5% CHIẾN THẮNG</b>\n"
+        "====================================\n\n"
+        
+        "🏛️ <b>1. QUY TẮC TƯ DUY TẠO LẬP & ĐÁM ĐÔNG (SMART MONEY)</b>\n"
+        "• <b>Mua ngầm theo Tạo lập:</b> Tạo lập gom hàng âm thầm ở nền giá đi ngang (sideway) thanh khoản cạn kiệt, không mua đuổi giá trần.\n"
+        "• <b>Nói KHÔNG với FOMO:</b> Tuyệt đối không mua đuổi khi cổ phiếu đã chạy xa nền tích lũy hoặc khi tin tốt tràn ngập diễn đàn.\n"
+        "• <b>Tránh bẫy hoảng loạn:</b> Khi thị trường giảm sâu về hỗ trợ mạnh với thanh khoản cạn kiệt, không bán tháo theo đám đông. Đó là lúc kiểm tra lại nội tại để gom cùng Tạo lập.\n\n"
+        
+        "🛑 <b>2. QUY TẮC TÀI KHOẢN & CHỐNG TRẢ THÙ THỊ TRƯỜNG</b>\n"
+        "• <b>Cấm tuyệt đối gỡ gạc (Anti-Revenge):</b> Không bao giờ đánh lớn hay mở lệnh gấp thếp để gỡ lỗ. Lệnh sau độc lập hoàn toàn với lệnh trước.\n"
+        "• <b>Rủi ro tối đa mỗi lệnh:</b> Số tiền lỗ tối đa cho một giao dịch không vượt quá 1% đến 2% tổng NAV. Sai là tự động văng ra.\n"
+        "• <b>Cool-down nghiêm ngặt:</b> Thua liên tục 2 lệnh, khóa app giao dịch ngay lập tức trong 2 tuần để đưa não bộ về trạng thái cân bằng.\n\n"
+        
+        "📊 <b>3. QUY TẮC THỜI ĐIỂM & HIỆU SUẤT VỐN</b>\n"
+        "• <b>Điểm mua tối ưu:</b> Tích lũy đủ + Giá tốt + Khả năng bật lên càng sớm càng tốt để tránh chôn vốn.\n"
+        "• <b>Thời gian chờ (Time Stop):</b> Sau một tuần mua mà cổ phiếu ì ạch không chạy, kiên quyết cơ cấu thu hồi vốn.\n\n"
+        
+        "💎 <b>4. QUY TẮC NỘI TAI DOANH NGHIỆP (\"THÙNG ĐẶC\")</b>\n"
+        "• <b>Loại bỏ thùng rỗng:</b> Tránh xa cổ phiếu kỳ vọng ảo. Chỉ chọn doanh nghiệp \"thùng đặc\" (Tài sản thật, dòng tiền kinh doanh dương, nợ an toàn).\n"
+        "• <b>Phòng thủ Thiên nga đen:</b> Doanh nghiệp tốt đến mấy vẫn phải đề phòng biến cố vĩ mô hệ thống bất ngờ.\n\n"
+        
+        "🌐 <b>5. QUY TẮC XU HƯỚNG & KỶ LUẬT THÉP</b>\n"
+        "• <b>Thuận thị trường chung:</b> Không chống lại xu hướng lớn của VN-Index.\n"
+        "• <b>Cắt lỗ là chi phí kinh doanh:</b> Vi phạm âm 7-8% hoặc gãy hỗ trợ kỹ thuật là <b>phải bán ngay lập tức</b>, tuyệt đối không gồng lỗ hay bình quân giá xuống.\n"
+        "• <b>Sự im lặng là vàng:</b> Ngồi im, ngắt kết nối bảng điện khi thị trường chưa rõ ràng chính là cách kiếm tiền an toàn nhất.\n"
+        "====================================\n"
+        "🎯 <i>Ghi nhớ và đọc lại mỗi ngày để bảo vệ huyết mạch tài khoản!</i>"
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🤖 Kiểm tra Auto-Buy", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback")
+        ]
+    ]
+    
+    await target_msg.reply_text(rules_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text(
@@ -874,7 +921,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
-        "   └ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại\n"
+        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại\n"
+        "   └ 📜 /quytec    : Xem bộ quy tắc sống còn của nhóm 5%\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -917,11 +965,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("nganh", sectors_command))
     app.add_handler(CommandHandler("khoingoai", foreign_command))  
     app.add_handler(CommandHandler("tin", news_command))
+    app.add_handler(CommandHandler("quytec", quytec_command))   # <--- Đã tích hợp lệnh /quytec
+    app.add_handler(CommandHandler("quytrach", quytec_command)) # <--- Đã tích hợp lệnh /quytrach
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm Khối Ngoại & Groq AI!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công trên Render kèm Khối Ngoại, Groq AI & Bộ Quy Tắc 5%!")
     
     app.run_polling(
         drop_pending_updates=True,
