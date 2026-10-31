@@ -262,9 +262,9 @@ def check_vnindex_health():
     close, ema20 = last["Close"], last.get("EMA20", last["Close"])
 
     if close >= ema20:
-        res = {"status": "BULLISH", "score_modifier": 1.1, "note": "VN-Index ủng hộ tăng"}
+        res = {"status": "BULLISH", "score_modifier": 1.1, "note": "VN-Index ủng hộ tăng (Thời tiết đẹp)"}
     else:
-        res = {"status": "SIDEWAYS", "score_modifier": 0.9, "note": "VN-Index phân hóa tích lũy"}
+        res = {"status": "SIDEWAYS", "score_modifier": 0.9, "note": "VN-Index phân hóa tích lũy (Sương mù)"}
 
     VNINDEX_HEALTH_CACHE["data"], VNINDEX_HEALTH_CACHE["timestamp"] = res, now_ts
     return res
@@ -412,25 +412,25 @@ def analyze_stock(symbol, resolution="D", count=200):
     score = 50
 
     if close > cloud_top: 
-        score += 20; confluence_points.append("Giá nằm trên mây Kumo")
+        score += 20; confluence_points.append("Giá nằm trên mây Kumo (Đường thênh thang)")
     elif close >= cloud_bottom: 
-        score += 10; confluence_points.append("Giá trong mây Kumo")
+        score += 10; confluence_points.append("Giá trong mây Kumo (Đường hẹp)")
     else: 
-        confluence_points.append("⚠️ Giá nằm dưới mây Kumo (Downtrend)")
+        confluence_points.append("⚠️ Giá nằm dưới mây Kumo (Đoạn đường sạt lở)")
     
     if smc["has_ob"]: score += 10; confluence_points.append(f"🔥 [Order Block tại {fmt(smc['ob_price'])}]")
     if smc["has_liquidity_sweep"]: score += 15; confluence_points.append("🎯 [Quét thanh khoản rút chân]")
     
     if cmf > 0.03: 
         score += 15
-        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) tốt")
+        confluence_points.append(f"Dòng tiền lớn CMF ({cmf:.2f}) mạnh (Tiếng máy khỏe)")
     elif cmf < -0.1:
         score -= 20
         confluence_points.append(f"🚨 Dòng tiền rút ròng mạnh (CMF: {cmf:.2f})")
 
     if is_downtrend_heavy and cmf < 0:
         score = min(score, 40)
-        confluence_points.append("🛡️ [Kích hoạt khiên chống Downtrend: Cấm bắt đáy]")
+        confluence_points.append("🛡️ [Khiên chống Downtrend: Cấm bắt đáy khi xe mất phanh]")
 
     confidence_score = min(max(int(score * mkt_health["score_modifier"]), 10), 90)
 
@@ -444,24 +444,24 @@ def analyze_stock(symbol, resolution="D", count=200):
     sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
 
     if confidence_score >= 65 and not is_downtrend_heavy:
-        system_status = "MỞ MUA / GIA TĂNG TỶ TRỌNG"
+        system_status = "ĐÈN XANH: MỞ MUA / TĂNG GA"
         final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
+        action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Phanh khẩn cấp (Stoploss) tại <code>{fmt(stop_loss)}</code>."
     elif confidence_score >= 50:
-        system_status = "THĂM DÒ THẬN TRỌNG"
+        system_status = "ĐÈN VÀNG: THĂM DÒ THẬN TRỌNG"
         final_icon = f"🟡 <b>THĂM DÒ THẬN TRỌNG (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = f"Tỷ trọng nhỏ, quan sát kỹ vùng hỗ trợ, Stoploss tại <code>{fmt(stop_loss)}</code>."
+        action_note = f"Đi chậm lại, quan sát kỹ vùng hỗ trợ, Stoploss tại <code>{fmt(stop_loss)}</code>."
     else:
-        system_status = "ĐỨNG NGOÀI / QUAN SÁT (NO TRADE)"
-        final_icon = f"🔴 <b>CHƯA ĐỦ ĐIỀU KIỆN MUA (Độ tin cậy: {confidence_score}%)</b>"
+        system_status = "ĐÈN ĐỎ: DỪNG XE / QUAN SÁT (NO TRADE)"
+        final_icon = f"🔴 <b>TẤP XE VÀO LỀ (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Cổ phiếu đang xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài, không bắt đáy!</b>"
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Tích lũy ổn định"
-    long_term_trend = "UPTREND (Trên SMA200)" if not is_downtrend_heavy else "DOWNTREND / RƠI MẠNH"
+    long_term_trend = "UPTREND (Xuống dốc thoáng)" if not is_downtrend_heavy else "DOWNTREND (Trượt lùi dốc)"
 
-    text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KỸ THUẬT & SMC: {symbol.upper()}</b>\n"
+    text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KĨ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
-    text_part1 += f"🏛️ Trạng thái thị trường: <b>{html.escape(mkt_health['note'])}</b>\n\n"
+    text_part1 += f"🏛️ Thời tiết thị trường: <b>{html.escape(mkt_health['note'])}</b>\n\n"
     text_part1 += f"🌐 <b>1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:</b>\n• Xu hướng: {long_term_trend}\n• ADX: <code>{adx:.1f}</code> | CMF: <code>{cmf:.2f}</code> | RVOL: <code>{rvol:.2f}x</code>\n\n"
     text_part1 += f"🏛️ <b>2. CẤU TRÚC SMC & VOLUME PROFILE:</b>\n• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Sweep: <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n• POC: <code>{fmt(poc)}</code> | VAL: <code>{fmt(val)}</code> | VAH: <code>{fmt(vah)}</code>\n\n"
     text_part1 += f"🎯 <b>3. QUẢN TRỊ RỦI RO & VỐN 1% NAV:</b>\n• Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
@@ -487,8 +487,8 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
-    ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.8)
-    ax.set_title(f"Phân Tích Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold")
+    ax.axhline(poc, color="purple", linestyle=":", label=f"POC (Mặt đường cứng): {fmt(poc)}", alpha=0.8)
+    ax.set_title(f"Bản Đồ GPS Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7)
     fig.autofmt_xdate()
 
@@ -501,7 +501,7 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT CÓ BỘ LỌC CHẶN RỦI RO CHO AUTO-BUY & DIP-BUY
+# 3. HÀM QUÉT BỘ LỌC TỰ ĐỘNG
 # ==========================================
 def process_single_stock_for_autobuy(symbol):
     try:
@@ -693,38 +693,37 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     rules_text = (
-        "📜 <b>HỆ THỐNG QUY TẮC SỐNG CÒN CỦA NHÓM 5% CHIẾN THẮNG</b>\n"
+        "🚗 <b>CẨM NANG SINH TỒN TOÀN DIỆN: LÁI XE CHỨNG KHOÁN</b>\n"
         "====================================\n\n"
         
-        "🏛️ <b>1. QUY TẮC TƯ DUY TẠO LẬP & ĐÁM ĐÔNG (SMART MONEY)</b>\n"
-        "• <b>Mua ngầm theo Tạo lập:</b> Tạo lập gom hàng âm thầm ở nền giá đi ngang (sideway) thanh khoản cạn kiệt, không mua đuổi giá trần.\n"
-        "• <b>Nói KHÔNG với FOMO:</b> Tuyệt đối không mua đuổi khi cổ phiếu đã chạy xa nền tích lũy hoặc khi tin tốt tràn ngập diễn đàn.\n"
-        "• <b>Tránh bẫy hoảng loạn:</b> Khi thị trường giảm sâu về hỗ trợ mạnh với thanh khoản cạn kiệt, không bán tháo theo đám đông. Đó là lúc kiểm tra lại nội tại để gom cùng Tạo lập.\n\n"
+        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy)</b>\n"
+        "• <b>Tiền là xăng xe:</b> Luôn giữ xăng dự phòng (tiền mặt), không phóng bạt mạng hết sạch xăng dọc đường[span_0](start_span)[span_0](end_span).\n"
+        "• <b>Bình NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng. Đạp lút cán lúc bão lũ là nổ bình xăng (Call Margin).\n\n"
         
-        "🛑 <b>2. QUY TẮC TÀI KHOẢN & CHỐNG TRẢ THÙ THỊ TRƯỜNG</b>\n"
-        "• <b>Cấm tuyệt đối gỡ gạc (Anti-Revenge):</b> Không bao giờ đánh lớn hay mở lệnh gấp thếp để gỡ lỗ. Lệnh sau độc lập hoàn toàn với lệnh trước.\n"
-        "• <b>Rủi ro tối đa mỗi lệnh:</b> Số tiền lỗ tối đa cho một giao dịch không vượt quá 1% đến 2% tổng NAV. Sai là tự động văng ra.\n"
-        "• <b>Cool-down nghiêm ngặt:</b> Thua liên tục 2 lệnh, khóa app giao dịch ngay lập tức trong 2 tuần để đưa não bộ về trạng thái cân bằng.\n\n"
+        "🛣️ <b>2. CON ĐƯỜNG & TÍN HIỆU (Cổ phiếu & Thị trường)</b>\n"
+        "• <b>Mỗi con đường là 1 cổ phiếu:</b> Đại lộ to (Cp cơ bản) đi êm ru; đường làng ổ gà (Penny) xóc óc[span_1](start_span)[span_1](end_span).\n"
+        "• <b>Đèn Đỏ / Đèn Xanh:</b> Thị trường rủi ro $\rightarrow$ <b>Đạp phanh dừng xe</b>; Đèn xanh $\rightarrow$ <b>Tăng ga</b>[span_2](start_span)[span_2](end_span).\n"
+        "• <b>Ổ gà, nắp cống:</b> Nhịp rũ bỏ (shake-out). Bám đường lớn mà đi, không hốt hoảng bẻ lái[span_3](start_span)[span_3](end_span).\n"
+        "• <b>Kẹt xe giờ cao điểm (FOMO):</b> Thấy đám đông chen chúc hưng phấn tột độ $\rightarrow$ <b>Tuyệt đối tránh xa</b>, không cố chen chân kẻo dẫm đạp[span_4](start_span)[span_4](end_span).\n\n"
         
-        "📊 <b>3. QUY TẮC THỜI ĐIỂM & HIỆU SUẤT VỐN</b>\n"
-        "• <b>Điểm mua tối ưu:</b> Tích lũy đủ + Giá tốt + Khả năng bật lên càng sớm càng tốt để tránh chôn vốn.\n"
-        "• <b>Thời gian chờ (Time Stop):</b> Sau một tuần mua mà cổ phiếu ì ạch không chạy, kiên quyết cơ cấu thu hồi vốn.\n\n"
+        "🚛 <b>3. CÁC LỰC LƯỢNG TRÊN ĐƯỜNG (Tạo lập, Khối ngoại, Vĩ mô)</b>\n"
+        "• <b>Xe container (Tạo lập):</b> Mở đường lớn. Nhìn xi-nhan của họ để đi theo đuôi, cấm chèn ép điểm mù.\n"
+        "• <b>Thời tiết (Vĩ mô):</b> Nắng ráo phóng nhanh; bão lũ (vĩ mô xấu) phải tấp xe vào lề trú ẩn.\n"
+        "• <b>Biển báo (Tin tức):</b> Tin tốt ra lúc kẹt xe là bẫy; tin xấu bất ngờ thì nhìn gương chiếu hậu xử lý bình tĩnh.\n\n"
         
-        "💎 <b>4. QUY TẮC NỘI TAI DOANH NGHIỆP (\"THÙNG ĐẶC\")</b>\n"
-        "• <b>Loại bỏ thùng rỗng:</b> Tránh xa cổ phiếu kỳ vọng ảo. Chỉ chọn doanh nghiệp \"thùng đặc\" (Tài sản thật, dòng tiền kinh doanh dương, nợ an toàn).\n"
-        "• <b>Phòng thủ Thiên nga đen:</b> Doanh nghiệp tốt đến mấy vẫn phải đề phòng biến cố vĩ mô hệ thống bất ngờ.\n\n"
-        
-        "🌐 <b>5. QUY TẮC XU HƯỚNG & KỶ LUẬT THÉP</b>\n"
-        "• <b>Thuận thị trường chung:</b> Không chống lại xu hướng lớn của VN-Index.\n"
-        "• <b>Cắt lỗ là chi phí kinh doanh:</b> Vi phạm âm 7-8% hoặc gãy hỗ trợ kỹ thuật là <b>phải bán ngay lập tức</b>, tuyệt đối không gồng lỗ hay bình quân giá xuống.\n"
-        "• <b>Sự im lặng là vàng:</b> Ngồi im, ngắt kết nối bảng điện khi thị trường chưa rõ ràng chính là cách kiếm tiền an toàn nhất.\n"
+        "🗺️ <b>4. KỸ NĂng lái & TÂM LÝ SINH TỒN (PTKT, PTCB & Cắt lỗ)</b>\n"
+        "• <b>Sổ kiểm định (PTCB):</b> Kiểm tra động cơ. Xe tốt gặp bão chỉ xước sơn, qua bão lại chạy tiếp.\n"
+        "• <b>GPS & Kính chiếu hậu (PTKT):</b> Soi lại quá khứ để nhận biết khúc cua, kháng cự, hỗ trợ.\n"
+        "• <b>Cắt lỗ (Stop-loss):</b> Kỹ năng phanh gấp khi gặp chướng ngại vật. Túi khí cứu mạng tài khoản[span_5](start_span)[span_5](end_span)!\n"
+        "• <b>Cấm bắt đáy xe mất phanh (Panic/Bottom):</b> Đợi xe dừng hẳn ở chân dốc rồi mới bước lên, tuyệt đối không thò tay cản đầu xe đang lao dốc.\n"
+        "• <b>Không hoảng loạn bẻ lái (Panic Selling):</b> Thấy ổ gà nhỏ không đạp chết phanh liên hoàn giữa cao tốc gây tai nạn dây chuyền.\n"
         "====================================\n"
-        "🎯 <i>Ghi nhớ và đọc lại mỗi ngày để bảo vệ huyết mạch tài khoản!</i>"
+        "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn!</i>"
     )
     
     keyboard = [
         [
-            InlineKeyboardButton("🤖 Kiểm tra Auto-Buy", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
             InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback")
         ]
     ]
@@ -929,7 +928,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO (VSA + SMC)!</b>\n\n"
+        "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
         "2️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
         "3️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
@@ -937,7 +936,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
         "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
-        "   └ 📜 /quytec    : Xem bộ quy tắc sống còn của nhóm 5%\n"
+        "   └ 📜 /quytec    : Cẩm nang sinh tồn \"Lái xe chứng khoán\"\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -985,7 +984,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng cào khối ngoại từ 24hmoney!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật hoàn thiện bộ cẩm nang lái xe chứng khoán!")
     
     app.run_polling(
         drop_pending_updates=True,
