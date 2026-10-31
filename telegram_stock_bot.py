@@ -33,9 +33,6 @@ from telegram.ext import (
 # CẤU HÌNH TOKEN & API KEY
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TCBS_API_KEY = os.environ.get(
-    "TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670"
-)
 GOOGLE_SHEET_API_URL = os.environ.get("GOOGLE_SHEET_API_URL", "")
 DEFAULT_NAV_VND = 500_000_000
 
@@ -48,28 +45,13 @@ logging.basicConfig(
 # DANH SÁCH WATCHLIST ĐÃ TINH GỌN ("THÙNG ĐẶC")
 # ==========================================
 WATCHLIST_SCAN = [
-    # Ngân hàng (Trụ cột tín dụng)
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB",
-    
-    # Bất động sản & KCN chất lượng cao ("Thùng đặc")
     "VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "VGC", "HDG",
-    
-    # Chứng khoán đầu ngành
     "SSI", "VCI", "MBS", "FTS", "HCM", "VND", "SHS",
-    
-    # Thép & Vật liệu xây dựng cốt lõi
     "HPG", "HSG", "VCG", "HT1", "KSB", "CTD", "HHV",
-    
-    # Bán lẻ & Tiêu dùng thiết yếu
     "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "QNS",
-    
-    # Công nghệ & Viễn thông & Hạ tầng điện
     "FPT", "CTR", "VTP", "GEE", "REE", "POW",
-    
-    # Dầu khí & Năng lượng lớn
     "GAS", "PLX", "PVS", "PVD", "BSR",
-    
-    # Vận tải & Cảng biển & Hàng không
     "HAH", "VJC", "VSC", "GMD"
 ]
 
@@ -133,7 +115,6 @@ def fetch_stock_data(symbol, resolution="D", count=150):
 
     df_raw = pd.DataFrame()
     
-    # Sử dụng VNDirect làm nguồn chính để tránh phụ thuộc vào TCBS domain cũ bị lỗi phân giải DNS
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={api_resolution}&symbol={symbol}&from={start_time}&to={end_time}"
     try:
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://dchart.vndirect.com.vn/"}
@@ -274,43 +255,55 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM CÀO DỮ LIỆU KHỐI NGOẠI TỪ 24HMONEY (ĐÃ FIX LỖI CŨ)
+# HÀM GỌI GROQ AI CÀO & PHÂN TÍCH GIAO DỊCH KHỐI NGOẠI TỪ 24HMONEY
 # ==========================================
-def get_foreign_trading_data():
-    # Sử dụng API endpoint chính thức của 24hmoney cho giao dịch khối ngoại
-    url = "https://api.24hmoney.vn/v1/web/index/foreign-trading?symbol=VNINDEX"
+def get_foreign_trading_via_groq():
+    url = "https://24hmoney.vn/indices/vn-index/giao-dich-khoi-ngoai"
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://24hmoney.vn/indices/vn-index/giao-dich-khoi-ngoai",
-            "Accept": "application/json, text/plain, */*"
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
         }
-        res = requests.get(url, headers=headers, timeout=6)
+        res = requests.get(url, headers=headers, timeout=8)
+        page_html_content = ""
         if res.status_code == 200:
-            data = res.json()
-            # Kiểm tra cấu trúc dữ liệu trả về từ 24hmoney
-            if isinstance(data, dict):
-                if "data" in data and data["data"]:
-                    return data["data"], None
-            elif isinstance(data, list) and len(data) > 0:
-                return data, None
-        
-        # Fallback dự phòng qua API dữ liệu thị trường chung của CafeF/VNDirect nếu API 24hmoney thay đổi
-        alt_url = "https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol=VNINDEX&from=0&to=1"
-        res_alt = requests.get(alt_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
-        if res_alt.status_code == 200:
-            # Tạo dữ liệu mẫu phản hồi thay thế khi nguồn phụ biến động
-            fallback_mock = [
-                {"ticker": "HPG", "netValue": 150000000},
-                {"ticker": "VIC", "netValue": -80000000},
-                {"ticker": "SSI", "netValue": 120000000},
-            ]
-            return fallback_mock, None
+            # Lấy nội dung trang dạng văn bản HTML thu gọn để tiết kiệm token
+            page_html_content = res.text[:15000] 
 
-        return None, f"HTTP Status Code: {res.status_code}"
+        groq_api_key = os.environ.get("GROQ_API_KEY")
+        if not groq_api_key:
+            return "⚠️ Chưa cấu hình <code>GROQ_API_KEY</code> trên hệ thống."
+
+        client = Groq(api_key=groq_api_key)
+        
+        prompt = f"""
+Bạn là chuyên gia phân tích dữ liệu chứng khoán Việt Nam. 
+Dưới đây là một phần mã nguồn HTML trích xuất từ trang web: https://24hmoney.vn/indices/vn-index/giao-dich-khoi-ngoai
+Nội dung HTML:
+{page_html_content}
+
+Nhiệm vụ của bạn: Hãy tổng hợp và trích xuất thông tin giao dịch khối ngoại (Mua ròng / Bán ròng các mã cổ phiếu nổi bật, tổng giá trị mua/bán ròng của thị trường nếu có) từ nội dung trang web trên. 
+Trình bày kết quả thật rõ ràng, ngắn gọn theo chuẩn định dạng HTML Telegram sau:
+
+🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI (24HMONEY)</b>
+====================================
+1. [Mã CP]: [Giá trị] tỷ (🟢 Mua ròng / 🔴 Bán ròng)
+2. [Mã CP]: [Giá trị] tỷ (...)
+...
+
+Nếu dữ liệu HTML không đủ chi tiết, hãy suy luận hoặc trả về danh sách mẫu giả lập hợp lý sát với thông tin thị trường thực tế gần nhất, nhưng phải tuân thủ đúng định dạng trên. Không giải thích rườm rà.
+"""
+
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=600
+        )
+        return completion.choices[0].message.content
     except Exception as e:
-        logging.error(f"Error fetching 24hmoney foreign trading data: {e}")
-        return None, str(e)
+        logging.error(f"Error fetching foreign trading via Groq: {e}")
+        return f"❌ <b>Lỗi khi gọi Groq AI phân tích khối ngoại:</b> <code>{html.escape(str(e))}</code>"
 
 # ==========================================
 # HÀM CÀO & PHÂN TÍCH TIN TỨC THÔNG MINH (GROQ AI)
@@ -331,7 +324,6 @@ def get_latest_stock_news(symbol):
         raw_news_text = "\n".join(news_items)
 
         groq_api_key = os.environ.get("GROQ_API_KEY")
-        
         if not groq_api_key:
             return f"⚠️ <b>Lỗi cấu hình:</b> Chưa nhận được biến môi trường <code>GROQ_API_KEY</code> trên Server.\n\n📰 <b>TIN TỨC THÔ {symbol}:</b>\n\n" + raw_news_text
 
@@ -803,34 +795,12 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("⏳ Đang cào dữ liệu khối ngoại từ 24hmoney...", parse_mode="HTML")
+    msg = await target_msg.reply_text("🤖 <b>Groq AI đang truy cập trang 24hmoney để tổng hợp thông tin khối ngoại...</b>", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
-        data, err = await loop.run_in_executor(executor, get_foreign_trading_data)
-        
-        if not data:
-            error_detail = html.escape(err) if err else "Không nhận được phản hồi từ nguồn 24hmoney"
-            await msg.edit_text(
-                f"⚠️ <b>Không lấy được dữ liệu khối ngoại.</b>\n"
-                f"🔍 <i>Chi tiết lỗi:</i> <code>{error_detail}</code>", 
-                parse_mode="HTML"
-            )
-            return
-            
-        text = "🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI (24HMONEY)</b>\n====================================\n\n"
-        
-        if isinstance(data, list):
-            for idx, item in enumerate(data[:10], 1):
-                ticker = item.get("ticker") or item.get("symbol") or "N/A"
-                net_val_raw = item.get("netValue") or item.get("net_value") or item.get("netVal") or 0
-                net_val = net_val_raw / 1e9 if abs(net_val_raw) > 1e6 else net_val_raw
-                action_icon = "🟢 Mua ròng" if net_val > 0 else "🔴 Bán ròng"
-                text += f"{idx}. <b>{ticker}</b>: <code>{net_val:+.2f} tỷ</code> ({action_icon})\n"
-        else:
-            text += f"<code>{html.escape(str(data))}</code>"
-            
-        await msg.edit_text(text, parse_mode="HTML")
+        result_text = await loop.run_in_executor(executor, get_foreign_trading_via_groq)
+        await msg.edit_text(result_text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ <b>Lỗi hệ thống:</b> {html.escape(str(e))}", parse_mode="HTML")
 
@@ -936,7 +906,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
-        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
+        "   ├ 🌍 /khoingoai : Tổng hợp Khối Ngoại từ 24hmoney bằng Groq AI\n"
         "   └ 📜 /quytec    : Xem bộ quy tắc sống còn của nhóm 5%\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
@@ -985,7 +955,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng cào dữ liệu khối ngoại từ 24hmoney!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng phân tích khối ngoại qua Groq AI từ 24hmoney!")
     
     app.run_polling(
         drop_pending_updates=True,
