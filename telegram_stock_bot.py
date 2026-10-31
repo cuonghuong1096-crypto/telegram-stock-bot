@@ -273,7 +273,7 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM LẤY DỮ LIỆU KHỐI NGOẠI (CÓ FALLBACK AN TOÀN)
+# HÀM LẤY DỮ LIỆU KHỐI NGOẠI (TRẢ VỀ LỖI TƯỜNG MINH NẾU THẤT BẠI)
 # ==========================================
 def get_foreign_trading_data():
     url = "https://apifull.tcbs.com.vn/stock-insight/v1/market/top-mover?type=ForeignTrading&size=10"
@@ -287,18 +287,11 @@ def get_foreign_trading_data():
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
-                return data
+                return data, None
+        return None, f"HTTP Status Code: {res.status_code}"
     except Exception as e:
         logging.error(f"Error fetching foreign trading data: {e}")
-    
-    # Fallback dữ liệu mẫu để bot không bị lỗi chết ngắt khi API TCBS chặn IP/gián đoạn
-    return [
-        {"ticker": "VIC", "netValue": -359600000000},
-        {"ticker": "TCB", "netValue": -131900000000},
-        {"ticker": "MBB", "netValue": -42300000000},
-        {"ticker": "VHM", "netValue": 69000000000},
-        {"ticker": "VCB", "netValue": 37100000000}
-    ]
+        return None, str(e)
 
 # ==========================================
 # HÀM CÀO & PHÂN TÍCH TIN TỨC THÔNG MINH (GROQ AI)
@@ -745,17 +738,22 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
-# Handler lệnh /khoingoai xem top mua/bán ròng khối ngoại
+# Handler lệnh /khoingoai xem top mua/bán ròng khối ngoại (báo lỗi tường minh nếu mất kết nối)
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text("⏳ Đang tải dữ liệu giao dịch khối ngoại từ TCBS...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(executor, get_foreign_trading_data)
+        data, err = await loop.run_in_executor(executor, get_foreign_trading_data)
         
         if not data:
-            await msg.edit_text("⚠️ Không lấy được dữ liệu khối ngoại từ máy chủ.")
+            error_detail = html.escape(err) if err else "Không nhận được phản hồi từ API TCBS"
+            await msg.edit_text(
+                f"⚠️ <b>Không lấy được dữ liệu khối ngoại từ máy chủ.</b>\n"
+                f"🔍 <i>Chi tiết lỗi:</i> <code>{error_detail}</code>", 
+                parse_mode="HTML"
+            )
             return
             
         text = "🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI</b>\n====================================\n\n"
@@ -771,7 +769,7 @@ async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ <b>Lỗi hệ thống:</b> {html.escape(str(e))}", parse_mode="HTML")
 
 
 # Handler lệnh /tin <mã> tích hợp Groq AI phân tích
