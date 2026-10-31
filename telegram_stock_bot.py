@@ -270,10 +270,9 @@ def check_vnindex_health():
     return res
 
 # ==========================================
-# HÀM LẤY DỮ LIỆU KHỐI NGOẠI CHUẨN XÁC & ỔN ĐỊNH
+# HÀM LẤY DỮ LIỆU KHỐI NGOẠI ĐỘNG (TUYỆT ĐỐI KHÔNG DÙNG DỮ LIỆU TĨNH)
 # ==========================================
 def get_foreign_trading_data():
-    # Sử dụng API thống kê thị trường chuẩn của SSI/VNDirect thay thế để tránh bị chặn 403/trống JSON từ 24hmoney
     url = "https://finfo-api.vndirect.com.vn/v4/foreigns?q=date:gte:2026-01-01&size=10"
     try:
         headers = {
@@ -302,38 +301,13 @@ def get_foreign_trading_data():
                 if parsed_list:
                     parsed_list.sort(key=lambda x: abs(x["netValue"]), reverse=True)
                     return parsed_list, None
-
-        # Fallback dữ liệu mẫu cập nhật mới nhất nếu API phụ trợ gián đoạn
-        fallback_data = [
-            {"ticker": "VNM", "netValue": 1.42},
-            {"ticker": "VHM", "netValue": 1.07},
-            {"ticker": "CTG", "netValue": 0.89},
-            {"ticker": "FPT", "netValue": 0.73},
-            {"ticker": "HPG", "netValue": 0.65},
-            {"ticker": "REE", "netValue": -0.58},
-            {"ticker": "GAS", "netValue": -0.53},
-            {"ticker": "MWG", "netValue": -0.49},
-            {"ticker": "SSI", "netValue": -0.44},
-            {"ticker": "VCB", "netValue": -0.38}
-        ]
-        return fallback_data, None
-
+            else:
+                return None, "API trả về danh sách dữ liệu khối ngoại trống."
+        else:
+            return None, f"Lỗi phản hồi từ máy chủ dữ liệu (HTTP status {res.status_code})"
     except Exception as e:
         logging.error(f"Error fetching foreign trading data: {e}")
-        # Trả về danh sách chuẩn thực tế khi lỗi kết nối mạng
-        fallback_data = [
-            {"ticker": "VNM", "netValue": 1.42},
-            {"ticker": "VHM", "netValue": 1.07},
-            {"ticker": "CTG", "netValue": 0.89},
-            {"ticker": "FPT", "netValue": 0.73},
-            {"ticker": "HPG", "netValue": 0.65},
-            {"ticker": "REE", "netValue": -0.58},
-            {"ticker": "GAS", "netValue": -0.53},
-            {"ticker": "MWG", "netValue": -0.49},
-            {"ticker": "SSI", "netValue": -0.44},
-            {"ticker": "VCB", "netValue": -0.38}
-        ]
-        return fallback_data, None
+        return None, f"Lỗi ngoại lệ khi kết nối: {str(e)}"
 
 # ==========================================
 # HÀM CÀO & PHÂN TÍCH TIN TỨC THÔNG MINH (GROQ AI)
@@ -825,16 +799,16 @@ async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("⏳ Đang cào dữ liệu khối ngoại mới nhất...", parse_mode="HTML")
+    msg = await target_msg.reply_text("⏳ Đang cào dữ liệu khối ngoại thời gian thực...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
         data, err = await loop.run_in_executor(executor, get_foreign_trading_data)
         
         if not data:
-            error_detail = html.escape(err) if err else "Không nhận được phản hồi dữ liệu"
+            error_detail = html.escape(err) if err else "Không nhận được phản hồi dữ liệu động từ thị trường"
             await msg.edit_text(
-                f"⚠️ <b>Không lấy được dữ liệu khối ngoại.</b>\n"
+                f"⚠️ <b>LỖI KẾT NỐI KHỐI NGOẠI:</b>\n"
                 f"🔍 <i>Chi tiết lỗi:</i> <code>{error_detail}</code>", 
                 parse_mode="HTML"
             )
@@ -1002,7 +976,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng khối ngoại ổn định!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với tính năng khối ngoại động!")
     
     app.run_polling(
         drop_pending_updates=True,
