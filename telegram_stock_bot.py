@@ -80,7 +80,7 @@ STOCK_DATA_CACHE = {}
 executor = ThreadPoolExecutor(max_workers=30)
 
 # ==========================================
-# 1. HÀM GỌI DỮ LIỆU NẾN HOÀN TOÀN TỪ TCBS OPENAPI CHÍNH THỨC
+# 1. HÀM GỌI DỮ LIỆU NẾN CHUẨN TỪ TCBS OPENAPI GATEWAY
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
@@ -108,8 +108,8 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         res_param = "D"
         start_time = end_time - (count * 86400 * 2)
 
-    # Sử dụng đúng domain openapi.tcbs.com.vn theo chuẩn tài liệu chính thức
-    tcbs_url = f"https://openapi.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
+    # Sử dụng đúng gateway và xác thực Bearer token theo TCBS OpenAPI
+    tcbs_url = f"https://apigateway.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     try:
         headers = {
@@ -128,6 +128,20 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         err_msg = str(e)
         STOCK_DATA_CACHE[cache_key] = (pd.DataFrame(), err_msg, now_ts)
         return pd.DataFrame(), err_msg
+
+    if df_raw.empty:
+        # Fallback sang domain phụ nếu domain chính quá tải
+        try:
+            fallback_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
+            res_fb = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}, timeout=4.0)
+            if res_fb.status_code == 200:
+                data_fb = res_fb.json()
+                if isinstance(data_fb, list) and len(data_fb) > 0:
+                    df_raw = pd.DataFrame(data_fb)
+                    df_raw["time"] = pd.to_datetime(df_raw["tradingDate"])
+                    df_raw.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}, inplace=True)
+        except Exception:
+            pass
 
     if df_raw.empty:
         err_msg = "Không có dữ liệu từ TCBS OpenAPI"
@@ -243,19 +257,14 @@ def check_vnindex_health():
 
 
 # ==========================================
-# 2. LẤY THÔNG TIN ROOM NƯỚC NGOÀI CHUẨN TÀI LIỆU TCBS OPENAPI (`/tartarus/v1/tickerSnaps`)
+# 2. LẤY THÔNG TIN ROOM NƯỚC NGOÀI CHUẨN TCBS OPENAPI (`tickerSnaps`)
 # ==========================================
 def get_foreign_trading_data():
-    """
-    Sử dụng endpoint chính thức: GET /tartarus/v1/tickerSnaps?index=1 (1 = HOSE, 2 = VN30)
-    Trích xuất buyForeignQtty, sellForeignQtty, matchPrice theo tài liệu OpenAPI.
-    """
     parsed_list = []
-    # Rổ chứng khoán: 1 = HOSE, 2 = VN30
-    indexes_to_fetch = [1, 2] 
+    indexes_to_fetch = [1, 2] # 1 = HOSE, 2 = VN30
     
     for idx_val in indexes_to_fetch:
-        url = f"https://openapi.tcbs.com.vn/tartarus/v1/tickerSnaps?index={idx_val}"
+        url = f"https://apigateway.tcbs.com.vn/tartarus/v1/tickerSnaps?index={idx_val}"
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0",
@@ -276,7 +285,6 @@ def get_foreign_trading_data():
                     sell_qtty = float(item.get("sellForeignQtty", 0) or 0)
                     net_qtty = buy_qtty - sell_qtty
                     
-                    # Giá trị ròng tính theo tỷ VNĐ
                     net_val = (net_qtty * price) / 1000.0 if price > 0 else 0.0
                     
                     if net_val != 0:
@@ -290,7 +298,6 @@ def get_foreign_trading_data():
     if not parsed_list:
         return None, "Không lấy được dữ liệu room nước ngoài từ TCBS OpenAPI."
 
-    # Lọc bỏ trùng lặp mã giữa HOSE và VN30
     unique_dict = {}
     for item in parsed_list:
         ticker = item["ticker"]
@@ -582,7 +589,7 @@ async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"⚠️ Lỗi lấy dữ liệu khối ngoại từ TCBS: {err}", parse_mode="HTML")
             return
             
-        text = "🌍 **THÔNG TIN ROOM NƯỚC NGOÀI & GIAO DỊCH KHỐI NGOẠI (TCBS)**\n====================================\n\n"
+        text = "🌍 **THÔNG TIN ROOM NƯỚC NGOÀI & GIAO DỊCH KHỐI NGOÀI (TCBS)**\n====================================\n\n"
         for idx, item in enumerate(data[:12], 1):
             act = "🟢 Mua ròng" if item["netValue"] > 0 else "🔴 Bán ròng" if item["netValue"] < 0 else "⚪"
             text += f"{idx}. **{item['ticker']}**: `{item['netValue']:+.2f} tỷ` ({act})\n"
