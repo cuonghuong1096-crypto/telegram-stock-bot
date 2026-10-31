@@ -1,4 +1,3 @@
-
 import datetime
 import io
 import json
@@ -687,23 +686,24 @@ async def run_sector_flow_screener_with_progress(msg):
 
 
 # ==========================================
-# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (CẨM NANG TOÀN DIỆN CHI TIẾT & NÂNG CAO)
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (CẨM NANG TOÀN DIỆN CHUẨN LOGIC HỆ THỐNG)
 # ==========================================
 
 async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     rules_text = (
-        "🚗 <b>CẨM NANG SINH TỒN TOÀN DIỆN & NÂNG CAO: LÁI XE CHỨNG KHOÁN</b>\n"
+        "🚗 <b>CẨM NANG SINH TỒN BẤT BIẾN: LÁI XE CHỨNG KHOÁN</b>\n"
         "====================================\n\n"
         
         "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy Margin)</b>\n"
         "• <b>Tiền là xăng xe:</b> Luôn giữ bình xăng dự phòng (tiền mặt), không bao giờ phóng bạt mạng hết sạch xăng dọc đường.\n"
         "• <b>Bình tăng tốc NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng và mắt thấy đèn xanh xác nhận. Tuyệt đối không bật Margin khi xe đang lệch làn hoặc trượt dốc, tránh cháy xe (Call Margin).\n\n"
         
-        "🛣️ <b>2. CON ĐƯỜNG, VỊ TRÍ NHẬP LÀN & TÍN HIỆU (Cổ phiếu & Timing)</b>\n"
-        "• <b>Chọn đường quốc lộ lớn:</b> Chọn cổ phiếu cơ bản 'thùng đặc' (VRE, TCB) có nền tảng vững chắc, xe chạy đầm chắc.\n"
-        "• <b>Thời điểm bước ra lòng đường:</b> Đứng ở lề đường quan sát. Nếu chờ đúng lúc xe bon bon chạy thẳng (đèn xanh) thì bước ra nhập làn mượt mà. Ngược lại, đúng lúc xe container phi ra khỏi dải phân cách (đạp giá/hoảng loạn) mà lao ra cản đường thì 'die' ngay lập tức!\n"
+        "🛣️ <b>2. TUYẾN ĐƯỜNG, LÀN ĐƯỜNG & TIMING (Ngành, Cổ phiếu & Nhập làn)</b>\n"
+        "• <b>Nhóm Ngành (Sector Flow) = Tuyến đường giao thông:</b> Dòng tiền vào ngành nào giống như tuyến cao tốc đó đang được mở luồng ưu tiên. Đảo dòng ngành là rẽ sang đi tuyến đường rộng thoáng hơn.\n"
+        "• <b>Mỗi Cổ phiếu = Làn đường cụ thể:</b> Chọn đúng làn đường chất lượng cao 'thùng đặc' (TCB, VRE) để xe chạy đầm chắc.\n"
+        "• <b>Thời điểm nhập làn:</b> Đứng ở lề đường quan sát. Nếu chờ đúng lúc xe bon bon chạy thẳng (đèn xanh) thì bước ra nhập làn. Đúng lúc xe container phi ra khỏi dải phân cách (đạp giá/hoảng loạn) mà lao ra cản đường thì die ngay lập tức!\n"
         "• <b>Bẫy dừng đèn đỏ quá sớm:</b> Gom hàng đoán đáy quá sớm khiến xe đứng lình xình chôn vốn, phải kiên nhẫn chờ cú giật dứt khoát xác nhận dòng tiền.\n\n"
         
         "🚛 <b>3. GIAO THƯỜNG VỚI XE CONTAINER (Tạo lập & Điểm mù)</b>\n"
@@ -714,9 +714,14 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏗️ <b>4. CHẤT LƯỢNG MẶT ĐƯỜNG & BỘ MÁY QUẢN TRỊ (Nội tại doanh nghiệp)</b>\n"
         "• <b>Đường to nhưng không sửa chữa:</b> Doanh nghiệp lớn nhưng ban lãnh đạo tham ô, quản trị yếu kém, không tái đầu tư $\rightarrow$ Mặt đường hỏng nhanh, chi chít ổ gà, nhà đầu tư liên tục gặp tai nạn.\n"
         "• <b>Đường được thanh lọc & nâng cấp:</b> Doanh nghiệp minh bạch, ban lãnh đạo có tầm nhìn, dòng tiền kinh doanh khỏe $\rightarrow$ Mặt đường láng mịn, xe cộ tấp nập phóng phơi phới về đích.\n\n"
-        "🗺️ <b>5. KỸ NĂNG LÁI & TÂM LÝ SINH TỒN (Stoploss & Kỷ luật)</b>\n"
-        "• <b>Cắt lỗ (Stop-loss):</b> Túi khí cứu mạng tài khoản. Khi xe tông thủng mặt đường cứng hỗ trợ, phải đạp phanh khẩn cấp dứt khoát, không tiếc nuối.\n"
-        "• <b>Cấm bắt đáy xe mất phanh:</b> Đợi xe dừng hẳn ở chân dốc, xác nhận có lực đỡ rồi mới bước lên, không bao giờ thò tay cản đầu xe đang lao dốc.\n"
+        
+        "🔦 <b>5. TRANG BỊ VÀ KỸ NĂNG AN TOÀN (Kỹ thuật & Cấu hình Giao dịch)</b>\n"
+        "• <b>Phanh chân vs Phanh tay khẩn cấp:</b> Nhấp phanh chân (bán hạ tỷ trọng từ từ) khi xe chòng chành lệch làn. Giật phanh tay khẩn cấp (Cắt lỗ 100% Stop-loss) ngay lập tức khi vỡ mặt đường hỗ trợ cứng.\n"
+        "• <b>Rút chân Vol thấp (Phanh dừng rơi):</b> Xe nhún về hỗ trợ nẩy lên nhưng Vol bé $\rightarrow$ Mới dừng trượt bánh, chưa có lực kéo, KHÔNG mua đuổi/Margin.\n"
+        "• <b>Rút chân Vol to (Tiếng máy nổ to - Quét thanh khoản):</b> Xe container đâm sát lề gom sạch hàng rồi nổ máy gầm to kéo xe giật lại đúng làn $\rightarrow$ VÀO THEO TRƯỜNG HỢP NÀY!\n"
+        "• <b>Đèn pha đi đêm (Báo cáo tài chính & PTCB):</b> Đèn cốt (ngắn hạn) chỉ thấy ổ gà 10m. Đèn pha (dài hạn/cơ bản) giúp tài xế nhìn xa hàng trăm mét trong sương mù để không lao xuống vực.\n"
+        "• <b>Trạm dừng nghỉ trên cao tốc (Tích lũy nền):</b> Xe chạy nén biên độ cạn volume không phải hỏng xe, mà là tấp vào trạm dừng nghỉ nạp nhiên liệu để tăng tốc giai đoạn tiếp theo.\n"
+        "• <b>Gương cầu lồi (Chỉ số vĩ mô & Khối ngoại):</b> Nhìn gương cầu lồi (tỷ giá, DXY, khối ngoại) ở khúc cua mù để nhận biết xe ngược chiều nguy hiểm từ xa.\n"
         "====================================\n"
         "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn cùng chiếc xe nguyên vẹn!</i>"
     )
@@ -936,7 +941,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
         "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
-        "   └ 📜 /quytec    : Cẩm nang sinh tồn nâng cao \"Lái xe chứng khoán\"\n"
+        "   └ 📜 /quytec    : Cẩm nang sinh tồn chuẩn logic \"Lái xe chứng khoán\"\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -984,7 +989,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật trọn vẹn cẩm nang lái xe nâng cao!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật bộ cẩm nang lái xe hoàn chỉnh nhất!")
     
     app.run_polling(
         drop_pending_updates=True,
