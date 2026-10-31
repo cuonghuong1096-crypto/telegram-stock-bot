@@ -34,6 +34,7 @@ from telegram.ext import (
 # ==========================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TCBS_API_KEY = os.environ.get("TCBS_API_KEY", "10001010079-bf495c0f-c321-42c6-bd6c-01d582ef3670")
+TCBS_OTP = os.environ.get("TCBS_OTP", "111111") # Mã Smart OTP (IOTP) từ TCInvest
 GOOGLE_SHEET_API_URL = os.environ.get("GOOGLE_SHEET_API_URL", "")
 DEFAULT_NAV_VND = 500_000_000
 
@@ -42,25 +43,52 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+# Cache lưu JWT token để tránh gọi API lấy token liên tục
+TCBS_TOKEN_CACHE = {"token": None, "time": 0}
+
+def get_tcbs_jwt_token():
+    """
+    Thực hiện trao đổi API Key lấy JWT Token chuẩn theo tài liệu 1.1 của TCBS OpenAPI.
+    URL: POST https://openapi.tcbs.com.vn/gaia/v1/oauth2/openapi/token[span_5](start_span)[span_5](end_span)
+    """
+    now = time.time()
+    if TCBS_TOKEN_CACHE["token"] and (now - TCBS_TOKEN_CACHE["time"] < 3600):
+        return TCBS_TOKEN_CACHE["token"]
+
+    token_url = "https://openapi.tcbs.com.vn/gaia/v1/oauth2/openapi/token"
+    payload = {
+        "apiKey": TCBS_API_KEY,
+        "otp": TCBS_OTP
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    try:
+        res = requests.post(token_url, json=payload, headers=headers, timeout=6.0)
+        if res.status_code == 200:
+            data = res.json()
+            jwt_token = data.get("token")
+            if jwt_token:
+                TCBS_TOKEN_CACHE["token"] = jwt_token
+                TCBS_TOKEN_CACHE["time"] = now
+                return jwt_token
+    except Exception as e:
+        logging.error(f"Lỗi lấy TCBS JWT Token: {e}")
+    
+    # Fallback trả về key cứng nếu không lấy được token động
+    return TCBS_API_KEY
+
 # ==========================================
 # DANH SÁCH WATCHLIST "THÙNG ĐẶC"
 # ==========================================
 WATCHLIST_SCAN = [
-    # Ngân hàng
     "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB",
-    # Bất động sản & KCN
     "VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "VGC", "HDG",
-    # Chứng khoán
     "SSI", "VCI", "MBS", "FTS", "HCM", "VND", "SHS",
-    # Thép & Xây dựng
     "HPG", "HSG", "VCG", "HT1", "KSB", "CTD", "HHV",
-    # Bán lẻ & Tiêu dùng
     "MWG", "PNJ", "FRT", "DGW", "MSN", "VNM", "SAB", "QNS",
-    # Công nghệ & Điện
     "FPT", "CTR", "VTP", "GEE", "REE", "POW",
-    # Dầu khí
     "GAS", "PLX", "PVS", "PVD", "BSR",
-    # Vận tải
     "HAH", "VJC", "VSC", "GMD"
 ]
 
@@ -80,7 +108,7 @@ STOCK_DATA_CACHE = {}
 executor = ThreadPoolExecutor(max_workers=30)
 
 # ==========================================
-# 1. HÀM GỌI DỮ LIỆU NẾN CHUẨN TỪ TCBS OPENAPI GATEWAY
+# 1. HÀM GỌI DỮ LIỆU NẾN TỪ TCBS OPENAPI CHUẨN
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
@@ -108,14 +136,15 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         res_param = "D"
         start_time = end_time - (count * 86400 * 2)
 
-    # Sử dụng đúng gateway và xác thực Bearer token theo TCBS OpenAPI
-    tcbs_url = f"https://apigateway.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
+    # Sử dụng đúng domain chính thức openapi.tcbs.com.vn
+    tcbs_url = f"https://openapi.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
     df_raw = pd.DataFrame()
     try:
+        token = get_tcbs_jwt_token()
         headers = {
             "User-Agent": "Mozilla/5.0",
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {TCBS_API_KEY}"
+            "Authorization": f"Bearer {token}"
         }
         res = requests.get(tcbs_url, headers=headers, timeout=5.0)
         if res.status_code == 200:
@@ -130,10 +159,10 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         return pd.DataFrame(), err_msg
 
     if df_raw.empty:
-        # Fallback sang domain phụ nếu domain chính quá tải
+        # Fallback sang domain phụ apifull nếu cần thiết
         try:
             fallback_url = f"https://apifull.tcbs.com.vn/stock-insight/v1/stock/bars?resolution={res_param}&ticker={symbol}&from={start_time}&to={end_time}"
-            res_fb = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0", "X-API-KEY": TCBS_API_KEY}, timeout=4.0)
+            res_fb = requests.get(fallback_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4.0)
             if res_fb.status_code == 200:
                 data_fb = res_fb.json()
                 if isinstance(data_fb, list) and len(data_fb) > 0:
@@ -262,14 +291,15 @@ def check_vnindex_health():
 def get_foreign_trading_data():
     parsed_list = []
     indexes_to_fetch = [1, 2] # 1 = HOSE, 2 = VN30
+    token = get_tcbs_jwt_token()
     
     for idx_val in indexes_to_fetch:
-        url = f"https://apigateway.tcbs.com.vn/tartarus/v1/tickerSnaps?index={idx_val}"
+        url = f"https://openapi.tcbs.com.vn/tartarus/v1/tickerSnaps?index={idx_val}"
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0",
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {TCBS_API_KEY}"
+                "Authorization": f"Bearer {token}"
             }
             res = requests.get(url, headers=headers, timeout=6)
             if res.status_code == 200:
@@ -730,5 +760,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã khởi động thành công với toàn bộ dữ liệu thuần túy từ TCBS OpenAPI!")
+    print("🚀 Bot Quant Trading Pro đã khởi động thành công với JWT Token chuẩn từ TCBS OpenAPI!")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
