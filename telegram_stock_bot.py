@@ -377,7 +377,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
         return f"❌ <b>Lỗi khi gọi Groq AI:</b> <code>{html.escape(err_msg)}</code>"
 
 # ==========================================
-# HÀM PHÂN TÍCH KỸ THUẬT & SMC
+# HÀM PHÂN TÍCH KỸ THUẬT & SMC (TÍCH HỢP VẼ BIỂU ĐỒ ĐẦY ĐỦ CHỈ BÁO)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
@@ -396,6 +396,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     rvol = last.get("RVOL", 1.0)
     rsi = last.get("RSI", 50.0)
     sma200 = last.get("SMA200", close)
+    ema20 = last.get("EMA20", close)
     adx = last.get("ADX", 25.0)
 
     span_a = last.get("Senkou_Span_A", close)
@@ -446,7 +447,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     if confidence_score >= 65 and not is_downtrend_heavy:
         system_status = "ĐÈN XANH: MỞ MUA / TĂNG GA"
         final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Phanh khẩn cấp (Stoploss) tại <code>{fmt(stop_loss)}</code>."
+        action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
     elif confidence_score >= 50:
         system_status = "ĐÈN VÀNG: THĂM DÒ THẬN TRỌNG"
         final_icon = f"🟡 <b>THĂM DÒ THẬN TRỌNG (Độ tin cậy: {confidence_score}%)</b>"
@@ -454,7 +455,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     else:
         system_status = "ĐÈN ĐỎ: DỪNG XE / QUAN SÁT (NO TRADE)"
         final_icon = f"🔴 <b>TẤP XE VÀO LỀ (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = f"Cổ phiếu đang xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài, không bắt đáy!</b>"
+        action_note = f"Cổ phiếu xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài, không bắt đáy!</b>"
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Tích lũy ổn định"
     long_term_trend = "UPTREND (Xuống dốc thoáng)" if not is_downtrend_heavy else "DOWNTREND (Trượt lùi dốc)"
@@ -485,11 +486,43 @@ def analyze_stock(symbol, resolution="D", count=200):
         ]
     ]
 
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
-    ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="black", lw=1.2)
-    ax.axhline(poc, color="purple", linestyle=":", label=f"POC (Mặt đường cứng): {fmt(poc)}", alpha=0.8)
-    ax.set_title(f"Bản Đồ GPS Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=7)
+    # ==========================================
+    # VẼ BIỂU ĐỒ MATPLOTLIB (ĐẦY ĐỦ CÁC CHỈ BÁO)
+    # ==========================================
+    fig, ax = plt.subplots(figsize=(9, 5), dpi=110)
+    
+    # 1. Đường giá đóng cửa chính
+    ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="#111111", lw=1.3, zorder=3)
+    
+    # 2. Dải Bollinger Bands
+    if "BB_Upper" in df.columns and "BB_Lower" in df.columns:
+        ax.plot(df["time"], df["BB_Upper"], label="BB Upper", color="gray", linestyle="--", alpha=0.5, lw=0.8)
+        ax.plot(df["time"], df["BB_Lower"], label="BB Lower", color="gray", linestyle="--", alpha=0.5, lw=0.8)
+        ax.fill_between(df["time"], df["BB_Lower"], df["BB_Upper"], color="gray", alpha=0.06, label="Bollinger Channel")
+
+    # 3. Các đường trung bình động (EMA20 & SMA200)
+    if "EMA20" in df.columns:
+        ax.plot(df["time"], df["EMA20"], label="EMA 20", color="#ff7f0e", lw=1.1, alpha=0.85)
+    if "SMA200" in df.columns:
+        ax.plot(df["time"], df["SMA200"], label="SMA 200", color="#d62728", lw=1.2, linestyle="-.", alpha=0.85)
+
+    # 4. Mây Kumo (Senkou Span A & B)
+    if "Senkou_Span_A" in df.columns and "Senkou_Span_B" in df.columns:
+        ax.plot(df["time"], df["Senkou_Span_A"], label="Kumo Span A", color="#2ca02c", lw=0.8, alpha=0.6)
+        ax.plot(df["time"], df["Senkou_Span_B"], label="Kumo Span B", color="#9467bd", lw=0.8, alpha=0.6)
+        ax.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
+                        where=(df["Senkou_Span_A"] >= df["Senkou_Span_B"]), color="green", alpha=0.08, interpolate=True)
+        ax.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
+                        where=(df["Senkou_Span_A"] < df["Senkou_Span_B"]), color="red", alpha=0.08, interpolate=True)
+
+    # 5. Volume Profile POC & Order Block
+    ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.9, lw=1.2)
+    if smc["has_ob"] and smc["ob_price"] > 0:
+        ax.axhline(smc["ob_price"], color="blue", linestyle="--", label=f"Order Block: {fmt(smc['ob_price'])}", alpha=0.8, lw=1.1)
+
+    ax.set_title(f"Bản Đồ GPS Kỹ Thuật & Chỉ Báo - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold", pad=10)
+    ax.legend(loc="upper left", fontsize=6.5, ncol=2, framealpha=0.8)
+    ax.grid(True, linestyle=":", alpha=0.4)
     fig.autofmt_xdate()
 
     buf = io.BytesIO()
@@ -989,7 +1022,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật bộ cẩm nang lái xe hoàn chỉnh nhất!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ chỉ báo lên biểu đồ!")
     
     app.run_polling(
         drop_pending_updates=True,
