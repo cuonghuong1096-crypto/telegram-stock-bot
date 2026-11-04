@@ -749,7 +749,47 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     rules_text = (
-        "🚗 <b>CẨM NANG VĨ MÔ & SINH TỒN: ĐỒNG HỒ CƠ HỌC KINH TẾ</b>\n"
+        "🚗 <b>CẨM NANG SINH TỒN BẤT BIẾN: LÁI XE CHỨNG KHOÁN</b>\n"
+        "====================================\n\n"
+        
+        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy Margin)</b>\n"
+        "• <b>Tiền mặt = Xăng xe:</b> Luôn giữ bình xăng dự phòng (tiền mặt), tuyệt đối không phóng bạt mạng hết sạch tiền dọc đường.\n"
+        "• <b>Bình tăng tốc NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng và mắt thấy đèn xanh xác nhận (Uptrend rõ ràng). Tuyệt đối không bật Margin khi xe đang lệch làn hoặc trượt dốc để tránh cháy xe (Call Margin).\n\n"
+        
+        "🛣️ <b>2. TUYẾN ĐƯỜNG, LÀN ĐƯỜNG & TIMING (Ngành & Cổ phiếu)</b>\n"
+        "• <b>Dòng tiền Ngành (Sector Flow) = Tuyến đường:</b> Dòng tiền lớn vào ngành nào giống như tuyến cao tốc đó đang được mở luồng ưu tiên.\n"
+        "• <b>Mỗi Cổ phiếu = Làn đường cụ thể:</b> Ưu tiên chọn đúng làn đường chất lượng cao 'thùng đặc' (TCB, VRE, HPG...) để xe chạy đầm chắc.\n"
+        "• <b>Thời điểm nhập làn:</b> Đứng ở lề đường quan sát. Chờ đúng lúc xe bon bon chạy thẳng (vượt mây, CMF > 0) thì bước ra nhập làn.\n\n"
+        
+        "🚛 <b>3. GIAO THƯỜNG VỚI XE CONTAINER (Tạo lập & Điểm mù)</b>\n"
+        "• <b>Xe tải lớn (Tạo lập / Cá mập):</b> Thường chủ động ôm cua gấp hoặc ép sát lề đường để rũ bỏ tay lái yếu (Shakeout / Quét thanh khoản).\n"
+        "• <b>Xử lý khi container bẻ lái:</b> Chờ xe container đánh lái xong quay lại đường thẳng (rút chân tạo Order Block), lúc đó mới thong thả bám theo sau.\n\n"
+        
+        "🏗️ <b>4. BỘ MÁY QUẢN TRỊ (Quản trị vốn & Quản trị rủi ro 1% NAV)</b>\n"
+        "• <b>Nhấp phanh chân:</b> Giảm tỷ trọng khi sương mù dày đặc (VN-Index mất EMA20).\n"
+        "• <b>Phanh tay khẩn cấp:</b> Cắt lỗ khắt khe (Stop-loss) ngay khi vỡ mặt đường hỗ trợ cứng để bảo vệ nguyên vẹn chiếc xe.\n"
+        "====================================\n"
+        "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn cùng chiếc xe nguyên vẹn!</i>"
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback")
+        ],
+        [
+            InlineKeyboardButton("💡 Xem Bản Đồ Vĩ Mô", callback_data="run_kienthuc_callback")
+        ]
+    ]
+    
+    await target_msg.reply_text(rules_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+
+async def kienthuc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    
+    macro_text = (
+        "🗺️ <b>BẢN ĐỒ VĨ MÔ: ĐỒNG HỒ CƠ HỌC KINH TẾ</b>\n"
         "====================================\n\n"
         
         "🎛️ <b>1. NHÓM ĐIỀU HÀNH & TIỀN TỆ (LÃI SUẤT & TỶ GIÁ)</b>\n"
@@ -779,12 +819,12 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [
-            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
-            InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback")
+            InlineKeyboardButton("📜 Cẩm Nang Lái Xe", callback_data="run_quytec_callback"),
+            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback")
         ]
     ]
     
-    await target_msg.reply_text(rules_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    await target_msg.reply_text(macro_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -951,6 +991,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "run_foreign_callback":
         await foreign_command(update, context)
         return
+    if data == "run_kienthuc_callback":
+        await kienthuc_command(update, context)
+        return
+    if data == "run_quytec_callback":
+        await quytec_command(update, context)
+        return
 
     parts = data.split("|")
     if len(parts) == 3:
@@ -1037,14 +1083,15 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("tin", news_command))
     app.add_handler(CommandHandler("quytec", quytec_command))
     app.add_handler(CommandHandler("quytrach", quytec_command))
-    app.add_handler(CommandHandler("kienthuc", quytec_command))   # Bổ sung lệnh /kienthuc ánh xạ trực tiếp
+    app.add_handler(CommandHandler("kienthuc", kienthuc_command)) 
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ chỉ báo lên biểu đồ, quy tắc lái xe & cẩm nang vĩ mô!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ cẩm nang lái xe & bản đồ vĩ mô!")
     
     app.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES
     )
+
