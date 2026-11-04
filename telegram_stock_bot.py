@@ -749,26 +749,34 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     rules_text = (
-        "🚗 <b>CẨM NANG SINH TỒN BẤT BIẾN: LÁI XE CHỨNG KHOÁN</b>\n"
+        "🚗 <b>CẨM NANG VĨ MÔ & SINH TỒN: ĐỒNG HỒ CƠ HỌC KINH TẾ</b>\n"
         "====================================\n\n"
         
-        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy Margin)</b>\n"
-        "• <b>Tiền là xăng xe:</b> Luôn giữ bình xăng dự phòng (tiền mặt), không bao giờ phóng bạt mạng hết sạch xăng dọc đường.\n"
-        "• <b>Bình tăng tốc NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng và mắt thấy đèn xanh xác nhận. Tuyệt đối không bật Margin khi xe đang lệch làn hoặc trượt dốc, tránh cháy xe (Call Margin).\n\n"
+        "🎛️ <b>1. NHÓM ĐIỀU HÀNH & TIỀN TỆ (LÃI SUẤT & TỶ GIÁ USD/VNĐ)</b>\n"
+        "• <b>Lãi suất tăng ⬆️:</b> Vay vốn đắt đỏ ➔ Tiền rút khỏi Chứng khoán & BĐS vào ngân hàng ➔ Sản xuất chững lại, thị trường tài sản hạ nhiệt.\n"
+        "• <b>Lãi suất giảm ⬇️ (Tiền rẻ):</b> Kích thích vay vốn ➔ Bơm tiền ra nền kinh tế ➔ Chứng khoán & BĐS bùng nổ, nhưng tiềm ẩn rủi ro lạm phát.\n"
+        "• <b>Tỷ giá USD/VNĐ tăng ⬆️ (USD mạnh):</b> Hàng hóa nhập khẩu đắt lên, áp lực trả nợ nước ngoài tăng, tạo sức ép buộc Ngân hàng Trung ương phải giữ hoặc nâng lãi suất.\n\n"
         
-        "🛣️ <b>2. TUYẾN ĐƯỜNG, LÀN ĐƯỜNG & TIMING (Ngành, Cổ phiếu & Nhập làn)</b>\n"
-        "• <b>Nhóm Ngành (Sector Flow) = Tuyến đường giao thông:</b> Dòng tiền vào ngành nào giống như tuyến cao tốc đó đang được mở luồng ưu tiên.\n"
-        "• <b>Mỗi Cổ phiếu = Làn đường cụ thể:</b> Chọn đúng làn đường chất lượng cao 'thùng đặc' (TCB, VRE) để xe chạy đầm chắc.\n"
-        "• <b>Thời điểm nhập làn:</b> Đứng ở lề đường quan sát. Nếu chờ đúng lúc xe bon bon chạy thẳng (đèn xanh) thì bước ra nhập làn.\n\n"
+        "⛽ <b>2. NHÓM CHI PHÍ ĐẦU VÀO & XÃ HỘI (DẦU, LẠM PHÁT & LAO ĐỘNG)</b>\n"
+        "• <b>Giá Dầu tăng ⬆️:</b> Chi phí logistics, nguyên liệu tăng vọt ➔ Đẩy <b>Lạm phát (CPI)</b> tăng theo ➔ Người lao động đòi tăng lương ➔ Ngân hàng Trung ương buộc phải thắt chặt lãi suất.\n"
+        "• <b>Lao động & Tiêu dùng:</b> Sản xuất mở rộng ➔ Việc làm tăng, thu nhập tăng ➔ Sức mua cải thiện, thúc đẩy Bán lẻ và BĐS ở thực.\n\n"
         
-        "🚛 <b>3. GIAO THƯỜNG VỚI XE CONTAINER (Tạo lập & Điểm mù)</b>\n"
-        "• <b>Xe tải lớn (Tạo lập / Cá mập):</b> Chủ động đánh lái ôm cua gấp hoặc ép sát lề đường (đạp giá rũ bỏ - shakeout).\n"
-        "• <b>Xử lý khi xe container bẻ lái:</b> Chờ xe container đánh lái gấp quay vào trong và trở lại đường thẳng, lúc đó mới thong thả bám theo.\n\n"
+        "🚢 <b>3. NHÓM SẢN XUẤT & THƯƠNG MẠI (XUẤT - NHẬP KHẨU)</b>\n"
+        "• <b>Tỷ giá USD tăng:</b> Có lợi lớn cho doanh nghiệp <b>Xuất khẩu</b> (thu USD đổi ra nhiều VNĐ hơn), nhưng là cực hình cho doanh nghiệp <b>Nhập khẩu nguyên liệu thô</b>.\n"
+        "• <b>Sản xuất công nghiệp:</b> Là xương sống tạo việc làm và GDP. Sản xuất khỏe kéo theo nhu cầu logistics, cảng biển và hạ tầng tăng trưởng mạnh.\n\n"
         
-        "🏗️ <b>4. BỘ MÁY QUẢN TRỊ (Quản trị vốn & Quản trị rủi ro)</b>\n"
-        "• Phanh chân nhấp nhẹ giảm tỷ trọng, phanh tay khẩn cấp (Cắt lỗ 100% Stop-loss) ngay khi vỡ mặt đường hỗ trợ cứng.\n"
+        "💎 <b>4. NHÓM TÀI SẢN & KÊNH TRÚ ẨN (CHỨNG KHOÁN, BĐS, VÀNG)</b>\n"
+        "• <b>Chứng khoán:</b> Nhạy cảm nhất với Lãi suất và Cung tiền (Tiền rẻ = Chứng khoán thăng hoa; Lãi suất cao = Chứng khoán điều chỉnh).\n"
+        "• <b>Bất động sản:</b> Đi sau chứng khoán 6-12 tháng. Phụ thuộc vào tín dụng ngân hàng, pháp lý và hạ tầng (Vành đai, cao tốc).\n"
+        "• <b>Vàng:</b> Kênh trú ẩn an toàn cuối cùng. Tăng mạnh khi lạm phát phi mã, địa chính trị bất ổn hoặc lãi suất toàn cầu giảm sâu.\n\n"
+        
+        "🧩 <b>5. CÁC YẾU TỐ BỔ SUNG CỐT LÕI (MỞ RỘNG MẠCH MÁU)</b>\n"
+        "• <b>Chính sách tài khóa (Đầu tư công):</b> Chi tiêu chính phủ làm mồi lửa bơm tiền trực tiếp vào nền kinh tế, vực dậy nhóm Thép, Xây dựng, Vật liệu.\n"
+        "• <b>Cung tiền (M2 & Tăng trưởng tín dụng):</b> Lượng xăng thực tế bơm ra đường. Tín dụng mạnh giúp các loại tài sản tăng giá bất chấp chỉ số vĩ mô đơn lẻ.\n"
+        "• <b>Dòng vốn ngoại (FDI & FII):</b> Dòng tiền nước ngoài trực tiếp xây nhà máy (FDI) tạo sản xuất, hoặc mua cổ phiếu (FII) tạo sóng nâng hạng thị trường.\n"
+        "• <b>Địa chính trị toàn cầu:</b> Đứt gãy chuỗi cung ứng làm giá dầu và vàng biến động bất ngờ, tác động ngược lại lạm phát trong nước.\n"
         "====================================\n"
-        "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn cùng chiếc xe nguyên vẹn!</i>"
+        "🏁 <i>Hiểu quy luật bánh răng vĩ mô giúp tài xế luôn đoán trước khúc cua và chọn đúng làn đường an toàn!</i>"
     )
     
     keyboard = [
@@ -986,7 +994,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
         "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
-        "   └ 📜 /quytec    : Cẩm nang sinh tồn chuẩn logic \"Lái xe chứng khoán\"\n"
+        "   └ 📜 /quytec    : Cẩm nang vĩ mô & sinh tồn \"Đồng hồ cơ học kinh tế\"\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -1034,7 +1042,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ chỉ báo lên biểu đồ và quy tắc lái xe!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp cẩm nang vĩ mô hoàn chỉnh thành công!")
     
     app.run_polling(
         drop_pending_updates=True,
