@@ -752,29 +752,27 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚗 <b>CẨM NANG VĨ MÔ & SINH TỒN: ĐỒNG HỒ CƠ HỌC KINH TẾ</b>\n"
         "====================================\n\n"
         
-        "🎛️ <b>1. NHÓM ĐIỀU HÀNH & TIỀN TỆ (LÃI SUẤT & TỶ GIÁ USD/VNĐ)</b>\n"
-        "• <b>Lãi suất tăng ⬆️:</b> Vay vốn đắt đỏ ➔ Tiền rút khỏi Chứng khoán & BĐS vào ngân hàng ➔ Sản xuất chững lại, thị trường tài sản hạ nhiệt.\n"
-        "• <b>Lãi suất giảm ⬇️ (Tiền rẻ):</b> Kích thích vay vốn ➔ Bơm tiền ra nền kinh tế ➔ Chứng khoán & BĐS bùng nổ, nhưng tiềm ẩn rủi ro lạm phát.\n"
-        "• <b>Tỷ giá USD/VNĐ tăng ⬆️ (USD mạnh):</b> Hàng hóa nhập khẩu đắt lên, áp lực trả nợ nước ngoài tăng, tạo sức ép buộc Ngân hàng Trung ương phải giữ hoặc nâng lãi suất.\n\n"
+        "🎛️ <b>1. NHÓM ĐIỀU HÀNH & TIỀN TỆ (LÃI SUẤT & TỶ GIÁ)</b>\n"
+        "• <b>Lãi suất tăng ⬆️:</b> Vay vốn đắt đỏ ➔ Tiền rút khỏi Chứng khoán & BĐS vào ngân hàng ➔ Thị trường tài sản hạ nhiệt.\n"
+        "• <b>Lãi suất giảm ⬇️ (Tiền rẻ):</b> Kích thích vay vốn ➔ Bơm tiền ra nền kinh tế ➔ Chứng khoán & BĐS bùng nổ.\n"
+        "• <b>Tỷ giá USD/VNĐ tăng ⬆️ (USD mạnh):</b> Hàng nhập khẩu đắt lên, tạo sức ép buộc Ngân hàng Trung ương giữ/nâng lãi suất.\n\n"
         
-        "⛽ <b>2. NHÓM CHI PHÍ ĐẦU VÀO & XÃ HỘI (DẦU, LẠM PHÁT & LAO ĐỘNG)</b>\n"
-        "• <b>Giá Dầu tăng ⬆️:</b> Chi phí logistics, nguyên liệu tăng vọt ➔ Đẩy <b>Lạm phát (CPI)</b> tăng theo ➔ Người lao động đòi tăng lương ➔ Ngân hàng Trung ương buộc phải thắt chặt lãi suất.\n"
-        "• <b>Lao động & Tiêu dùng:</b> Sản xuất mở rộng ➔ Việc làm tăng, thu nhập tăng ➔ Sức mua cải thiện, thúc đẩy Bán lẻ và BĐS ở thực.\n\n"
+        "⛽ <b>2. CHI PHÍ ĐẦU VÀO & LAO ĐỘNG (DẦU, LẠM PHÁT)</b>\n"
+        "• <b>Giá Dầu tăng ⬆️:</b> Chi phí vận tải, logistics tăng vọt ➔ Đẩy <b>Lạm phát (CPI)</b> tăng ➔ Ngân hàng Trung ương buộc phải thắt chặt lãi suất.\n"
+        "• <b>Lao động & Tiêu dùng:</b> Sản xuất mở rộng ➔ Việc làm & thu nhập tăng ➔ Thúc đẩy Bán lẻ và BĐS ở thực.\n\n"
         
-        "🚢 <b>3. NHÓM SẢN XUẤT & THƯƠNG MẠI (XUẤT - NHẬP KHẨU)</b>\n"
-        "• <b>Tỷ giá USD tăng:</b> Có lợi lớn cho doanh nghiệp <b>Xuất khẩu</b> (thu USD đổi ra nhiều VNĐ hơn), nhưng là cực hình cho doanh nghiệp <b>Nhập khẩu nguyên liệu thô</b>.\n"
-        "• <b>Sản xuất công nghiệp:</b> Là xương sống tạo việc làm và GDP. Sản xuất khỏe kéo theo nhu cầu logistics, cảng biển và hạ tầng tăng trưởng mạnh.\n\n"
+        "🚢 <b>3. SẢN XUẤT & XUẤT NHẬP KHẨU</b>\n"
+        "• <b>Tỷ giá USD tăng:</b> Có lợi lớn cho doanh nghiệp <b>Xuất khẩu</b>, nhưng gây áp lực cho doanh nghiệp <b>Nhập khẩu nguyên liệu thô</b>.\n\n"
         
-        "💎 <b>4. NHÓM TÀI SẢN & KÊNH TRÚ ẨN (CHỨNG KHOÁN, BĐS, VÀNG)</b>\n"
-        "• <b>Chứng khoán:</b> Nhạy cảm nhất với Lãi suất và Cung tiền (Tiền rẻ = Chứng khoán thăng hoa; Lãi suất cao = Chứng khoán điều chỉnh).\n"
-        "• <b>Bất động sản:</b> Đi sau chứng khoán 6-12 tháng. Phụ thuộc vào tín dụng ngân hàng, pháp lý và hạ tầng (Vành đai, cao tốc).\n"
-        "• <b>Vàng:</b> Kênh trú ẩn an toàn cuối cùng. Tăng mạnh khi lạm phát phi mã, địa chính trị bất ổn hoặc lãi suất toàn cầu giảm sâu.\n\n"
+        "💎 <b>4. TÀI SẢN & KÊNH TRÚ ẨN (CHỨNG KHOÁN, BĐS, VÀNG)</b>\n"
+        "• <b>Chứng khoán:</b> Nhạy cảm nhất với Lãi suất và Cung tiền (Tiền rẻ = Chứng khoán thăng hoa).\n"
+        "• <b>Bất động sản:</b> Đi sau chứng khoán 6-12 tháng, phụ thuộc vào tín dụng và hạ tầng (Vành đai, cao tốc).\n"
+        "• <b>Vàng:</b> Kênh trú ẩn an toàn, tăng mạnh khi lạm phát phi mã, địa chính trị bất ổn.\n\n"
         
-        "🧩 <b>5. CÁC YẾU TỐ BỔ SUNG CỐT LÕI (MỞ RỘNG MẠCH MÁU)</b>\n"
-        "• <b>Chính sách tài khóa (Đầu tư công):</b> Chi tiêu chính phủ làm mồi lửa bơm tiền trực tiếp vào nền kinh tế, vực dậy nhóm Thép, Xây dựng, Vật liệu.\n"
-        "• <b>Cung tiền (M2 & Tăng trưởng tín dụng):</b> Lượng xăng thực tế bơm ra đường. Tín dụng mạnh giúp các loại tài sản tăng giá bất chấp chỉ số vĩ mô đơn lẻ.\n"
-        "• <b>Dòng vốn ngoại (FDI & FII):</b> Dòng tiền nước ngoài trực tiếp xây nhà máy (FDI) tạo sản xuất, hoặc mua cổ phiếu (FII) tạo sóng nâng hạng thị trường.\n"
-        "• <b>Địa chính trị toàn cầu:</b> Đứt gãy chuỗi cung ứng làm giá dầu và vàng biến động bất ngờ, tác động ngược lại lạm phát trong nước.\n"
+        "🧩 <b>5. CÁC YẾU TỐ BỔ SUNG CỐT LÕI</b>\n"
+        "• <b>Đầu tư công:</b> Mồi lửa bơm tiền trực tiếp vào nền kinh tế, vực dậy nhóm Thép, Xây dựng, Vật liệu.\n"
+        "• <b>Cung tiền (M2 & Tín dụng):</b> Lượng xăng thực tế bơm ra thị trường giúp các loại tài sản tăng giá.\n"
+        "• <b>Dòng vốn ngoại (FDI & FII):</b> Xây nhà máy (FDI) tạo sản xuất, quỹ ngoại mua cổ phiếu (FII) tạo sóng nâng hạng.\n"
         "====================================\n"
         "🏁 <i>Hiểu quy luật bánh răng vĩ mô giúp tài xế luôn đoán trước khúc cua và chọn đúng làn đường an toàn!</i>"
     )
@@ -994,7 +992,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
         "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
-        "   └ 📜 /quytec    : Cẩm nang vĩ mô & sinh tồn \"Đồng hồ cơ học kinh tế\"\n"
+        "   ├ 📜 /quytec    : Cẩm nang sinh tồn chuẩn logic \"Lái xe chứng khoán\"\n"
+        "   └ 💡 /kienthuc  : Bản đồ vĩ mô tương tác các yếu tố tài chính\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -1038,11 +1037,12 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("tin", news_command))
     app.add_handler(CommandHandler("quytec", quytec_command))
     app.add_handler(CommandHandler("quytrach", quytec_command))
+    app.add_handler(CommandHandler("kienthuc", quytec_command))   # Bổ sung lệnh /kienthuc ánh xạ trực tiếp
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp cẩm nang vĩ mô hoàn chỉnh thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ chỉ báo lên biểu đồ, quy tắc lái xe & cẩm nang vĩ mô!")
     
     app.run_polling(
         drop_pending_updates=True,
