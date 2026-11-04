@@ -262,9 +262,9 @@ def check_vnindex_health():
     close, ema20 = last["Close"], last.get("EMA20", last["Close"])
 
     if close >= ema20:
-        res = {"status": "BULLISH", "score_modifier": 1.1, "note": "VN-Index ủng hộ tăng (Thời tiết đẹp)"}
+        res = {"status": "BULLISH", "score_modifier": 1.1, "note": "VN-Index ủng hộ tăng (Thời tiết đẹp, đường thông thoáng)"}
     else:
-        res = {"status": "SIDEWAYS", "score_modifier": 0.9, "note": "VN-Index phân hóa tích lũy (Sương mù)"}
+        res = {"status": "SIDEWAYS", "score_modifier": 0.9, "note": "VN-Index phân hóa tích lũy (Sương mù tầm nhìn hạn chế)"}
 
     VNINDEX_HEALTH_CACHE["data"], VNINDEX_HEALTH_CACHE["timestamp"] = res, now_ts
     return res
@@ -356,7 +356,7 @@ Hãy tổng hợp ngắn gọn, rõ ràng thành đúng định dạng HTML Tele
 • (Ý chính 1)
 • (Ý chính 2 - nếu có)
 
-📌 <b>ĐÁNH GIÁ CHUNG:</b> (Tóm tắt 1 câu tác động ngắn hạn tới giá)
+📌 <b>ĐÁNH GIÁ CHUNG:</b> (Tóm tắt 1 câu tác động ngắn hạn tới giá dưới lăng kính đèn pha đi đêm)
 
 Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiếng Việt, ngắn gọn, súc tích, không dông dài.
 """
@@ -369,7 +369,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
         )
         
         ai_analysis = completion.choices[0].message.content
-        return f"📰 <b>TỔNG HỢP TIN TỨC: {symbol}</b>\n====================================\n\n" + ai_analysis
+        return f"📰 <b>TỔNG HỢP TIN TỨC (ĐÈN PHA SOI ĐƯỜNG): {symbol}</b>\n====================================\n\n" + ai_analysis
 
     except Exception as e:
         err_msg = str(e)
@@ -377,7 +377,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
         return f"❌ <b>Lỗi khi gọi Groq AI:</b> <code>{html.escape(err_msg)}</code>"
 
 # ==========================================
-# HÀM PHÂN TÍCH KỸ THUẬT & SMC (TÍCH HỢP VẼ BIỂU ĐỒ ĐẦY ĐỦ CHỈ BÁO)
+# HÀM PHÂN TÍCH KỸ THUẬT & SMC (TÍCH HỢP VẼ BIỂU ĐỒ & 4 MỤC QUY TẮC LÁI XE)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
@@ -412,6 +412,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     confluence_points = []
     score = 50
 
+    # Chấm điểm kỹ thuật
     if close > cloud_top: 
         score += 20; confluence_points.append("Giá nằm trên mây Kumo (Đường thênh thang)")
     elif close >= cloud_bottom: 
@@ -444,30 +445,52 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
 
+    # ==========================================
+    # ÁNH XẠ KẾT LUẬN & TRẠNG THÁI VỚI "QUY TẮC LÁI XE"
+    # ==========================================
     if confidence_score >= 65 and not is_downtrend_heavy:
         system_status = "ĐÈN XANH: MỞ MUA / TĂNG GA"
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cao tốc thông thoáng, tiếng máy gầm khỏe (CMF > 0, vượt mây). Tài xế <b>ĐẠP GA MẠNH (Mở vị thế / Bật bình tăng tốc NOS nếu đủ điều kiện)</b> theo đúng làn đường tăng trưởng."
         final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
     elif confidence_score >= 50:
         system_status = "ĐÈN VÀNG: THĂM DÒ THẬN TRỌNG"
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Đường sương mù nhẹ hoặc đang qua khúc cua tích lũy. Tài xế <b>GIẢM TỐC ĐỘ, RẠ RÒ SANG SỐ THĂM DÒ</b>, tuyệt đối không phóng nhanh vượt ẩu."
         final_icon = f"🟡 <b>THĂM DÒ THẬN TRỌNG (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Đi chậm lại, quan sát kỹ vùng hỗ trợ, Stoploss tại <code>{fmt(stop_loss)}</code>."
     else:
         system_status = "ĐÈN ĐỎ: DỪNG XE / QUAN SÁT (NO TRADE)"
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cổ phiếu trượt dốc sâu / Mất phanh (Downtrend dưới SMA200/Mây Kumo). Tài xế <b>TẤP XE VÀO LỀ NGHỈ NGƠI, KHÔNG CỐ CHẤP BẮT ĐÁY</b> để tránh lao xuống vực thẳm."
         final_icon = f"🔴 <b>TẤP XE VÀO LỀ (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Cổ phiếu xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài, không bắt đáy!</b>"
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Tích lũy ổn định"
     long_term_trend = "UPTREND (Xuống dốc thoáng)" if not is_downtrend_heavy else "DOWNTREND (Trượt lùi dốc)"
 
+    # Xây dựng báo cáo bám sát 4 mục lái xe
     text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KĨ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
     text_part1 += f"🏛️ Thời tiết thị trường: <b>{html.escape(mkt_health['note'])}</b>\n\n"
-    text_part1 += f"🌐 <b>1. CẤU TRÚC XU HƯỚNG & DÒNG TIỀN:</b>\n• Xu hướng: {long_term_trend}\n• ADX: <code>{adx:.1f}</code> | CMF: <code>{cmf:.2f}</code> | RVOL: <code>{rvol:.2f}x</code>\n\n"
-    text_part1 += f"🏛️ <b>2. CẤU TRÚC SMC & VOLUME PROFILE:</b>\n• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Sweep: <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n• POC: <code>{fmt(poc)}</code> | VAL: <code>{fmt(val)}</code> | VAH: <code>{fmt(vah)}</code>\n\n"
-    text_part1 += f"🎯 <b>3. QUẢN TRỊ RỦI RO & VỐN 1% NAV:</b>\n• Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
+    
+    text_part1 += f"⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Khối lượng):</b>\n"
+    text_part1 += f"• Trạng thái dòng tiền (Xăng): CMF = <code>{cmf:.2f}</code> | RVOL = <code>{rvol:.2f}x</code>\n"
+    text_part1 += f"• <i>Kết luận mục 1:</i> Lượng nhiên liệu {'dồi dào, động cơ nổ giòn' if cmf > 0 else 'cạn kiệt, xe ì ạch'}.\n\n"
+    
+    text_part1 += f"🛣️ <b>2. TUYẾN ĐƯỜNG & LÀN ĐƯỜNG (Xu hướng & Timing):</b>\n"
+    text_part1 += f"• Làn đường hiện tại: {long_term_trend} | ADX = <code>{adx:.1f}</code>\n"
+    text_part1 += f"• <i>Kết luận mục 2:</i> Xe đang chạy trên {'đường cao tốc thênh thang' if not is_downtrend_heavy else 'đường sạt lở gập ghềnh'}.\n\n"
+    
+    text_part1 += f"🚛 <b>3. GIAO THƯỜNG XE CONTAINER & SMC (Tạo lập & Vùng giá):</b>\n"
+    text_part1 += f"• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Quét thanh khoản (Sweep): <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n"
+    text_part1 += f"• Volume Profile POC: <code>{fmt(poc)}</code> | VAH: <code>{fmt(vah)}</code> | VAL: <code>{fmt(val)}</code>\n"
+    text_part1 += f"• <i>Kết luận mục 3:</i> Dấu vết bánh xe container (Cá mập) {'đã gom hàng rút chân an toàn' if smc['has_liquidity_sweep'] or smc['has_ob'] else 'chưa rõ ràng, cần quan sát thêm'}.\n\n"
 
-    text_part2 = f"⚡ <b>4. TÍN HIỆU HỘI TỤ:</b> {conf_str}\n🏁 <b>5. KẾT LUẬN:</b> {final_icon}"
+    text_part1 += f"🏗️ <b>4. BỘ MÁY QUẢN TRỊ & QUẢN TRỊ RỦI RO (1% NAV):</b>\n"
+    text_part1 += f"• Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
+
+    text_part2 = f"⚡ <b>HỘI TỤ TÍN HIỆU:</b> {conf_str}\n\n"
+    text_part2 += f"{driving_conclusion}\n\n"
+    text_part2 += f"🏁 <b>KẾT LUẬN CUỐI CÙNG:</b> {final_icon}"
 
     keyboard = [
         [
@@ -719,7 +742,7 @@ async def run_sector_flow_screener_with_progress(msg):
 
 
 # ==========================================
-# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (CẨM NANG TOÀN DIỆN CHUẨN LOGIC HỆ THỐNG)
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
 # ==========================================
 
 async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -734,27 +757,16 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <b>Bình tăng tốc NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng và mắt thấy đèn xanh xác nhận. Tuyệt đối không bật Margin khi xe đang lệch làn hoặc trượt dốc, tránh cháy xe (Call Margin).\n\n"
         
         "🛣️ <b>2. TUYẾN ĐƯỜNG, LÀN ĐƯỜNG & TIMING (Ngành, Cổ phiếu & Nhập làn)</b>\n"
-        "• <b>Nhóm Ngành (Sector Flow) = Tuyến đường giao thông:</b> Dòng tiền vào ngành nào giống như tuyến cao tốc đó đang được mở luồng ưu tiên. Đảo dòng ngành là rẽ sang đi tuyến đường rộng thoáng hơn.\n"
+        "• <b>Nhóm Ngành (Sector Flow) = Tuyến đường giao thông:</b> Dòng tiền vào ngành nào giống như tuyến cao tốc đó đang được mở luồng ưu tiên.\n"
         "• <b>Mỗi Cổ phiếu = Làn đường cụ thể:</b> Chọn đúng làn đường chất lượng cao 'thùng đặc' (TCB, VRE) để xe chạy đầm chắc.\n"
-        "• <b>Thời điểm nhập làn:</b> Đứng ở lề đường quan sát. Nếu chờ đúng lúc xe bon bon chạy thẳng (đèn xanh) thì bước ra nhập làn. Đúng lúc xe container phi ra khỏi dải phân cách (đạp giá/hoảng loạn) mà lao ra cản đường thì die ngay lập tức!\n"
-        "• <b>Bẫy dừng đèn đỏ quá sớm:</b> Gom hàng đoán đáy quá sớm khiến xe đứng lình xình chôn vốn, phải kiên nhẫn chờ cú giật dứt khoát xác nhận dòng tiền.\n\n"
+        "• <b>Thời điểm nhập làn:</b> Đứng ở lề đường quan sát. Nếu chờ đúng lúc xe bon bon chạy thẳng (đèn xanh) thì bước ra nhập làn.\n\n"
         
         "🚛 <b>3. GIAO THƯỜNG VỚI XE CONTAINER (Tạo lập & Điểm mù)</b>\n"
-        "• <b>Xe tải lớn (Tạo lập / Cá mập):</b> Có tầm nhìn xa và vốn khủng. Họ chủ động đánh lái ôm cua gấp hoặc ép sát lề đường (đạp giá rũ bỏ - shakeout).\n"
-        "• <b>Xử lý khi xe container bẻ lái:</b> Đừng bám đuôi quá sát điểm mù khi họ ôm cua gấp. Hãy chờ xe container đánh lái gấp quay vào trong và trở lại đường thẳng, lúc đó mới thong thả bám theo đi cùng an toàn.\n"
-        "• <b>Cơ hội sửa sai (Rút chân):</b> Nhịp nhún xuống rồi rút chân thực chất là cơ hội để xe con thoát hiểm hoặc cơ cấu lại vị thế lệch làn chứ không phải lúc lao đầu mua đuổi.\n\n"
+        "• <b>Xe tải lớn (Tạo lập / Cá mập):</b> Chủ động đánh lái ôm cua gấp hoặc ép sát lề đường (đạp giá rũ bỏ - shakeout).\n"
+        "• <b>Xử lý khi xe container bẻ lái:</b> Chờ xe container đánh lái gấp quay vào trong và trở lại đường thẳng, lúc đó mới thong thả bám theo.\n\n"
         
-        "🏗️ <b>4. CHẤT LƯỢNG MẶT ĐƯỜNG & BỘ MÁY QUẢN TRỊ (Nội tại doanh nghiệp)</b>\n"
-        "• <b>Đường to nhưng không sửa chữa:</b> Doanh nghiệp lớn nhưng ban lãnh đạo tham ô, quản trị yếu kém, không tái đầu tư $\rightarrow$ Mặt đường hỏng nhanh, chi chít ổ gà, nhà đầu tư liên tục gặp tai nạn.\n"
-        "• <b>Đường được thanh lọc & nâng cấp:</b> Doanh nghiệp minh bạch, ban lãnh đạo có tầm nhìn, dòng tiền kinh doanh khỏe $\rightarrow$ Mặt đường láng mịn, xe cộ tấp nập phóng phơi phới về đích.\n\n"
-        
-        "🔦 <b>5. TRANG BỊ VÀ KỸ NĂNG AN TOÀN (Kỹ thuật & Cấu hình Giao dịch)</b>\n"
-        "• <b>Phanh chân vs Phanh tay khẩn cấp:</b> Nhấp phanh chân (bán hạ tỷ trọng từ từ) khi xe chòng chành lệch làn. Giật phanh tay khẩn cấp (Cắt lỗ 100% Stop-loss) ngay lập tức khi vỡ mặt đường hỗ trợ cứng.\n"
-        "• <b>Rút chân Vol thấp (Phanh dừng rơi):</b> Xe nhún về hỗ trợ nẩy lên nhưng Vol bé $\rightarrow$ Mới dừng trượt bánh, chưa có lực kéo, KHÔNG mua đuổi/Margin.\n"
-        "• <b>Rút chân Vol to (Tiếng máy nổ to - Quét thanh khoản):</b> Xe container đâm sát lề gom sạch hàng rồi nổ máy gầm to kéo xe giật lại đúng làn $\rightarrow$ VÀO THEO TRƯỜNG HỢP NÀY!\n"
-        "• <b>Đèn pha đi đêm (Báo cáo tài chính & PTCB):</b> Đèn cốt (ngắn hạn) chỉ thấy ổ gà 10m. Đèn pha (dài hạn/cơ bản) giúp tài xế nhìn xa hàng trăm mét trong sương mù để không lao xuống vực.\n"
-        "• <b>Trạm dừng nghỉ trên cao tốc (Tích lũy nền):</b> Xe chạy nén biên độ cạn volume không phải hỏng xe, mà là tấp vào trạm dừng nghỉ nạp nhiên liệu để tăng tốc giai đoạn tiếp theo.\n"
-        "• <b>Gương cầu lồi (Chỉ số vĩ mô & Khối ngoại):</b> Nhìn gương cầu lồi (tỷ giá, DXY, khối ngoại) ở khúc cua mù để nhận biết xe ngược chiều nguy hiểm từ xa.\n"
+        "🏗️ <b>4. BỘ MÁY QUẢN TRỊ (Quản trị vốn & Quản trị rủi ro)</b>\n"
+        "• Phanh chân nhấp nhẹ giảm tỷ trọng, phanh tay khẩn cấp (Cắt lỗ 100% Stop-loss) ngay khi vỡ mặt đường hỗ trợ cứng.\n"
         "====================================\n"
         "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn cùng chiếc xe nguyên vẹn!</i>"
     )
@@ -1022,7 +1034,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ chỉ báo lên biểu đồ!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ chỉ báo lên biểu đồ và quy tắc lái xe!")
     
     app.run_polling(
         drop_pending_updates=True,
