@@ -501,10 +501,13 @@ def analyze_stock(symbol, resolution="D", count=200):
         ],
         [
             InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy", callback_data="run_dipbuy_callback"),
-            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
+            InlineKeyboardButton("📈 VN30 Nâng Đáy (Tháng)", callback_data="run_nangday_callback"),
         ],
         [
+            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
             InlineKeyboardButton("🏢 Dòng Tiền Ngành", callback_data="run_sectors_callback"),
+        ],
+        [
             InlineKeyboardButton("🌍 Khối Ngoại Mua/Bán", callback_data="run_foreign_callback")
         ]
     ]
@@ -557,8 +560,84 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT BỘ LỌC TỰ ĐỘNG
+# 3. HÀM QUÉT BỘ LỌC TỰ ĐỘNG & KHUNG THÁNG
 # ==========================================
+def scan_monthly_higher_lows(symbol):
+    df, err = fetch_stock_data(symbol, resolution="M", count=48)
+    if err or df.empty or len(df) < 18: 
+        return None
+        
+    df = calculate_indicators(df)
+    
+    lows = df["Low"].values
+    closes = df["Close"].values
+    
+    if len(lows) < 12:
+        return None
+        
+    recent_low_1 = lows[-1]
+    prev_low_2 = lows[-6:-1].min()
+    old_low_3 = lows[-12:-6].min()
+    
+    is_higher_lows = (recent_low_1 >= prev_low_2) and (prev_low_2 >= old_low_3)
+    
+    last = df.iloc[-1]
+    close = closes[-1]
+    cmf = last.get("CMF", 0.0)
+    
+    span_a = last.get("Senkou_Span_A", close)
+    span_b = last.get("Senkou_Span_B", close)
+    cloud_bottom = min(span_a, span_b)
+    
+    if is_higher_lows and cmf > -0.05 and close >= cloud_bottom * 0.95:
+        score = (cmf * 50) + (20 if close > max(span_a, span_b) else 10)
+        return {
+            "symbol": symbol.upper(),
+            "close": round(close, 1),
+            "cmf": round(cmf, 2),
+            "recent_low": round(recent_low_1, 1),
+            "prev_low": round(prev_low_2, 1),
+            "score": round(score, 1)
+        }
+    return None
+
+async def run_monthly_higher_lows_screener_with_progress(msg):
+    vn30_core = [
+        "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB",
+        "VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "SSI", "VCI", "HCM",
+        "HPG", "HSG", "MSN", "VNM", "FPT", "REE", "POW", "GAS", "PLX", "GMD"
+    ]
+    total_symbols = len(vn30_core)
+    completed = 0
+    results = []
+
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        futures = {pool.submit(scan_monthly_higher_lows, symbol): symbol for symbol in vn30_core}
+        
+        for future in as_completed(futures):
+            completed += 1
+            res = future.result()
+            if res:
+                results.append(res)
+            
+            if completed % 4 == 0 or completed == total_symbols:
+                percent = int((completed / total_symbols) * 100)
+                filled_blocks = int(percent / 10)
+                bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
+                
+                try:
+                    await msg.edit_text(
+                        f"📈 <b>Đang quét siêu cấu trúc VN30 Nâng Đáy (Khung Tháng)...</b>\n"
+                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
+                        f"⏳ Đang dò tìm tín hiệu dòng tiền dài hạn...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+    return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
+
+
 def process_single_stock_for_autobuy(symbol):
     try:
         df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
@@ -778,6 +857,7 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback")
         ],
         [
+            InlineKeyboardButton("📈 VN30 Nâng Đáy (Tháng)", callback_data="run_nangday_callback"),
             InlineKeyboardButton("💡 Xem Bản Đồ Vĩ Mô", callback_data="run_kienthuc_callback")
         ]
     ]
@@ -873,6 +953,34 @@ async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"   • Giá: <code>{item['close']:.1f}k</code> | Giảm từ đỉnh: <code>-{item['drop_pct']}%</code>\n"
             text += f"   • CMF: <code>{item['cmf']:.2f}</code> | RVOL: <code>{item['rvol']:.2f}x</code> | Hỗ trợ: <code>{item['poc']:.1f}k</code>\n------------------------------------\n"
         await msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+
+
+async def nangday_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text(
+        "📈 <b>Đang khởi tạo tiến trình quét VN30 Nâng Đáy Khung Tháng...</b>\n"
+        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
+        "⏳ Đang kết nối dữ liệu lịch sử dài hạn...",
+        parse_mode="HTML"
+    )
+    
+    try:
+        picks = await run_monthly_higher_lows_screener_with_progress(msg)
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại chưa ghi nhận mã VN30 nào thỏa mãn cấu trúc nâng đáy khung tháng.")
+            return
+            
+        text = "📈 <b>DANH SÁCH VN30 NÂNG ĐÁY (KHUNG THÁNG - M)</b>\n====================================\n\n"
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 🔹 <b>Mã: {item['symbol']}</b> | Giá: <code>{item['close']}k</code> | CMF: <code>{item['cmf']}</code>\n"
+            text += f"   • Cấu trúc đáy tháng: <code>{item['prev_low']}k ➔ {item['recent_low']}k (Nâng dần)</code>\n------------------------------------\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Quét Lại", callback_data="run_nangday_callback")]
+        ]
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
 
@@ -985,6 +1093,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "run_dipbuy_callback": 
         await dipbuy_command(update, context)
         return
+    if data == "run_nangday_callback":
+        await nangday_command(update, context)
+        return
     if data == "run_sectors_callback": 
         await sectors_command(update, context)
         return
@@ -1035,6 +1146,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "2️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
         "3️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
+        "   ├ 📈 /nangday   : Quét VN30 cấu trúc Nâng Đáy Khung Tháng (M)\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
         "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
@@ -1077,6 +1189,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
+    app.add_handler(CommandHandler("nangday", nangday_command))
+    app.add_handler(CommandHandler("monthly", nangday_command))
     app.add_handler(CommandHandler("sectors", sectors_command))
     app.add_handler(CommandHandler("nganh", sectors_command))
     app.add_handler(CommandHandler("khoingoai", foreign_command))  
@@ -1088,10 +1202,9 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp đầy đủ cẩm nang lái xe & bản đồ vĩ mô!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp bộ lọc VN30 Nâng Đáy Khung Tháng (M) thành công!")
     
     app.run_polling(
         drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES
     )
-
