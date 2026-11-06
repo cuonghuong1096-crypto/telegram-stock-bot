@@ -246,64 +246,6 @@ def calculate_volume_profile(df, bins=20):
     poc = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
     return poc, bin_edges[-1], bin_edges[0]
 
-# ==========================================
-# HÀM BỔ SUNG: PHÂN TÍCH LỊCH SỬ KHUNG TUẦN (GIÁ & KHỐI LƯỢNG TỪ NGÀY PHÁT HÀNH)
-# ==========================================
-def analyze_weekly_price_volume_history(symbol):
-    """
-    Phân tích toàn bộ lịch sử khung Tuần (W) kể từ ngày phát hành/niêm yết:
-    - Giá Cao nhất (High), Thấp nhất (Low) và Trung tính (Mid-point).
-    - Khối lượng giao dịch tại từng vùng giá (Vùng đáy, vùng đỉnh, vùng trung tính).
-    - Nhận định dòng tiền lớn (Smart Money Behavior).
-    """
-    df_w, err = fetch_stock_data(symbol, resolution="W", count=500)
-    if err or df_w.empty:
-        return {
-            "status": "No Data",
-            "message": "Không đủ dữ liệu lịch sử khung tuần."
-        }
-    
-    all_time_high = df_w["High"].max()
-    all_time_low = df_w["Low"].min()
-    current_price = df_w["Close"].iloc[-1]
-    
-    mid_price = (all_time_high + all_time_low) / 2
-    
-    high_zone_df = df_w[df_w["Close"] >= (all_time_high - (all_time_high - mid_price) * 0.35)]
-    low_zone_df = df_w[df_w["Close"] <= (all_time_low + (mid_price - all_time_low) * 0.35)]
-    mid_zone_df = df_w[(df_w["Close"] > (all_time_low + (mid_price - all_time_low) * 0.35)) & 
-                       (df_w["Close"] < (all_time_high - (all_time_high - mid_price) * 0.35))]
-    
-    avg_vol_total = df_w["Volume"].mean()
-    vol_at_high = high_zone_df["Volume"].mean() if not high_zone_df.empty else 0
-    vol_at_low = low_zone_df["Volume"].mean() if not low_zone_df.empty else 0
-    vol_at_mid = mid_zone_df["Volume"].mean() if not mid_zone_df.empty else 0
-    
-    behavior_note = ""
-    if vol_at_low > avg_vol_total * 1.2:
-        behavior_note = "Dòng tiền lớn chủ động gom hàng mạnh tại vùng GIÁ THẤP (Tích lũy gom hàng lịch sử)."
-    elif vol_at_high > avg_vol_total * 1.2:
-        behavior_note = "Áp lực phân phối hoặc giao tranh rất lớn tại vùng GIÁ CAO."
-    else:
-        behavior_note = "Thanh khoản duy trì ổn định ở vùng TRUNG TÍNH, chưa có dấu hiệu kịch tính."
-
-    return {
-        "status": "Success",
-        "total_weeks": len(df_w),
-        "first_date": df_w["time"].iloc[0].strftime('%Y-%m-%d'),
-        "all_time_high": round(all_time_high, 1),
-        "all_time_low": round(all_time_low, 1),
-        "mid_price": round(mid_price, 1),
-        "current_price": round(current_price, 1),
-        "vol_assessment": {
-            "at_high": round(vol_at_high, 0),
-            "at_low": round(vol_at_low, 0),
-            "at_mid": round(vol_at_mid, 0),
-            "avg_total": round(avg_vol_total, 0)
-        },
-        "behavior_note": behavior_note
-    }
-
 def check_vnindex_health():
     now_ts = time.time()
     if VNINDEX_HEALTH_CACHE["data"] and (now_ts - VNINDEX_HEALTH_CACHE["timestamp"] < 60):
@@ -435,7 +377,7 @@ Lưu ý: Chỉ dựa vào thông tin được cung cấp, trả ra bằng tiến
         return f"❌ <b>Lỗi khi gọi Groq AI:</b> <code>{html.escape(err_msg)}</code>"
 
 # ==========================================
-# HÀM PHÂN TÍCH KỸ THUẬT & SMC (TÍCH HỢP ĐẦY ĐỦ 5 MỤC)
+# HÀM PHÂN TÍCH KỸ THUẬT & SMC (TÍCH HỢP VẼ BIỂU ĐỒ & 4 MỤC QUY TẮC LÁI XE)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
@@ -447,7 +389,6 @@ def analyze_stock(symbol, resolution="D", count=200):
     df = calculate_indicators(df)
     smc = calculate_smc_structures(df)
     mkt_health = check_vnindex_health()
-    history_eval = analyze_weekly_price_volume_history(symbol)
 
     last = df.iloc[-1]
     close = last["Close"]
@@ -471,6 +412,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     confluence_points = []
     score = 50
 
+    # Chấm điểm kỹ thuật
     if close > cloud_top: 
         score += 20; confluence_points.append("Giá nằm trên mây Kumo (Đường thênh thang)")
     elif close >= cloud_bottom: 
@@ -503,6 +445,9 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
 
+    # ==========================================
+    # ÁNH XẠ KẾT LUẬN & TRẠNG THÁI VỚI "QUY TẮC LÁI XE"
+    # ==========================================
     if confidence_score >= 65 and not is_downtrend_heavy:
         system_status = "ĐÈN XANH: MỞ MUA / TĂNG GA"
         driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cao tốc thông thoáng, tiếng máy gầm khỏe (CMF > 0, vượt mây). Tài xế <b>ĐẠP GA MẠNH (Mở vị thế / Bật bình tăng tốc NOS nếu đủ điều kiện)</b> theo đúng làn đường tăng trưởng."
@@ -522,7 +467,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     conf_str = "; ".join(confluence_points) if confluence_points else "Tích lũy ổn định"
     long_term_trend = "UPTREND (Xuống dốc thoáng)" if not is_downtrend_heavy else "DOWNTREND (Trượt lùi dốc)"
 
-    # Xây dựng báo cáo bám sát quy tắc lái xe và lịch sử tuần
+    # Xây dựng báo cáo bám sát 4 mục lái xe
     text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KĨ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
     text_part1 += f"🏛️ Thời tiết thị trường: <b>{html.escape(mkt_health['note'])}</b>\n\n"
@@ -539,14 +484,6 @@ def analyze_stock(symbol, resolution="D", count=200):
     text_part1 += f"• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Quét thanh khoản (Sweep): <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n"
     text_part1 += f"• Volume Profile POC: <code>{fmt(poc)}</code> | VAH: <code>{fmt(vah)}</code> | VAL: <code>{fmt(val)}</code>\n"
     text_part1 += f"• <i>Kết luận mục 3:</i> Dấu vết bánh xe container (Cá mập) {'đã gom hàng rút chân an toàn' if smc['has_liquidity_sweep'] or smc['has_ob'] else 'chưa rõ ràng, cần quan sát thêm'}.\n\n"
-
-    # TÍCH HỢP MỤC 5: ĐÁNH GIÁ KHUNG TUẦN TỪ NGÀY PHÁT HÀNH
-    if history_eval["status"] == "Success":
-        hv = history_eval["vol_assessment"]
-        text_part1 += f"📊 <b>5. LỊCH SỬ KHUNG TUẦN (Từ {history_eval['first_date']} - {history_eval['total_weeks']} tuần):</b>\n"
-        text_part1 += f"• <b>Biên độ lịch sử:</b> Đỉnh = <code>{fmt(history_eval['all_time_high'])}</code> | Đáy = <code>{fmt(history_eval['all_time_low'])}</code> | Trung tính = <code>{fmt(history_eval['mid_price'])}</code>\n"
-        text_part1 += f"• <b>Khối lượng vùng giá:</b> Đáy (<code>{hv['at_low']:,.0f}</code>) vs Đỉnh (<code>{hv['at_high']:,.0f}</code>)\n"
-        text_part1 += f"• <i>Nhận định dòng tiền:</i> <b>{history_eval['behavior_note']}</b>\n\n"
 
     text_part1 += f"🏗️ <b>4. BỘ MÁY QUẢN TRỊ & QUẢN TRỊ RỦI RO (1% NAV):</b>\n"
     text_part1 += f"• Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
@@ -575,20 +512,27 @@ def analyze_stock(symbol, resolution="D", count=200):
         ]
     ]
 
+    # ==========================================
+    # VẼ BIỂU ĐỒ MATPLOTLIB (ĐẦY ĐỦ CÁC CHỈ BÁO)
+    # ==========================================
     fig, ax = plt.subplots(figsize=(9, 5), dpi=110)
     
+    # 1. Đường giá đóng cửa chính
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="#111111", lw=1.3, zorder=3)
     
+    # 2. Dải Bollinger Bands
     if "BB_Upper" in df.columns and "BB_Lower" in df.columns:
         ax.plot(df["time"], df["BB_Upper"], label="BB Upper", color="gray", linestyle="--", alpha=0.5, lw=0.8)
         ax.plot(df["time"], df["BB_Lower"], label="BB Lower", color="gray", linestyle="--", alpha=0.5, lw=0.8)
         ax.fill_between(df["time"], df["BB_Lower"], df["BB_Upper"], color="gray", alpha=0.06, label="Bollinger Channel")
 
+    # 3. Các đường trung bình động (EMA20 & SMA200)
     if "EMA20" in df.columns:
         ax.plot(df["time"], df["EMA20"], label="EMA 20", color="#ff7f0e", lw=1.1, alpha=0.85)
     if "SMA200" in df.columns:
         ax.plot(df["time"], df["SMA200"], label="SMA 200", color="#d62728", lw=1.2, linestyle="-.", alpha=0.85)
 
+    # 4. Mây Kumo (Senkou Span A & B)
     if "Senkou_Span_A" in df.columns and "Senkou_Span_B" in df.columns:
         ax.plot(df["time"], df["Senkou_Span_A"], label="Kumo Span A", color="#2ca02c", lw=0.8, alpha=0.6)
         ax.plot(df["time"], df["Senkou_Span_B"], label="Kumo Span B", color="#9467bd", lw=0.8, alpha=0.6)
@@ -597,6 +541,7 @@ def analyze_stock(symbol, resolution="D", count=200):
         ax.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
                         where=(df["Senkou_Span_A"] < df["Senkou_Span_B"]), color="red", alpha=0.08, interpolate=True)
 
+    # 5. Volume Profile POC & Order Block
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.9, lw=1.2)
     if smc["has_ob"] and smc["ob_price"] > 0:
         ax.axhline(smc["ob_price"], color="blue", linestyle="--", label=f"Order Block: {fmt(smc['ob_price'])}", alpha=0.8, lw=1.1)
@@ -1257,7 +1202,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp thêm hàm đánh giá lịch sử khung tuần (Giá & Khối lượng từ ngày phát hành) thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp bộ lọc VN30 Nâng Đáy Khung Tháng (M) thành công!")
     
     app.run_polling(
         drop_pending_updates=True,
