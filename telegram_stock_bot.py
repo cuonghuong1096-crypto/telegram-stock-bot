@@ -1093,6 +1093,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    ACTIVE_CHAT_IDS.add(chat_id)  # Ghi nhận chat_id để tự động bắn tin nhắn Auto-Scan
+    
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
@@ -1111,7 +1114,70 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 5. CẤU HÌNH SERVER, SELF-PING & CHẠY BOT
+# 5. TIẾN TRÌNH AUTO-SCAN CHẠY NGẦM ĐỊNH KỲ
+# ==========================================
+def run_scheduled_auto_scan(application):
+    import pytz
+    vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
+    print("⏰ Hệ thống Auto-Scan Scheduler đã được kích hoạt chạy ngầm thành công!")
+    
+    while True:
+        try:
+            now = datetime.datetime.now(vn_tz)
+            current_weekday = now.weekday() # 0: Thứ 2, ..., 4: Thứ 6, 6: Chủ Nhật
+            current_hour = now.hour
+            current_minute = now.minute
+
+            # Lịch tự động chạy: 
+            # 1. 15:30 các ngày từ Thứ 2 đến Thứ 5 (Sau giờ giao dịch)
+            # 2. 20:00 tối Chủ Nhật (Chuẩn bị tuần mới)
+            is_weekday_afternoon = (0 <= current_weekday <= 3) and (current_hour == 15 and current_minute == 30)
+            is_sunday_night = (current_weekday == 6) and (current_hour == 20 and current_minute == 0)
+
+            if is_weekday_afternoon or is_sunday_night:
+                if ACTIVE_CHAT_IDS:
+                    print(f"🚀 Bắt đầu tiến trình Auto-Scan định kỳ lúc {now.strftime('%Y-%m-%d %H:%M:%S')}...")
+                    
+                    super_stocks = []
+                    for symbol in WATCHLIST_SCAN:
+                        res = scan_super_stock(symbol)
+                        if res:
+                            super_stocks.append(res)
+                    
+                    if super_stocks:
+                        sorted_picks = sorted(super_stocks, key=lambda x: x["score"], reverse=True)[:5]
+                        
+                        text = "🚨 <b>BẢN TIN AUTO-SCAN: TOP SIÊU CỔ PHIẾU BỨT PHÁ</b>\n"
+                        text += f"📅 <i>Thời gian quét tự động: {now.strftime('%d/%m/%Y %H:%M')}</i>\n"
+                        text += "====================================\n\n"
+                        
+                        for idx, item in enumerate(sorted_picks, 1):
+                            text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']}k</code> | Score: <code>{item['score']}%</code>\n"
+                            text += f"   • Dòng tiền CMF: <code>{item['cmf']}</code> | RVOL: <code>{item['rvol']}x</code>\n"
+                            text += f"   • Điểm mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code>\n------------------------------------\n"
+
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        for chat_id in ACTIVE_CHAT_IDS:
+                            try:
+                                loop.run_until_complete(
+                                    application.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+                                )
+                            except Exception as e:
+                                print(f"Không thể gửi tin tới chat_id {chat_id}: {e}")
+                        loop.close()
+                
+                time.sleep(70)
+            else:
+                time.sleep(30)
+                
+        except Exception as e:
+            print(f"Lỗi trong tiến trình Auto-Scan Thread: {e}")
+            time.sleep(60)
+
+
+# ==========================================
+# 6. CẤU HÌNH SERVER, SELF-PING & CHẠY BOT
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -1140,7 +1206,7 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Đăng ký các lệnh chính (Bao gồm /sieuco và /checkmua)
+    # Đăng ký các lệnh chính
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("sieuco", sieuco_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
@@ -1157,6 +1223,9 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp thành công lệnh /sieuco và /checkmua!")
+    # 🚀 Kích hoạt tiến trình Auto-Scan chạy ngầm định kỳ
+    threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
+
+    print("🚀 Bot Quant Trading Pro đã tích hợp thành công lệnh /sieuco, /checkmua và Auto-Scan Scheduler!")
     
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
