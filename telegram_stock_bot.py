@@ -573,8 +573,87 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. CÁC HÀM QUÉT BỘ LỌC TỰ ĐỘNG
+# 3. CÁC HÀM QUÉT BỘ LỌC TỰ ĐỘNG & TÌM SIÊU CỔ PHIẾU (/sieuco)
 # ==========================================
+def scan_super_stock(symbol):
+    try:
+        df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
+        if err_d or df_d.empty or len(df_d) < 50: 
+            return None
+
+        df_d = calculate_indicators(df_d)
+        last_d = df_d.iloc[-1]
+        close = last_d["Close"]
+        sma200 = last_d.get("SMA200", close)
+        cmf_d = last_d.get("CMF", 0.0)
+        rvol_d = last_d.get("RVOL", 1.0)
+        
+        is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
+        if close < sma200 and not (is_near_sma200 and cmf_d > 0.03):
+            return None
+            
+        if cmf_d < 0.03 or rvol_d < 1.2:
+            return None
+
+        smc = calculate_smc_structures(df_d)
+        poc, vah, val = calculate_volume_profile(df_d)
+
+        entry_price = round(close, 2)
+        recent_swing_low = df_d["Low"].tail(10).min()
+        stop_loss = round(min(entry_price * 0.93, recent_swing_low * 0.98), 2)
+        suggested_qty, _ = calculate_position_size_1pct(entry_price, stop_loss)
+
+        score = 50
+        if smc["has_ob"]: score += 15
+        if smc["has_liquidity_sweep"]: score += 20
+        if cmf_d > 0.05: score += 15
+        if rvol_d >= 1.5: score += 10
+
+        if score >= 70:
+            return {
+                "symbol": symbol, 
+                "close": close, 
+                "score": min(score, 98),
+                "entry": entry_price, 
+                "stop_loss": stop_loss,
+                "cmf": round(cmf_d, 2),
+                "rvol": round(rvol_d, 2),
+                "suggested_qty": suggested_qty
+            }
+    except Exception:
+        pass
+    return None
+
+async def run_super_stock_screener_with_progress(msg):
+    total_symbols = len(WATCHLIST_SCAN)
+    completed = 0
+    super_stocks = []
+
+    with ThreadPoolExecutor(max_workers=30) as pool:
+        futures = {pool.submit(scan_super_stock, symbol): symbol for symbol in WATCHLIST_SCAN}
+        
+        for future in as_completed(futures):
+            completed += 1
+            res = future.result()
+            if res:
+                super_stocks.append(res)
+            
+            if completed % 5 == 0 or completed == total_symbols:
+                percent = int((completed / total_symbols) * 100)
+                bar = "█" * int(percent / 10) + "░" * (10 - int(percent / 10))
+                try:
+                    await msg.edit_text(
+                        f"🚀 <b>Đang quét tìm Siêu Cổ Phiếu bứt phá...</b>\n"
+                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
+                        f"⏳ Đang áp dụng bộ lọc dòng tiền & cấu trúc SMC...",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+    return sorted(super_stocks, key=lambda x: x["score"], reverse=True)[:5]
+
+
 def scan_monthly_higher_lows(symbol):
     df, err = fetch_stock_data(symbol, resolution="M", count=48)
     if err or df.empty or len(df) < 18: return None
@@ -709,8 +788,33 @@ async def run_sector_flow_screener_with_progress(msg):
 
 
 # ==========================================
-# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (ĐÃ TÍCH HỢP /checkmua & LƯỢC BỎ LỆNH THỪA)
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (TÍCH HỢP /sieuco & /checkmua)
 # ==========================================
+
+async def sieuco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_msg = update.message if update.message else update.callback_query.message
+    msg = await target_msg.reply_text(
+        "🚀 <b>Đang khởi tạo tiến trình quét Siêu Cổ Phiếu...</b>\n"
+        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
+        "⏳ Đang kết nối máy chủ dữ liệu...",
+        parse_mode="HTML"
+    )
+    
+    try:
+        picks = await run_super_stock_screener_with_progress(msg)
+        if not picks:
+            await msg.edit_text("⚠️ Hiện tại chưa tìm thấy mã nào đạt tiêu chí Siêu Cổ Phiếu bứt phá.")
+            return
+            
+        text = "🚀 <b>DANH SÁCH SIÊU CỔ PHIẾU BỨT PHÁ (MÃNH HỔ)</b>\n====================================\n\n"
+        for idx, item in enumerate(picks, 1):
+            text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']}k</code> | Score: <code>{item['score']}%</code>\n"
+            text += f"   • Dòng tiền CMF: <code>{item['cmf']}</code> | Khối lượng RVOL: <code>{item['rvol']}x</code>\n"
+            text += f"   • Điểm mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n------------------------------------\n"
+        await msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+
 
 async def check_buy_discipline_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -796,7 +900,7 @@ async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚛 <b>3. XE CONTAINER (Tạo lập):</b> Chờ xe bẻ lái xong (rút chân Order Block) mới bám theo.\n"
         "🏗️ <b>4. QUẢN TRỊ RỦI RO:</b> Cắt lỗ khắt khe 1% NAV để bảo vệ vốn mua nhà."
     )
-    keyboard = [[InlineKeyboardButton("🤖 AutoBuy", callback_data="run_autobuy_callback"), InlineKeyboardButton("🎯 Lọc Đáy", callback_data="run_dipbuy_callback")]]
+    keyboard = [[InlineKeyboardButton("🚀 Tìm Siêu Cổ", callback_data="run_sieuco_callback"), InlineKeyboardButton("🎯 Lọc Đáy", callback_data="run_dipbuy_callback")]]
     await target_msg.reply_text(rules_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 
@@ -932,6 +1036,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     data = query.data
 
+    if data == "run_sieuco_callback":
+        await sieuco_command(update, context)
+        return
     if data == "run_autobuy_callback": 
         await autobuy_command(update, context)
         return
@@ -960,8 +1067,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("checkob_cb|"):
         symbol = data.split("|")[1]
         context.args = [symbol]
-        # Gọi lại hàm checkob thông qua check_buy_discipline hoặc tạo handler riêng nếu cần
-        # Ở đây chúng ta gộp chung logic xử lý kiểm tra OB nhanh gọn
         await check_buy_discipline_command(update, context)
         return
 
@@ -993,7 +1098,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
         "2️⃣ <b>KIỂM TRA KỶ LUẬT MUA:</b> Gõ <code>/checkmua TCB</code> hoặc <code>/checkkyloimua TCB</code>\n"
         "3️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code>\n"
-        "4️⃣ <b>BỘ LỌC TỰ ĐỘNG:</b>\n"
+        "4️⃣ <b>BỘ LỌC TỰ ĐỘNG & TÌM SIÊU CỔ:</b>\n"
+        "   ├ 🚀 /sieuco    : Quét tìm Siêu Cổ Phiếu bứt phá\n"
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn\n"
         "   ├ 📈 /nangday   : Quét VN30 Nâng Đáy Khung Tháng\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
@@ -1034,8 +1140,9 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Đăng ký các lệnh chính (Đã lược bỏ lệnh trùng/thừa)
+    # Đăng ký các lệnh chính (Bao gồm /sieuco và /checkmua)
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("sieuco", sieuco_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
     app.add_handler(CommandHandler("nangday", nangday_command))
@@ -1050,7 +1157,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tối ưu code, dọn dẹp lệnh thừa & tích hợp /checkmua thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp thành công lệnh /sieuco và /checkmua!")
     
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-
