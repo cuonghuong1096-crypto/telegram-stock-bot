@@ -225,6 +225,51 @@ def calculate_smc_structures(df):
 
     return {"has_ob": has_ob, "ob_price": round(ob_price, 2), "has_liquidity_sweep": has_liquidity_sweep}
 
+# ==========================================
+# TÍCH HỢP 2 KIỂU XÁC NHẬN MUA TẠI ORDER BLOCK
+# ==========================================
+def check_ob_confirmation_type(df, smc):
+    """
+    Kiểm tra xem mã đang về Order Block theo kiểu xác nhận nào:
+    - Kiểu 1: Quét thanh khoản (Liquidity Sweep / Rút chân mạnh)
+    - Kiểu 2: Cạn cung tích lũy (RVOL thấp, CMF > 0, lình xình biên độ hẹp)
+    """
+    if not smc["has_ob"]:
+        return "CHƯA VỀ VÙNG OB", 0, "Giá chưa tiếp cận Order Block của tạo lập."
+
+    last = df.iloc[-1]
+    close = last["Close"]
+    ob_price = smc["ob_price"]
+    cmf = last.get("CMF", 0.0)
+    rvol = last.get("RVOL", 1.0)
+    
+    is_near_ob = abs(close - ob_price) / ob_price <= 0.03
+
+    if not is_near_ob and not smc["has_liquidity_sweep"]:
+        return "QUAN SÁT THÊM", 1, f"Giá đang cách xa vùng Order Block ({ob_price:.1f}k)."
+
+    # Kiểm tra Kiểu 1: Quét thanh khoản (Liquidity Sweep)
+    if smc["has_liquidity_sweep"] or (last["Low"] < ob_price and close >= ob_price):
+        return (
+            "🎯 KIỂU 1: QUÉT THANH KHOẢN (LIQUIDITY SWEEP)",
+            3,
+            f"Giá đã nhúng thủng/chạm Order Block ({ob_price:.1f}k) rồi rút chân mạnh mẽ. Cá mập đã dọn sạch nhỏ lẻ, điểm mua cực kỳ uy tín!"
+        )
+
+    # Kiểm tra Kiểu 2: Cạn cung tích lũy (No-Supply / CMF > 0)
+    elif is_near_ob and rvol < 0.9 and cmf > 0.02:
+        return (
+            "🛡️ KIỂU 2: CẠN CUNG TÍCH LŨY (NO-SUPPLY)",
+            2,
+            f"Giá đang lùi về sát Order Block ({ob_price:.1f}k) với khối lượng cạn kiệt (RVOL={rvol:.2f}x) và dòng tiền CMF dương ({cmf:.2f}). Lực bán đã cạn, gom hàng an toàn!"
+        )
+    else:
+        return (
+            "⏳ ĐANG CHỜ TÍN HIỆU XÁC NHẬN",
+            1,
+            f"Giá đã về vùng Order Block ({ob_price:.1f}k) nhưng cần thêm phiên xác nhận rút chân hoặc cạn cung."
+        )
+
 def calculate_position_size_1pct(entry_price, stop_loss_price, total_nav_vnd=DEFAULT_NAV_VND, risk_pct=0.01):
     if entry_price <= stop_loss_price or entry_price <= 0:
         return 1000, 0.0
@@ -445,6 +490,9 @@ def analyze_stock(symbol, resolution="D", count=200):
 
     sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
 
+    # Đánh giá loại xác nhận OB
+    ob_title, _, _ = check_ob_confirmation_type(df, smc)
+
     # ==========================================
     # ÁNH XẠ KẾT LUẬN & TRẠNG THÁI VỚI "QUY TẮC LÁI XE"
     # ==========================================
@@ -481,7 +529,7 @@ def analyze_stock(symbol, resolution="D", count=200):
     text_part1 += f"• <i>Kết luận mục 2:</i> Xe đang chạy trên {'đường cao tốc thênh thang' if not is_downtrend_heavy else 'đường sạt lở gập ghềnh'}.\n\n"
     
     text_part1 += f"🚛 <b>3. GIAO THƯỜNG XE CONTAINER & SMC (Tạo lập & Vùng giá):</b>\n"
-    text_part1 += f"• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Quét thanh khoản (Sweep): <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n"
+    text_part1 += f"• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Trạng thái: <b>{ob_title}</b>\n"
     text_part1 += f"• Volume Profile POC: <code>{fmt(poc)}</code> | VAH: <code>{fmt(vah)}</code> | VAL: <code>{fmt(val)}</code>\n"
     text_part1 += f"• <i>Kết luận mục 3:</i> Dấu vết bánh xe container (Cá mập) {'đã gom hàng rút chân an toàn' if smc['has_liquidity_sweep'] or smc['has_ob'] else 'chưa rõ ràng, cần quan sát thêm'}.\n\n"
 
@@ -500,8 +548,8 @@ def analyze_stock(symbol, resolution="D", count=200):
             InlineKeyboardButton("🗓️ 1M", callback_data=f"{symbol}|M|50"),
         ],
         [
+            InlineKeyboardButton("🔍 Kiểm Tra OB (Xác Nhận)", callback_data=f"checkob_cb|{symbol}"),
             InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy", callback_data="run_dipbuy_callback"),
-            InlineKeyboardButton("📈 VN30 Nâng Đáy (Tháng)", callback_data="run_nangday_callback"),
         ],
         [
             InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
@@ -517,22 +565,18 @@ def analyze_stock(symbol, resolution="D", count=200):
     # ==========================================
     fig, ax = plt.subplots(figsize=(9, 5), dpi=110)
     
-    # 1. Đường giá đóng cửa chính
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="#111111", lw=1.3, zorder=3)
     
-    # 2. Dải Bollinger Bands
     if "BB_Upper" in df.columns and "BB_Lower" in df.columns:
         ax.plot(df["time"], df["BB_Upper"], label="BB Upper", color="gray", linestyle="--", alpha=0.5, lw=0.8)
         ax.plot(df["time"], df["BB_Lower"], label="BB Lower", color="gray", linestyle="--", alpha=0.5, lw=0.8)
         ax.fill_between(df["time"], df["BB_Lower"], df["BB_Upper"], color="gray", alpha=0.06, label="Bollinger Channel")
 
-    # 3. Các đường trung bình động (EMA20 & SMA200)
     if "EMA20" in df.columns:
         ax.plot(df["time"], df["EMA20"], label="EMA 20", color="#ff7f0e", lw=1.1, alpha=0.85)
     if "SMA200" in df.columns:
         ax.plot(df["time"], df["SMA200"], label="SMA 200", color="#d62728", lw=1.2, linestyle="-.", alpha=0.85)
 
-    # 4. Mây Kumo (Senkou Span A & B)
     if "Senkou_Span_A" in df.columns and "Senkou_Span_B" in df.columns:
         ax.plot(df["time"], df["Senkou_Span_A"], label="Kumo Span A", color="#2ca02c", lw=0.8, alpha=0.6)
         ax.plot(df["time"], df["Senkou_Span_B"], label="Kumo Span B", color="#9467bd", lw=0.8, alpha=0.6)
@@ -541,7 +585,6 @@ def analyze_stock(symbol, resolution="D", count=200):
         ax.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
                         where=(df["Senkou_Span_A"] < df["Senkou_Span_B"]), color="red", alpha=0.08, interpolate=True)
 
-    # 5. Volume Profile POC & Order Block
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.9, lw=1.2)
     if smc["has_ob"] and smc["ob_price"] > 0:
         ax.axhline(smc["ob_price"], color="blue", linestyle="--", label=f"Order Block: {fmt(smc['ob_price'])}", alpha=0.8, lw=1.1)
@@ -824,6 +867,62 @@ async def run_sector_flow_screener_with_progress(msg):
 # 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
 # ==========================================
 
+async def checkob_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    target_msg = update.message if update.message else update.callback_query.message
+    
+    if not args:
+        await target_msg.reply_text(
+            "⚠️ Vui lòng nhập mã cổ phiếu cần kiểm tra xác nhận Order Block.\n"
+            "<i>Ví dụ:</i> <code>/checkob TCB</code> hoặc <code>/xacnhan HPG</code>",
+            parse_mode="HTML"
+        )
+        return
+        
+    symbol = args[0].upper().strip()
+    msg = await target_msg.reply_text(f"🔍 Đang quét cấu trúc Order Block và đánh giá 2 kiểu xác nhận cho <b>{symbol}</b>...", parse_mode="HTML")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "D", 150)
+        
+        if err or df.empty:
+            await msg.edit_text(f"❌ Không lấy được dữ liệu cho mã <b>{symbol}</b>: {html.escape(str(err))}", parse_mode="HTML")
+            return
+            
+        df = calculate_indicators(df)
+        smc = calculate_smc_structures(df)
+        
+        title_type, priority_code, desc = check_ob_confirmation_type(df, smc)
+        last = df.iloc[-1]
+        close = last["Close"]
+        ob_text = f"{smc['ob_price']:.1f}k" if smc["has_ob"] else "Chưa hình thành rõ"
+        
+        report_text = (
+            f"🔎 <b>BÁO CÁO XÁC NHẬN ORDER BLOCK: {symbol}</b>\n"
+            f"====================================\n"
+            f"• <b>Giá hiện tại:</b> <code>{close:.1f}k</code>\n"
+            f"• <b>Vùng Order Block (OB):</b> <code>{ob_text}</code>\n"
+            f"• <b>Trạng thái Quét (Sweep):</b> <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n\n"
+            f"🎯 <b>KẾT LUẬN TÌNH HUỐNG:</b>\n"
+            f"<b>{title_type}</b>\n"
+            f"💡 <i>Phân tích chi tiết:</i> {desc}\n\n"
+            f"🏁 <b>Hành động gợi ý:</b> {'<b>ĐÃ ĐỦ ĐIỀU KIỆN MUA GOM</b> theo chiến lược 3 bước!' if priority_code >= 2 else '<b>Kiên nhẫn chờ đợi thêm tín hiệu xác nhận tại vùng hỗ trợ.</b>'}"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton(f"📊 Xem Biểu Đồ Chi Tiết {symbol}", callback_data=f"{symbol}|D|200"),
+                InlineKeyboardButton("🔄 Kiểm Tra Lại", callback_data=f"checkob_cb|{symbol}")
+            ]
+        ]
+        
+        await msg.edit_text(report_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi hệ thống khi kiểm tra OB: {html.escape(str(e))}", parse_mode="HTML")
+
+
 async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
@@ -1074,6 +1173,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📈 1W", callback_data=f"{text}|W|100"),
             InlineKeyboardButton("🗓️ 1M", callback_data=f"{text}|M|50"),
         ],
+        [
+            InlineKeyboardButton("🔍 Kiểm Tra OB (Xác Nhận)", callback_data=f"checkob_cb|{text}")
+        ]
     ]
     await update.message.reply_text(
         f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
@@ -1107,6 +1209,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "run_quytec_callback":
         await quytec_command(update, context)
+        return
+
+    if data.startswith("checkob_cb|"):
+        symbol = data.split("|")[1]
+        context.args = [symbol]
+        await checkob_command(update, context)
         return
 
     parts = data.split("|")
@@ -1143,8 +1251,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
-        "2️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
-        "3️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
+        "2️⃣ <b>XÁC NHẬN ORDER BLOCK:</b> Gõ <code>/checkob TCB</code> hoặc <code>/xacnhan TCB</code>\n"
+        "3️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
+        "4️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
         "   ├ 📈 /nangday   : Quét VN30 cấu trúc Nâng Đáy Khung Tháng (M)\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
@@ -1195,6 +1304,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("nganh", sectors_command))
     app.add_handler(CommandHandler("khoingoai", foreign_command))  
     app.add_handler(CommandHandler("tin", news_command))
+    app.add_handler(CommandHandler("checkob", checkob_command))
+    app.add_handler(CommandHandler("xacnhan", checkob_command))
     app.add_handler(CommandHandler("quytec", quytec_command))
     app.add_handler(CommandHandler("quytrach", quytec_command))
     app.add_handler(CommandHandler("kienthuc", kienthuc_command)) 
@@ -1202,7 +1313,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp bộ lọc VN30 Nâng Đáy Khung Tháng (M) thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp 2 Kiểu Xác Nhận Order Block & Lệnh /checkob thành công!")
     
     app.run_polling(
         drop_pending_updates=True,
