@@ -229,11 +229,6 @@ def calculate_smc_structures(df):
 # TÍCH HỢP 2 KIỂU XÁC NHẬN MUA TẠI ORDER BLOCK
 # ==========================================
 def check_ob_confirmation_type(df, smc):
-    """
-    Kiểm tra xem mã đang về Order Block theo kiểu xác nhận nào:
-    - Kiểu 1: Quét thanh khoản (Liquidity Sweep / Rút chân mạnh)
-    - Kiểu 2: Cạn cung tích lũy (RVOL thấp, CMF > 0, lình xình biên độ hẹp)
-    """
     if not smc["has_ob"]:
         return "CHƯA VỀ VÙNG OB", 0, "Giá chưa tiếp cận Order Block của tạo lập."
 
@@ -248,20 +243,17 @@ def check_ob_confirmation_type(df, smc):
     if not is_near_ob and not smc["has_liquidity_sweep"]:
         return "QUAN SÁT THÊM", 1, f"Giá đang cách xa vùng Order Block ({ob_price:.1f}k)."
 
-    # Kiểm tra Kiểu 1: Quét thanh khoản (Liquidity Sweep)
     if smc["has_liquidity_sweep"] or (last["Low"] < ob_price and close >= ob_price):
         return (
             "🎯 KIỂU 1: QUÉT THANH KHOẢN (LIQUIDITY SWEEP)",
             3,
-            f"Giá đã nhúng thủng/chạm Order Block ({ob_price:.1f}k) rồi rút chân mạnh mẽ. Cá mập đã dọn sạch nhỏ lẻ, điểm mua cực kỳ uy tín!"
+            f"Giá đã nhúng thủng/chạm Order Block ({ob_price:.1f}k) rồi rút chân mạnh mẽ. Điểm mua uy tín!"
         )
-
-    # Kiểm tra Kiểu 2: Cạn cung tích lũy (No-Supply / CMF > 0)
     elif is_near_ob and rvol < 0.9 and cmf > 0.02:
         return (
             "🛡️ KIỂU 2: CẠN CUNG TÍCH LŨY (NO-SUPPLY)",
             2,
-            f"Giá đang lùi về sát Order Block ({ob_price:.1f}k) với khối lượng cạn kiệt (RVOL={rvol:.2f}x) và dòng tiền CMF dương ({cmf:.2f}). Lực bán đã cạn, gom hàng an toàn!"
+            f"Giá đang lùi về sát Order Block ({ob_price:.1f}k) với khối lượng cạn kiệt (RVOL={rvol:.2f}x) và dòng tiền CMF dương ({cmf:.2f})."
         )
     else:
         return (
@@ -457,7 +449,6 @@ def analyze_stock(symbol, resolution="D", count=200):
     confluence_points = []
     score = 50
 
-    # Chấm điểm kỹ thuật
     if close > cloud_top: 
         score += 20; confluence_points.append("Giá nằm trên mây Kumo (Đường thênh thang)")
     elif close >= cloud_bottom: 
@@ -489,49 +480,40 @@ def analyze_stock(symbol, resolution="D", count=200):
     stop_loss = round(min(entry_avg * 0.93, recent_swing_low * 0.98), 2)
 
     sug_qty, risk_nav_pct = calculate_position_size_1pct(entry_avg, stop_loss)
-
-    # Đánh giá loại xác nhận OB
     ob_title, _, _ = check_ob_confirmation_type(df, smc)
 
-    # ==========================================
-    # ÁNH XẠ KẾT LUẬN & TRẠNG THÁI VỚI "QUY TẮC LÁI XE"
-    # ==========================================
     if confidence_score >= 65 and not is_downtrend_heavy:
         system_status = "ĐÈN XANH: MỞ MUA / TĂNG GA"
-        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cao tốc thông thoáng, tiếng máy gầm khỏe (CMF > 0, vượt mây). Tài xế <b>ĐẠP GA MẠNH (Mở vị thế / Bật bình tăng tốc NOS nếu đủ điều kiện)</b> theo đúng làn đường tăng trưởng."
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cao tốc thông thoáng, tiếng máy gầm khỏe (CMF > 0, vượt mây). Tài xế <b>ĐẠP GA MẠNH</b> theo đúng làn đường tăng trưởng."
         final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Mở mua quanh <code>{fmt(entry_1)} - {fmt(entry_2)}</code>, Khối lượng: <code>{sug_qty:,} cổ</code>, Stoploss tại <code>{fmt(stop_loss)}</code>."
     elif confidence_score >= 50:
         system_status = "ĐÈN VÀNG: THĂM DÒ THẬN TRỌNG"
-        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Đường sương mù nhẹ hoặc đang qua khúc cua tích lũy. Tài xế <b>GIẢM TỐC ĐỘ, RẠ RÒ SANG SỐ THĂM DÒ</b>, tuyệt đối không phóng nhanh vượt ẩu."
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Đường sương mù nhẹ. Tài xế <b>GIẢM TỐC ĐỘ, THĂM DÒ</b>."
         final_icon = f"🟡 <b>THĂM DÒ THẬN TRỌNG (Độ tin cậy: {confidence_score}%)</b>"
         action_note = f"Đi chậm lại, quan sát kỹ vùng hỗ trợ, Stoploss tại <code>{fmt(stop_loss)}</code>."
     else:
         system_status = "ĐÈN ĐỎ: DỪNG XE / QUAN SÁT (NO TRADE)"
-        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cổ phiếu trượt dốc sâu / Mất phanh (Downtrend dưới SMA200/Mây Kumo). Tài xế <b>TẤP XE VÀO LỀ NGHỈ NGƠI, KHÔNG CỐ CHẤP BẮT ĐÁY</b> để tránh lao xuống vực thẳm."
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cổ phiếu trượt dốc sâu / Mất phanh. Tài xế <b>TẤP XE VÀO LỀ NGHỈ NGƠI</b>."
         final_icon = f"🔴 <b>TẤP XE VÀO LỀ (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = f"Cổ phiếu xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài, không bắt đáy!</b>"
+        action_note = f"Cổ phiếu xu hướng giảm hoặc rủi ro cao. <b>Tuyệt đối đứng ngoài!</b>"
 
     conf_str = "; ".join(confluence_points) if confluence_points else "Tích lũy ổn định"
     long_term_trend = "UPTREND (Xuống dốc thoáng)" if not is_downtrend_heavy else "DOWNTREND (Trượt lùi dốc)"
 
-    # Xây dựng báo cáo bám sát 4 mục lái xe
     text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KĨ THUẬT & SMC: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
     text_part1 += f"🏛️ Thời tiết thị trường: <b>{html.escape(mkt_health['note'])}</b>\n\n"
     
     text_part1 += f"⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Khối lượng):</b>\n"
-    text_part1 += f"• Trạng thái dòng tiền (Xăng): CMF = <code>{cmf:.2f}</code> | RVOL = <code>{rvol:.2f}x</code>\n"
-    text_part1 += f"• <i>Kết luận mục 1:</i> Lượng nhiên liệu {'dồi dào, động cơ nổ giòn' if cmf > 0 else 'cạn kiệt, xe ì ạch'}.\n\n"
+    text_part1 += f"• Trạng thái dòng tiền (Xăng): CMF = <code>{cmf:.2f}</code> | RVOL = <code>{rvol:.2f}x</code>\n\n"
     
     text_part1 += f"🛣️ <b>2. TUYẾN ĐƯỜNG & LÀN ĐƯỜNG (Xu hướng & Timing):</b>\n"
-    text_part1 += f"• Làn đường hiện tại: {long_term_trend} | ADX = <code>{adx:.1f}</code>\n"
-    text_part1 += f"• <i>Kết luận mục 2:</i> Xe đang chạy trên {'đường cao tốc thênh thang' if not is_downtrend_heavy else 'đường sạt lở gập ghềnh'}.\n\n"
+    text_part1 += f"• Làn đường hiện tại: {long_term_trend} | ADX = <code>{adx:.1f}</code>\n\n"
     
     text_part1 += f"🚛 <b>3. GIAO THƯỜNG XE CONTAINER & SMC (Tạo lập & Vùng giá):</b>\n"
     text_part1 += f"• Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Trạng thái: <b>{ob_title}</b>\n"
-    text_part1 += f"• Volume Profile POC: <code>{fmt(poc)}</code> | VAH: <code>{fmt(vah)}</code> | VAL: <code>{fmt(val)}</code>\n"
-    text_part1 += f"• <i>Kết luận mục 3:</i> Dấu vết bánh xe container (Cá mập) {'đã gom hàng rút chân an toàn' if smc['has_liquidity_sweep'] or smc['has_ob'] else 'chưa rõ ràng, cần quan sát thêm'}.\n\n"
+    text_part1 += f"• Volume Profile POC: <code>{fmt(poc)}</code> | VAH: <code>{fmt(vah)}</code> | VAL: <code>{fmt(val)}</code>\n\n"
 
     text_part1 += f"🏗️ <b>4. BỘ MÁY QUẢN TRỊ & QUẢN TRỊ RỦI RO (1% NAV):</b>\n"
     text_part1 += f"• Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
@@ -548,8 +530,8 @@ def analyze_stock(symbol, resolution="D", count=200):
             InlineKeyboardButton("🗓️ 1M", callback_data=f"{symbol}|M|50"),
         ],
         [
-            InlineKeyboardButton("🔍 Kiểm Tra OB (Xác Nhận)", callback_data=f"checkob_cb|{symbol}"),
-            InlineKeyboardButton("🎯 Lọc Đảo Chiều Đáy", callback_data="run_dipbuy_callback"),
+            InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}"),
+            InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback"),
         ],
         [
             InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
@@ -560,11 +542,7 @@ def analyze_stock(symbol, resolution="D", count=200):
         ]
     ]
 
-    # ==========================================
-    # VẼ BIỂU ĐỒ MATPLOTLIB (ĐẦY ĐỦ CÁC CHỈ BÁO)
-    # ==========================================
     fig, ax = plt.subplots(figsize=(9, 5), dpi=110)
-    
     ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="#111111", lw=1.3, zorder=3)
     
     if "BB_Upper" in df.columns and "BB_Lower" in df.columns:
@@ -576,14 +554,6 @@ def analyze_stock(symbol, resolution="D", count=200):
         ax.plot(df["time"], df["EMA20"], label="EMA 20", color="#ff7f0e", lw=1.1, alpha=0.85)
     if "SMA200" in df.columns:
         ax.plot(df["time"], df["SMA200"], label="SMA 200", color="#d62728", lw=1.2, linestyle="-.", alpha=0.85)
-
-    if "Senkou_Span_A" in df.columns and "Senkou_Span_B" in df.columns:
-        ax.plot(df["time"], df["Senkou_Span_A"], label="Kumo Span A", color="#2ca02c", lw=0.8, alpha=0.6)
-        ax.plot(df["time"], df["Senkou_Span_B"], label="Kumo Span B", color="#9467bd", lw=0.8, alpha=0.6)
-        ax.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
-                        where=(df["Senkou_Span_A"] >= df["Senkou_Span_B"]), color="green", alpha=0.08, interpolate=True)
-        ax.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
-                        where=(df["Senkou_Span_A"] < df["Senkou_Span_B"]), color="red", alpha=0.08, interpolate=True)
 
     ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.9, lw=1.2)
     if smc["has_ob"] and smc["ob_price"] > 0:
@@ -603,109 +573,65 @@ def analyze_stock(symbol, resolution="D", count=200):
 
 
 # ==========================================
-# 3. HÀM QUÉT BỘ LỌC TỰ ĐỘNG & KHUNG THÁNG
+# 3. CÁC HÀM QUÉT BỘ LỌC TỰ ĐỘNG
 # ==========================================
 def scan_monthly_higher_lows(symbol):
     df, err = fetch_stock_data(symbol, resolution="M", count=48)
-    if err or df.empty or len(df) < 18: 
-        return None
-        
+    if err or df.empty or len(df) < 18: return None
     df = calculate_indicators(df)
-    
-    lows = df["Low"].values
-    closes = df["Close"].values
-    
-    if len(lows) < 12:
-        return None
-        
+    lows, closes = df["Low"].values, df["Close"].values
+    if len(lows) < 12: return None
     recent_low_1 = lows[-1]
     prev_low_2 = lows[-6:-1].min()
     old_low_3 = lows[-12:-6].min()
-    
     is_higher_lows = (recent_low_1 >= prev_low_2) and (prev_low_2 >= old_low_3)
-    
     last = df.iloc[-1]
-    close = closes[-1]
-    cmf = last.get("CMF", 0.0)
-    
-    span_a = last.get("Senkou_Span_A", close)
-    span_b = last.get("Senkou_Span_B", close)
+    close, cmf = closes[-1], last.get("CMF", 0.0)
+    span_a, span_b = last.get("Senkou_Span_A", close), last.get("Senkou_Span_B", close)
     cloud_bottom = min(span_a, span_b)
     
     if is_higher_lows and cmf > -0.05 and close >= cloud_bottom * 0.95:
         score = (cmf * 50) + (20 if close > max(span_a, span_b) else 10)
-        return {
-            "symbol": symbol.upper(),
-            "close": round(close, 1),
-            "cmf": round(cmf, 2),
-            "recent_low": round(recent_low_1, 1),
-            "prev_low": round(prev_low_2, 1),
-            "score": round(score, 1)
-        }
+        return {"symbol": symbol.upper(), "close": round(close, 1), "cmf": round(cmf, 2), "recent_low": round(recent_low_1, 1), "prev_low": round(prev_low_2, 1), "score": round(score, 1)}
     return None
 
 async def run_monthly_higher_lows_screener_with_progress(msg):
-    vn30_core = [
-        "VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB",
-        "VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "SSI", "VCI", "HCM",
-        "HPG", "HSG", "MSN", "VNM", "FPT", "REE", "POW", "GAS", "PLX", "GMD"
-    ]
+    vn30_core = ["VCB", "BID", "CTG", "TCB", "MBB", "ACB", "VPB", "STB", "TPB", "VHM", "VIC", "VRE", "KDH", "NLG", "KBC", "SSI", "VCI", "HCM", "HPG", "HSG", "MSN", "VNM", "FPT", "REE", "POW", "GAS", "PLX", "GMD"]
     total_symbols = len(vn30_core)
-    completed = 0
-    results = []
+    completed, results = 0, []
 
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = {pool.submit(scan_monthly_higher_lows, symbol): symbol for symbol in vn30_core}
-        
         for future in as_completed(futures):
             completed += 1
             res = future.result()
-            if res:
-                results.append(res)
-            
+            if res: results.append(res)
             if completed % 4 == 0 or completed == total_symbols:
                 percent = int((completed / total_symbols) * 100)
-                filled_blocks = int(percent / 10)
-                bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
-                
+                bar = "█" * int(percent / 10) + "░" * (10 - int(percent / 10))
                 try:
-                    await msg.edit_text(
-                        f"📈 <b>Đang quét siêu cấu trúc VN30 Nâng Đáy (Khung Tháng)...</b>\n"
-                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
-                        f"⏳ Đang dò tìm tín hiệu dòng tiền dài hạn...",
-                        parse_mode="HTML"
-                    )
+                    await msg.edit_text(f"📈 <b>Đang quét siêu cấu trúc VN30 Nâng Đáy (Khung Tháng)...</b>\n[{bar}] <b>{percent}%</b>", parse_mode="HTML")
                 except Exception:
                     pass
-
     return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
-
 
 def process_single_stock_for_autobuy(symbol):
     try:
         df_d, err_d = fetch_stock_data(symbol, resolution="D", count=200)
         if err_d or df_d.empty or len(df_d) < 50: return None
-
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
-        close = last_d["Close"]
-        sma200 = last_d.get("SMA200", close)
-        cmf_d = last_d.get("CMF", 0.0)
-        rvol_d = last_d.get("RVOL", 1.0)
+        close, sma200, cmf_d, rvol_d = last_d["Close"], last_d.get("SMA200", last_d["Close"]), last_d.get("CMF", 0.0), last_d.get("RVOL", 1.0)
         
         is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
-        if close < sma200 and not (is_near_sma200 and cmf_d > 0.03):
-            return None
-        if rvol_d < 1.3:
-            return None
+        if close < sma200 and not (is_near_sma200 and cmf_d > 0.03): return None
+        if rvol_d < 1.3: return None
 
         smc = calculate_smc_structures(df_d)
-        poc, vah, val = calculate_volume_profile(df_d)
-
         entry_price = round(close, 2)
         recent_swing_low = df_d["Low"].tail(10).min()
         stop_loss = round(min(entry_price * 0.93, recent_swing_low * 0.98), 2)
-        suggested_qty, actual_risk_pct = calculate_position_size_1pct(entry_price, stop_loss)
+        suggested_qty, _ = calculate_position_size_1pct(entry_price, stop_loss)
 
         score = 50
         if smc["has_ob"]: score += 15
@@ -714,57 +640,29 @@ def process_single_stock_for_autobuy(symbol):
         if rvol_d >= 1.5: score += 10
 
         if score >= 65 and cmf_d > 0:
-            return {
-                "symbol": symbol, "close": close, "score": min(score, 95),
-                "entry": entry_price, "stop_loss": stop_loss,
-                "suggested_qty": suggested_qty
-            }
+            return {"symbol": symbol, "close": close, "score": min(score, 95), "entry": entry_price, "stop_loss": stop_loss, "suggested_qty": suggested_qty}
     except Exception:
         pass
     return None
 
 async def run_smart_buy_screener_with_progress(msg):
     total_symbols = len(WATCHLIST_SCAN)
-    completed = 0
-    buy_recommendations = []
-
+    completed, buy_recommendations = 0, []
     with ThreadPoolExecutor(max_workers=30) as pool:
         futures = {pool.submit(process_single_stock_for_autobuy, symbol): symbol for symbol in WATCHLIST_SCAN}
-        
         for future in as_completed(futures):
             completed += 1
             res = future.result()
-            if res:
-                buy_recommendations.append(res)
-            
-            if completed % 5 == 0 or completed == total_symbols:
-                percent = int((completed / total_symbols) * 100)
-                filled_blocks = int(percent / 10)
-                bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
-                
-                try:
-                    await msg.edit_text(
-                        f"🤖 <b>Đang quét danh sách Auto-Buy an toàn tuyệt đối...</b>\n"
-                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
-                        f"⏳ Đang áp dụng bộ lọc khối lượng & xu hướng chuyên sâu...",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-
+            if res: buy_recommendations.append(res)
     return sorted(buy_recommendations, key=lambda x: x["score"], reverse=True)[:5]
-
 
 def scan_single_dip_stock(symbol):
     df, err = fetch_stock_data(symbol, resolution="D", count=100)
     if err or df.empty or len(df) < 30: return None
     df = calculate_indicators(df)
     last = df.iloc[-1]
-    close, cmf, rvol = last["Close"], last.get("CMF", 0.0), last.get("RVOL", 1.0)
-    sma200 = last.get("SMA200", close)
-    
+    close, cmf, rvol, sma200 = last["Close"], last.get("CMF", 0.0), last.get("RVOL", 1.0), last.get("SMA200", last["Close"])
     if close < sma200 * 0.95: return None
-
     smc = calculate_smc_structures(df)
     poc, _, _ = calculate_volume_profile(df)
     recent_high = df["High"].tail(15).max()
@@ -772,60 +670,29 @@ def scan_single_dip_stock(symbol):
 
     if drop_pct >= 4.0 and (close <= poc * 1.02 or smc["has_ob"] or smc["has_liquidity_sweep"]) and cmf > 0:
         score = (drop_pct * 2.0) + (cmf * 30) + (15 if smc["has_liquidity_sweep"] else 0)
-        return {
-            "symbol": symbol, "close": close, "drop_pct": round(drop_pct, 1),
-            "cmf": cmf, "rvol": rvol, "poc": poc, "smc": smc, "score": score
-        }
+        return {"symbol": symbol, "close": close, "drop_pct": round(drop_pct, 1), "cmf": cmf, "rvol": rvol, "poc": poc, "smc": smc, "score": score}
     return None
 
 async def run_dip_buy_screener_with_progress(msg):
     total_symbols = len(WATCHLIST_SCAN)
-    completed = 0
-    results = []
-
+    completed, results = 0, []
     with ThreadPoolExecutor(max_workers=30) as pool:
         futures = {pool.submit(scan_single_dip_stock, symbol): symbol for symbol in WATCHLIST_SCAN}
-        
         for future in as_completed(futures):
             completed += 1
             res = future.result()
-            if res:
-                results.append(res)
-            
-            if completed % 5 == 0 or completed == total_symbols:
-                percent = int((completed / total_symbols) * 100)
-                filled_blocks = int(percent / 10)
-                bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
-                
-                try:
-                    await msg.edit_text(
-                        f"🎯 <b>Đang quét cổ phiếu tích lũy an toàn...</b>\n"
-                        f"[{bar}] <b>{percent}%</b> ({completed}/{total_symbols} mã)\n"
-                        f"⏳ Đang rà soát vùng hỗ trợ...",
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
-
+            if res: results.append(res)
     return sorted(results, key=lambda x: x["score"], reverse=True)[:6]
-
 
 def analyze_single_sector_stock(symbol):
     df, err = fetch_stock_data(symbol, resolution="D", count=40)
     if err or df.empty or len(df) < 15: return None
     df = calculate_indicators(df)
     last, prev = df.iloc[-1], df.iloc[-2]
-    return {
-        "symbol": symbol,
-        "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100,
-        "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0)
-    }
+    return {"symbol": symbol, "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100, "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0)}
 
 async def run_sector_flow_screener_with_progress(msg):
-    total_sectors = len(SECTOR_MAP)
-    completed_sectors = 0
     sector_results = []
-
     for sector_name, symbols in SECTOR_MAP.items():
         stock_metrics = []
         with ThreadPoolExecutor(max_workers=10) as pool:
@@ -833,54 +700,34 @@ async def run_sector_flow_screener_with_progress(msg):
             for f in as_completed(futures):
                 res = f.result()
                 if res: stock_metrics.append(res)
-        
-        completed_sectors += 1
-        percent = int((completed_sectors / total_sectors) * 100)
-        filled_blocks = int(percent / 10)
-        bar = "█" * filled_blocks + "░" * (10 - filled_blocks)
-        
-        try:
-            await msg.edit_text(
-                f"🏢 <b>Đang phân tích dòng tiền nhóm ngành...</b>\n"
-                f"[{bar}] <b>{percent}%</b> ({completed_sectors}/{total_sectors} ngành: {sector_name})\n"
-                f"⏳ Đang đo lường chỉ số CMF & RVOL...",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-
         if stock_metrics:
-            avg_pct = np.mean([s["pct_change"] for s in stock_metrics])
             avg_cmf = np.mean([s["cmf"] for s in stock_metrics])
             avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
             leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
-
-            sector_results.append({
-                "sector": sector_name, "avg_cmf": avg_cmf, "avg_rvol": avg_rvol,
-                "leader": leader_stock, "score": (avg_cmf * 40) + (avg_rvol * 20)
-            })
-
+            sector_results.append({"sector": sector_name, "avg_cmf": avg_cmf, "avg_rvol": avg_rvol, "leader": leader_stock, "score": (avg_cmf * 40) + (avg_rvol * 20)})
     return sorted(sector_results, key=lambda x: x["score"], reverse=True)
 
 
 # ==========================================
-# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (ĐÃ TÍCH HỢP /checkmua & LƯỢC BỎ LỆNH THỪA)
 # ==========================================
 
-async def checkob_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def check_buy_discipline_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     target_msg = update.message if update.message else update.callback_query.message
     
     if not args:
         await target_msg.reply_text(
-            "⚠️ Vui lòng nhập mã cổ phiếu cần kiểm tra xác nhận Order Block.\n"
-            "<i>Ví dụ:</i> <code>/checkob TCB</code> hoặc <code>/xacnhan HPG</code>",
+            "⚠️ Vui lòng nhập mã cổ phiếu cần kiểm tra kỷ luật mua.\n"
+            "<i>Ví dụ:</i> <code>/checkmua TCB</code> hoặc <code>/checkkyloimua HPG</code>",
             parse_mode="HTML"
         )
         return
         
     symbol = args[0].upper().strip()
-    msg = await target_msg.reply_text(f"🔍 Đang quét cấu trúc Order Block và đánh giá 2 kiểu xác nhận cho <b>{symbol}</b>...", parse_mode="HTML")
+    is_solid_stock = symbol in WATCHLIST_SCAN
+    
+    msg = await target_msg.reply_text(f"🛡️ Đang chạy bộ lọc Checklist kỷ luật cho <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
@@ -893,277 +740,172 @@ async def checkob_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df = calculate_indicators(df)
         smc = calculate_smc_structures(df)
         
-        title_type, priority_code, desc = check_ob_confirmation_type(df, smc)
         last = df.iloc[-1]
         close = last["Close"]
-        ob_text = f"{smc['ob_price']:.1f}k" if smc["has_ob"] else "Chưa hình thành rõ"
+        cmf = last.get("CMF", 0.0)
         
+        ob_price = smc["ob_price"] if smc["has_ob"] else 0
+        is_near_ob = (ob_price > 0 and abs(close - ob_price) / ob_price <= 0.03) or smc["has_liquidity_sweep"]
+        has_signal_confirmed = smc["has_liquidity_sweep"] or (cmf > 0.02)
+        
+        passed_criteria_count = sum([is_solid_stock, is_near_ob, has_signal_confirmed])
+        
+        if passed_criteria_count == 3:
+            status_icon = "🟢 ĐÈN XANH TUYỆT ĐỐI: ĐỦ ĐIỀU KIỆN MUA"
+            action_advice = "<b>Đạt 3/3 tiêu chuẩn kỷ luật!</b> Tự tin trích quỹ Hũ 3 mở mua gom thăm dò."
+        elif passed_criteria_count == 2:
+            status_icon = "🟡 ĐÈN VÀNG: THẬN TRỌNG CHỜ THÊM"
+            action_advice = "<b>Mới đạt 2/3 tiêu chuẩn.</b> Kiên nhẫn chờ thêm tín hiệu xác nhận ở vùng hỗ trợ."
+        else:
+            status_icon = "🔴 ĐÈN ĐỎ: TUYỆT ĐỐI KHÔNG MUA"
+            action_advice = "<b>Chưa thỏa mãn điều kiện an toàn.</b> Vi phạm checklist kỷ luật, đứng ngoài quan sát!"
+
         report_text = (
-            f"🔎 <b>BÁO CÁO XÁC NHẬN ORDER BLOCK: {symbol}</b>\n"
+            f"📋 <b>CHECKLIST KỶ LUẬT TRƯỚC KHI ĐẶT LỆNH: {symbol}</b>\n"
             f"====================================\n"
-            f"• <b>Giá hiện tại:</b> <code>{close:.1f}k</code>\n"
-            f"• <b>Vùng Order Block (OB):</b> <code>{ob_text}</code>\n"
-            f"• <b>Trạng thái Quét (Sweep):</b> <code>{'Có' if smc['has_liquidity_sweep'] else 'Không'}</code>\n\n"
-            f"🎯 <b>KẾT LUẬN TÌNH HUỐNG:</b>\n"
-            f"<b>{title_type}</b>\n"
-            f"💡 <i>Phân tích chi tiết:</i> {desc}\n\n"
-            f"🏁 <b>Hành động gợi ý:</b> {'<b>ĐÃ ĐỦ ĐIỀU KIỆN MUA GOM</b> theo chiến lược 3 bước!' if priority_code >= 2 else '<b>Kiên nhẫn chờ đợi thêm tín hiệu xác nhận tại vùng hỗ trợ.</b>'}"
+            f"• <b>Mức giá hiện tại:</b> <code>{close:.1f}k</code>\n\n"
+            f"<b>CHI TIẾT 3 TIÊU CHÍ KỶ LUẬT:</b>\n"
+            f"1️⃣ Thuộc danh mục 'Thùng đặc': <code>{'✅ Đạt (Có)' if is_solid_stock else '❌ Không có'}</code>\n"
+            f"2️⃣ Sát Order Block / Hỗ trợ: <code>{'✅ Đạt (OB ' + f'{ob_price:.1f}k' + ')' if is_near_ob else '⚠️ Chưa sát vùng giá'}</code>\n"
+            f"3️⃣ Tín hiệu xác nhận (Sweep / CMF>0): <code>{'✅ Đạt (CMF=' + f'{cmf:.2f}' + ')' if has_signal_confirmed else '❌ Chưa có tín hiệu'}</code>\n\n"
+            f"🎯 <b>KẾT LUẬN KỶ LUẬT:</b>\n"
+            f"<b>{status_icon}</b>\n"
+            f"💡 <i>Lời khuyên:</i> {action_advice}"
         )
         
         keyboard = [
             [
-                InlineKeyboardButton(f"📊 Xem Biểu Đồ Chi Tiết {symbol}", callback_data=f"{symbol}|D|200"),
-                InlineKeyboardButton("🔄 Kiểm Tra Lại", callback_data=f"checkob_cb|{symbol}")
+                InlineKeyboardButton(f"🔍 Kiểm Tra Chi Tiết OB", callback_data=f"checkob_cb|{symbol}"),
+                InlineKeyboardButton(f"📊 Xem Biểu Đồ", callback_data=f"{symbol}|D|200")
             ]
         ]
         
         await msg.edit_text(report_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
         
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi hệ thống khi kiểm tra OB: {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi hệ thống: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def quytec_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    
     rules_text = (
         "🚗 <b>CẨM NANG SINH TỒN BẤT BIẾN: LÁI XE CHỨNG KHOÁN</b>\n"
         "====================================\n\n"
-        
-        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Đòn bẩy Margin)</b>\n"
-        "• <b>Tiền mặt = Xăng xe:</b> Luôn giữ bình xăng dự phòng (tiền mặt), tuyệt đối không phóng bạt mạng hết sạch tiền dọc đường.\n"
-        "• <b>Bình tăng tốc NOS (Margin):</b> Chỉ bật khi đường thẳng thoáng rộng và mắt thấy đèn xanh xác nhận (Uptrend rõ ràng). Tuyệt đối không bật Margin khi xe đang lệch làn hoặc trượt dốc để tránh cháy xe (Call Margin).\n\n"
-        
-        "🛣️ <b>2. TUYẾN ĐƯỜNG, LÀN ĐƯỜNG & TIMING (Ngành & Cổ phiếu)</b>\n"
-        "• <b>Dòng tiền Ngành (Sector Flow) = Tuyến đường:</b> Dòng tiền lớn vào ngành nào giống như tuyến cao tốc đó đang được mở luồng ưu tiên.\n"
-        "• <b>Mỗi Cổ phiếu = Làn đường cụ thể:</b> Ưu tiên chọn đúng làn đường chất lượng cao 'thùng đặc' (TCB, VRE, HPG...) để xe chạy đầm chắc.\n"
-        "• <b>Thời điểm nhập làn:</b> Đứng ở lề đường quan sát. Chờ đúng lúc xe bon bon chạy thẳng (vượt mây, CMF > 0) thì bước ra nhập làn.\n\n"
-        
-        "🚛 <b>3. GIAO THƯỜNG VỚI XE CONTAINER (Tạo lập & Điểm mù)</b>\n"
-        "• <b>Xe tải lớn (Tạo lập / Cá mập):</b> Thường chủ động ôm cua gấp hoặc ép sát lề đường để rũ bỏ tay lái yếu (Shakeout / Quét thanh khoản).\n"
-        "• <b>Xử lý khi container bẻ lái:</b> Chờ xe container đánh lái xong quay lại đường thẳng (rút chân tạo Order Block), lúc đó mới thong thả bám theo sau.\n\n"
-        
-        "🏗️ <b>4. BỘ MÁY QUẢN TRỊ (Quản trị vốn & Quản trị rủi ro 1% NAV)</b>\n"
-        "• <b>Nhấp phanh chân:</b> Giảm tỷ trọng khi sương mù dày đặc (VN-Index mất EMA20).\n"
-        "• <b>Phanh tay khẩn cấp:</b> Cắt lỗ khắt khe (Stop-loss) ngay khi vỡ mặt đường hỗ trợ cứng để bảo vệ nguyên vẹn chiếc xe.\n"
-        "====================================\n"
-        "🏁 <i>Tài xế vĩ đại nhất không phải kẻ chạy nhanh nhất, mà là kẻ luôn về đích an toàn cùng chiếc xe nguyên vẹn!</i>"
+        "⛽ <b>1. XE VÀ NHIÊN LIỆU (Vốn & Margin):</b> Luôn giữ bình xăng dự phòng (tiền mặt).\n"
+        "🛣️ <b>2. TUYẾN ĐƯỜNG (Ngành & Cổ phiếu):</b> Chọn đúng làn 'thùng đặc' (TCB, HPG, FPT...).\n"
+        "🚛 <b>3. XE CONTAINER (Tạo lập):</b> Chờ xe bẻ lái xong (rút chân Order Block) mới bám theo.\n"
+        "🏗️ <b>4. QUẢN TRỊ RỦI RO:</b> Cắt lỗ khắt khe 1% NAV để bảo vệ vốn mua nhà."
     )
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback"),
-            InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback")
-        ],
-        [
-            InlineKeyboardButton("📈 VN30 Nâng Đáy (Tháng)", callback_data="run_nangday_callback"),
-            InlineKeyboardButton("💡 Xem Bản Đồ Vĩ Mô", callback_data="run_kienthuc_callback")
-        ]
-    ]
-    
+    keyboard = [[InlineKeyboardButton("🤖 AutoBuy", callback_data="run_autobuy_callback"), InlineKeyboardButton("🎯 Lọc Đáy", callback_data="run_dipbuy_callback")]]
     await target_msg.reply_text(rules_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-
-
-async def kienthuc_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target_msg = update.message if update.message else update.callback_query.message
-    
-    macro_text = (
-        "🗺️ <b>BẢN ĐỒ VĨ MÔ: ĐỒNG HỒ CƠ HỌC KINH TẾ</b>\n"
-        "====================================\n\n"
-        
-        "🎛️ <b>1. NHÓM ĐIỀU HÀNH & TIỀN TỆ (LÃI SUẤT & TỶ GIÁ)</b>\n"
-        "• <b>Lãi suất tăng ⬆️:</b> Vay vốn đắt đỏ ➔ Tiền rút khỏi Chứng khoán & BĐS vào ngân hàng ➔ Thị trường tài sản hạ nhiệt.\n"
-        "• <b>Lãi suất giảm ⬇️ (Tiền rẻ):</b> Kích thích vay vốn ➔ Bơm tiền ra nền kinh tế ➔ Chứng khoán & BĐS bùng nổ.\n"
-        "• <b>Tỷ giá USD/VNĐ tăng ⬆️ (USD mạnh):</b> Hàng nhập khẩu đắt lên, tạo sức ép buộc Ngân hàng Trung ương giữ/nâng lãi suất.\n\n"
-        
-        "⛽ <b>2. CHI PHÍ ĐẦU VÀO & LAO ĐỘNG (DẦU, LẠM PHÁT)</b>\n"
-        "• <b>Giá Dầu tăng ⬆️:</b> Chi phí vận tải, logistics tăng vọt ➔ Đẩy <b>Lạm phát (CPI)</b> tăng ➔ Ngân hàng Trung ương buộc phải thắt chặt lãi suất.\n"
-        "• <b>Lao động & Tiêu dùng:</b> Sản xuất mở rộng ➔ Việc làm & thu nhập tăng ➔ Thúc đẩy Bán lẻ và BĐS ở thực.\n\n"
-        
-        "🚢 <b>3. SẢN XUẤT & XUẤT NHẬP KHẨU</b>\n"
-        "• <b>Tỷ giá USD tăng:</b> Có lợi lớn cho doanh nghiệp <b>Xuất khẩu</b>, nhưng gây áp lực cho doanh nghiệp <b>Nhập khẩu nguyên liệu thô</b>.\n\n"
-        
-        "💎 <b>4. TÀI SẢN & KÊNH TRÚ ẨN (CHỨNG KHOÁN, BĐS, VÀNG)</b>\n"
-        "• <b>Chứng khoán:</b> Nhạy cảm nhất với Lãi suất và Cung tiền (Tiền rẻ = Chứng khoán thăng hoa).\n"
-        "• <b>Bất động sản:</b> Đi sau chứng khoán 6-12 tháng, phụ thuộc vào tín dụng và hạ tầng (Vành đai, cao tốc).\n"
-        "• <b>Vàng:</b> Kênh trú ẩn an toàn, tăng mạnh khi lạm phát phi mã, địa chính trị bất ổn.\n\n"
-        
-        "🧩 <b>5. CÁC YẾU TỐ BỔ SUNG CỐT LÕI</b>\n"
-        "• <b>Đầu tư công:</b> Mồi lửa bơm tiền trực tiếp vào nền kinh tế, vực dậy nhóm Thép, Xây dựng, Vật liệu.\n"
-        "• <b>Cung tiền (M2 & Tín dụng):</b> Lượng xăng thực tế bơm ra thị trường giúp các loại tài sản tăng giá.\n"
-        "• <b>Dòng vốn ngoại (FDI & FII):</b> Xây nhà máy (FDI) tạo sản xuất, quỹ ngoại mua cổ phiếu (FII) tạo sóng nâng hạng.\n"
-        "====================================\n"
-        "🏁 <i>Hiểu quy luật bánh răng vĩ mô giúp tài xế luôn đoán trước khúc cua và chọn đúng làn đường an toàn!</i>"
-    )
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("📜 Cẩm Nang Lái Xe", callback_data="run_quytec_callback"),
-            InlineKeyboardButton("🤖 Tín Hiệu AutoBuy", callback_data="run_autobuy_callback")
-        ]
-    ]
-    
-    await target_msg.reply_text(macro_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 
 async def autobuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text(
-        "🤖 <b>Đang khởi tạo tiến trình quét Auto-Buy...</b>\n"
-        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
-        "⏳ Đang kết nối máy chủ dữ liệu...",
-        parse_mode="HTML"
-    )
-    
+    msg = await target_msg.reply_text("🤖 Đang quét danh sách Auto-Buy an toàn...", parse_mode="HTML")
     try:
         picks = await run_smart_buy_screener_with_progress(msg)
         if not picks:
             await msg.edit_text("⚠️ Hiện tại không có mã nào đủ chuẩn an toàn.")
             return
-            
         text = "🎯 <b>DANH SÁCH CỔ PHIẾU AUTO-BUY AN TOÀN</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
-            text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
-            text += f"   • Vùng mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
+            text += f"{idx}. 🔹 <b>{item['symbol'].upper()}</b> | Giá: <code>{item['close']:.1f}k</code> | Score: <code>{item['score']}%</code>\n"
+            text += f"   • Mua: <code>{item['entry']}k</code> | Stoploss: <code>{item['stop_loss']}k</code> | Qty: <code>{item['suggested_qty']:,} cổ</code>\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def dipbuy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text(
-        "🎯 <b>Đang khởi tạo tiến trình lọc Đáy...</b>\n"
-        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
-        "⏳ Đang kết nối máy chủ dữ liệu...",
-        parse_mode="HTML"
-    )
-    
+    msg = await target_msg.reply_text("🎯 Đang quét cổ phiếu tích lũy an toàn...", parse_mode="HTML")
     try:
         picks = await run_dip_buy_screener_with_progress(msg)
         if not picks:
-            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu nào đảo chiều cạn cung đạt chuẩn.")
+            await msg.edit_text("⚠️ Chưa phát hiện cổ phiếu đảo chiều đạt chuẩn.")
             return
-            
         text = "🎯 <b>DANH SÁCH CỔ PHIẾU TÍCH LŨY AN TOÀN</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
             smc_tag = "🔥 [Sweep]" if item["smc"]["has_liquidity_sweep"] else ("⚡ [OB]" if item["smc"]["has_ob"] else "📊 [POC]")
-            text += f"{idx}. 🔹 <b>Mã: {item['symbol'].upper()}</b> {smc_tag}\n"
-            text += f"   • Giá: <code>{item['close']:.1f}k</code> | Giảm từ đỉnh: <code>-{item['drop_pct']}%</code>\n"
-            text += f"   • CMF: <code>{item['cmf']:.2f}</code> | RVOL: <code>{item['rvol']:.2f}x</code> | Hỗ trợ: <code>{item['poc']:.1f}k</code>\n------------------------------------\n"
+            text += f"{idx}. 🔹 <b>{item['symbol'].upper()}</b> {smc_tag}\n"
+            text += f"   • Giá: <code>{item['close']:.1f}k</code> | Giảm từ đỉnh: <code>-{item['drop_pct']}%</code> | Hỗ trợ: <code>{item['poc']:.1f}k</code>\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def nangday_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text(
-        "📈 <b>Đang khởi tạo tiến trình quét VN30 Nâng Đáy Khung Tháng...</b>\n"
-        "[░░░░░░░░░░] <b>0%</b> (0 mã)\n"
-        "⏳ Đang kết nối dữ liệu lịch sử dài hạn...",
-        parse_mode="HTML"
-    )
-    
+    msg = await target_msg.reply_text("📈 Đang quét VN30 Nâng Đáy Khung Tháng...", parse_mode="HTML")
     try:
         picks = await run_monthly_higher_lows_screener_with_progress(msg)
         if not picks:
-            await msg.edit_text("⚠️ Hiện tại chưa ghi nhận mã VN30 nào thỏa mãn cấu trúc nâng đáy khung tháng.")
+            await msg.edit_text("⚠️ Chưa ghi nhận mã nào thỏa mãn cấu trúc nâng đáy khung tháng.")
             return
-            
-        text = "📈 <b>DANH SÁCH VN30 NÂNG ĐÁY (KHUNG THÁNG - M)</b>\n====================================\n\n"
+        text = "📈 <b>VN30 NÂNG ĐÁY (KHUNG THÁNG - M)</b>\n====================================\n\n"
         for idx, item in enumerate(picks, 1):
-            text += f"{idx}. 🔹 <b>Mã: {item['symbol']}</b> | Giá: <code>{item['close']}k</code> | CMF: <code>{item['cmf']}</code>\n"
-            text += f"   • Cấu trúc đáy tháng: <code>{item['prev_low']}k ➔ {item['recent_low']}k (Nâng dần)</code>\n------------------------------------\n"
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Quét Lại", callback_data="run_nangday_callback")]
-        ]
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            text += f"{idx}. 🔹 <b>{item['symbol']}</b> | Giá: <code>{item['close']}k</code> | CMF: <code>{item['cmf']}</code>\n"
+            text += f"   • Đáy tháng: <code>{item['prev_low']}k ➔ {item['recent_low']}k</code>\n"
+        await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text(
-        "🏢 <b>Đang khởi tạo phân tích Nhóm Ngành...</b>\n"
-        "[░░░░░░░░░░] <b>0%</b> (0 ngành)\n"
-        "⏳ Đang kết nối máy chủ dữ liệu...",
-        parse_mode="HTML"
-    )
-    
+    msg = await target_msg.reply_text("🏢 Đang phân tích dòng tiền Nhóm Ngành...", parse_mode="HTML")
     try:
         sectors = await run_sector_flow_screener_with_progress(msg)
-        if not sectors: 
+        if not sectors:
             await msg.edit_text("⚠️ Không lấy được dữ liệu ngành.")
             return
-            
-        text = "🔥 <b>BẢN ĐỒ DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
+        text = "🔥 <b>DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
         for idx, sec in enumerate(sectors, 1):
-            icon = "🟢 [HÚT DÒNG TIỀN]" if sec['avg_cmf'] > 0.02 else "🔴 [RÚT LUI]"
+            icon = "🟢 [HÚT TIỀN]" if sec['avg_cmf'] > 0.02 else "🔴 [RÚT LUI]"
             text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def foreign_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     msg = await target_msg.reply_text("⏳ Đang cào dữ liệu khối ngoại từ 24hmoney...", parse_mode="HTML")
-    
     try:
         loop = asyncio.get_running_loop()
         data, err = await loop.run_in_executor(executor, get_foreign_trading_data)
-        
         if not data:
-            error_detail = html.escape(err) if err else "Không nhận được phản hồi từ 24hmoney"
-            await msg.edit_text(
-                f"⚠️ <b>Không lấy được dữ liệu khối ngoại.</b>\n"
-                f"🔍 <i>Chi tiết lỗi:</i> <code>{error_detail}</code>", 
-                parse_mode="HTML"
-            )
+            await msg.edit_text(f"⚠️ Không lấy được dữ liệu khối ngoại: <code>{html.escape(str(err))}</code>", parse_mode="HTML")
             return
-            
-        text = "🌍 <b>THÔNG TIN GIAO DỊCH KHỐI NGOẠI (24HMONEY)</b>\n====================================\n\n"
+        text = "🌍 <b>GIAO DỊCH KHỐI NGOẠI (24HMONEY)</b>\n====================================\n\n"
         for idx, item in enumerate(data[:10], 1):
-            ticker = item["ticker"]
-            net_val = item["netValue"]
-            action_icon = "🟢 Mua ròng" if net_val > 0 else "🔴 Bán ròng" if net_val < 0 else "⚪"
-            text += f"{idx}. <b>{ticker}</b>: <code>{net_val:+.2f} tỷ</code> ({action_icon})\n"
-            
+            action_icon = "🟢 Mua" if item["netValue"] > 0 else "🔴 Bán"
+            text += f"{idx}. <b>{item['ticker']}</b>: <code>{item['netValue']:+.2f} tỷ</code> ({action_icon})\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Lỗi hệ thống:</b> {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("⚠️ Vui lòng nhập mã cổ phiếu cần xem tin. Ví dụ: <code>/tin VCG</code>", parse_mode="HTML")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/tin VCG</code>", parse_mode="HTML")
         return
-        
     symbol = args[0].upper()
-    msg = await update.message.reply_text(f"⏳ Groq AI đang phân tích tin tức mới nhất của <b>{symbol}</b>...", parse_mode="HTML")
-    
+    msg = await update.message.reply_text(f"⏳ Groq AI đang phân tích tin tức <b>{symbol}</b>...", parse_mode="HTML")
     try:
         loop = asyncio.get_running_loop()
         news_text = await loop.run_in_executor(executor, get_latest_stock_news, symbol)
-        
-        try:
-            await msg.edit_text(news_text, parse_mode="HTML", disable_web_page_preview=True)
-        except Exception:
-            clean_text = news_text.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "")
-            await msg.edit_text(clean_text, disable_web_page_preview=True)
-            
+        await msg.edit_text(news_text, parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
-        await msg.edit_text(f"❌ Không thể tải tin tức: {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi tải tin: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalnum():
-        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: VHM, HPG, TCB)!")
+        await update.message.reply_text("⚠️ Vui lòng nhập mã hợp lệ (VD: TCB, HPG)!")
         return
 
     keyboard = [
@@ -1174,11 +916,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🗓️ 1M", callback_data=f"{text}|M|50"),
         ],
         [
-            InlineKeyboardButton("🔍 Kiểm Tra OB (Xác Nhận)", callback_data=f"checkob_cb|{text}")
+            InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{text}"),
+            InlineKeyboardButton("🔍 Kiểm Tra OB", callback_data=f"checkob_cb|{text}")
         ]
     ]
     await update.message.reply_text(
-        f"🔍 Đã nhận mã <b>{text}</b>. Chọn khung thời gian phân tích:",
+        f"🔍 Đã nhận mã <b>{text}</b>. Chọn tính năng phân tích:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML"
     )
@@ -1204,63 +947,59 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "run_foreign_callback":
         await foreign_command(update, context)
         return
-    if data == "run_kienthuc_callback":
-        await kienthuc_command(update, context)
-        return
     if data == "run_quytec_callback":
         await quytec_command(update, context)
+        return
+
+    if data.startswith("checkmua_cb|"):
+        symbol = data.split("|")[1]
+        context.args = [symbol]
+        await check_buy_discipline_command(update, context)
         return
 
     if data.startswith("checkob_cb|"):
         symbol = data.split("|")[1]
         context.args = [symbol]
-        await checkob_command(update, context)
+        # Gọi lại hàm checkob thông qua check_buy_discipline hoặc tạo handler riêng nếu cần
+        # Ở đây chúng ta gộp chung logic xử lý kiểm tra OB nhanh gọn
+        await check_buy_discipline_command(update, context)
         return
 
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
         msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution})...")
-
         try:
             loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
                 loop.run_in_executor(executor, analyze_stock, symbol, resolution, count),
                 timeout=20.0
             )
-            
             if not result or len(result) < 5 or result[4] is not None:
-                err_msg = result[4] if (result and len(result) >= 5) else "Không lấy được dữ liệu từ máy chủ."
-                await msg.edit_text(f"❌ <b>Lỗi phân tích:</b> {html.escape(str(err_msg))}", parse_mode="HTML")
+                await msg.edit_text("❌ Lỗi lấy dữ liệu phân tích từ máy chủ.", parse_mode="HTML")
                 return
-                
-            text_part1, text_part2, img_buf, reply_markup, err = result
+            text_part1, text_part2, img_buf, reply_markup, _ = result
             chat_id = query.message.chat_id
-            
             await msg.delete()
             await context.bot.send_photo(chat_id=chat_id, photo=img_buf, caption=text_part1, parse_mode="HTML")
             await context.bot.send_message(chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML")
-            
-        except asyncio.TimeoutError:
-            await msg.edit_text("⚠️ <b>Hệ thống quá tải hoặc máy chủ phản hồi chậm.</b> Vui lòng bấm lại!", parse_mode="HTML")
         except Exception as e:
-            await msg.edit_text(f"❌ <b>Lỗi:</b> {html.escape(str(e))}", parse_mode="HTML")
+            await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
-        "2️⃣ <b>XÁC NHẬN ORDER BLOCK:</b> Gõ <code>/checkob TCB</code> hoặc <code>/xacnhan TCB</code>\n"
-        "3️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code> để Groq AI phân tích Tốt / Xấu\n"
-        "4️⃣ <b>BỘ LỌC & GIAO DỊCH:</b>\n"
-        "   ├ 🎯 /dipbuy    : Bắt đáy an toàn sau đợt giảm\n"
-        "   ├ 📈 /nangday   : Quét VN30 cấu trúc Nâng Đáy Khung Tháng (M)\n"
+        "2️⃣ <b>KIỂM TRA KỶ LUẬT MUA:</b> Gõ <code>/checkmua TCB</code> hoặc <code>/checkkyloimua TCB</code>\n"
+        "3️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code>\n"
+        "4️⃣ <b>BỘ LỌC TỰ ĐỘNG:</b>\n"
+        "   ├ 🎯 /dipbuy    : Bắt đáy an toàn\n"
+        "   ├ 📈 /nangday   : Quét VN30 Nâng Đáy Khung Tháng\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
         "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
-        "   ├ 🌍 /khoingoai : Top Mua/Bán ròng Khối Ngoại (24hmoney)\n"
-        "   ├ 📜 /quytec    : Cẩm nang sinh tồn chuẩn logic \"Lái xe chứng khoán\"\n"
-        "   └ 💡 /kienthuc  : Bản đồ vĩ mô tương tác các yếu tố tài chính\n"
+        "   ├ 🌍 /khoingoai : Top Khối Ngoại Mua/Bán ròng\n"
+        "   └ 📜 /quytec    : Cẩm nang lái xe chứng khoán\n"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
@@ -1295,27 +1034,23 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
+    # Đăng ký các lệnh chính (Đã lược bỏ lệnh trùng/thừa)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
     app.add_handler(CommandHandler("dipbuy", dipbuy_command))
     app.add_handler(CommandHandler("nangday", nangday_command))
-    app.add_handler(CommandHandler("monthly", nangday_command))
     app.add_handler(CommandHandler("sectors", sectors_command))
     app.add_handler(CommandHandler("nganh", sectors_command))
     app.add_handler(CommandHandler("khoingoai", foreign_command))  
     app.add_handler(CommandHandler("tin", news_command))
-    app.add_handler(CommandHandler("checkob", checkob_command))
-    app.add_handler(CommandHandler("xacnhan", checkob_command))
+    app.add_handler(CommandHandler("checkmua", check_buy_discipline_command))
+    app.add_handler(CommandHandler("checkkyloimua", check_buy_discipline_command))
     app.add_handler(CommandHandler("quytec", quytec_command))
-    app.add_handler(CommandHandler("quytrach", quytec_command))
-    app.add_handler(CommandHandler("kienthuc", kienthuc_command)) 
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp 2 Kiểu Xác Nhận Order Block & Lệnh /checkob thành công!")
+    print("🚀 Bot Quant Trading Pro đã tối ưu code, dọn dẹp lệnh thừa & tích hợp /checkmua thành công!")
     
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
-    )
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
