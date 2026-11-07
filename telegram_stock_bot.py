@@ -768,7 +768,13 @@ def analyze_single_sector_stock(symbol):
     if err or df.empty or len(df) < 15: return None
     df = calculate_indicators(df)
     last, prev = df.iloc[-1], df.iloc[-2]
-    return {"symbol": symbol, "pct_change": ((last["Close"] - prev["Close"]) / prev["Close"]) * 100, "cmf": last.get("CMF", 0.0), "rvol": last.get("RVOL", 1.0)}
+    pct_change = ((last["Close"] - prev["Close"]) / prev["Close"]) * 100
+    return {
+        "symbol": symbol, 
+        "pct_change": pct_change, 
+        "cmf": last.get("CMF", 0.0), 
+        "rvol": last.get("RVOL", 1.0)
+    }
 
 async def run_sector_flow_screener_with_progress(msg):
     sector_results = []
@@ -779,12 +785,27 @@ async def run_sector_flow_screener_with_progress(msg):
             for f in as_completed(futures):
                 res = f.result()
                 if res: stock_metrics.append(res)
+        
         if stock_metrics:
             avg_cmf = np.mean([s["cmf"] for s in stock_metrics])
             avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
+            avg_pct = np.mean([s["pct_change"] for s in stock_metrics])
+            
+            # Quy đổi CMF thành % dòng tiền gia nhập/rút khỏi ngành tương đối
+            # Giả định CMF từ -0.2 đến +0.2 tương ứng với biên độ dòng tiền từ -100% đến +100%
+            flow_pct = round(avg_cmf * 100, 1)
+            
             leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
-            sector_results.append({"sector": sector_name, "avg_cmf": avg_cmf, "avg_rvol": avg_rvol, "leader": leader_stock, "score": (avg_cmf * 40) + (avg_rvol * 20)})
-    return sorted(sector_results, key=lambda x: x["score"], reverse=True)
+            sector_results.append({
+                "sector": sector_name, 
+                "flow_pct": flow_pct, 
+                "avg_pct": round(avg_pct, 2),
+                "avg_rvol": round(avg_rvol, 2),
+                "leader": leader_stock, 
+                "score": (avg_cmf * 40) + (avg_rvol * 20)
+            })
+            
+    return sorted(sector_results, key=lambda x: x["flow_pct"], reverse=True)
 
 
 # ==========================================
@@ -958,16 +979,30 @@ async def nangday_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def sectors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
-    msg = await target_msg.reply_text("🏢 Đang phân tích dòng tiền Nhóm Ngành...", parse_mode="HTML")
+    msg = await target_msg.reply_text("🏢 Đang phân tích dòng tiền vào/ra các Nhóm Ngành...", parse_mode="HTML")
     try:
         sectors = await run_sector_flow_screener_with_progress(msg)
         if not sectors:
             await msg.edit_text("⚠️ Không lấy được dữ liệu ngành.")
             return
-        text = "🔥 <b>DÒNG TIỀN THEO NHÓM NGÀNH</b>\n====================================\n\n"
+            
+        text = "🔥 <b>DÒNG TIỀN VÀO/RA THEO NHÓM NGÀNH</b>\n====================================\n\n"
         for idx, sec in enumerate(sectors, 1):
-            icon = "🟢 [HÚT TIỀN]" if sec['avg_cmf'] > 0.02 else "🔴 [RÚT LUI]"
-            text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n   • CMF: <code>{sec['avg_cmf']:.2f}</code> | Leader: <code>{sec['leader']}</code>\n"
+            flow_val = sec['flow_pct']
+            if flow_val > 1.0:
+                icon = "🟢 [HÚT MẠNH]"
+                flow_str = f"+{flow_val}% (Tiền vào)"
+            elif flow_val >= 0:
+                icon = "🟡 [CÂN BẰNG]"
+                flow_str = f"+{flow_val}% (Ổn định)"
+            else:
+                icon = "🔴 [RÚT RÒNG]"
+                flow_str = f"{flow_val}% (Tiền ra)"
+                
+            text += f"{idx}. 🏢 <b>{sec['sector'].upper()}</b> {icon}\n"
+            text += f"   • Dòng tiền: <code>{flow_str}</code> | Biến động: <code>{sec['avg_pct']:+.2f}%</code>\n"
+            text += f"   • Cổ phiếu dẫn dắt (Leader): <code>{sec['leader']}</code>\n------------------------------------\n"
+            
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
@@ -1106,7 +1141,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn\n"
         "   ├ 📈 /nangday   : Quét VN30 Nâng Đáy Khung Tháng\n"
         "   ├ 🤖 /autobuy   : Tín hiệu mua chuẩn VCP + SMC\n"
-        "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành\n"
+        "   ├ 🏢 /sectors   : Dòng tiền Nhóm Ngành (% Vào/Ra)\n"
         "   ├ 🌍 /khoingoai : Top Khối Ngoại Mua/Bán ròng\n"
         "   └ 📜 /quytec    : Cẩm nang lái xe chứng khoán\n"
     )
@@ -1206,7 +1241,7 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Đăng ký các lệnh chính (Giữ lại menu lệnh gọn gàng, loại bỏ các lệnh cũ)
+    # Đăng ký các lệnh chính
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("sieuco", sieuco_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
@@ -1226,6 +1261,6 @@ if __name__ == "__main__":
     # 🚀 Kích hoạt tiến trình Auto-Scan chạy ngầm định kỳ
     threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật menu lệnh và tích hợp Auto-Scan thành công!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật tính năng đo tỷ trọng % dòng tiền Ngành thành công!")
     
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
