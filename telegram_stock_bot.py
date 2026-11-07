@@ -1206,7 +1206,7 @@ if __name__ == "__main__":
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Đăng ký các lệnh chính
+    # Đăng ký các lệnh chính (Giữ lại menu lệnh gọn gàng, loại bỏ các lệnh cũ)
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("sieuco", sieuco_command))
     app.add_handler(CommandHandler("autobuy", autobuy_command))
@@ -1226,6 +1226,6 @@ if __name__ == "__main__":
     # 🚀 Kích hoạt tiến trình Auto-Scan chạy ngầm định kỳ
     threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp thành công lệnh /sieuco, /checkmua và Auto-Scan Scheduler!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật menu lệnh và tích hợp Auto-Scan thành công!")
     
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
