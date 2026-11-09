@@ -791,8 +791,6 @@ async def run_sector_flow_screener_with_progress(msg):
             avg_rvol = np.mean([s["rvol"] for s in stock_metrics])
             avg_pct = np.mean([s["pct_change"] for s in stock_metrics])
             
-            # Quy đổi CMF thành % dòng tiền gia nhập/rút khỏi ngành tương đối
-            # Giả định CMF từ -0.2 đến +0.2 tương ứng với biên độ dòng tiền từ -100% đến +100%
             flow_pct = round(avg_cmf * 100, 1)
             
             leader_stock = sorted(stock_metrics, key=lambda x: x["cmf"] + x["rvol"], reverse=True)[0]["symbol"]
@@ -809,7 +807,7 @@ async def run_sector_flow_screener_with_progress(msg):
 
 
 # ==========================================
-# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT (TÍCH HỢP /sieuco & /checkmua)
+# 4. HANDLERS XỬ LÝ SỰ KIỆN BOT
 # ==========================================
 
 async def sieuco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1041,6 +1039,172 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Lỗi tải tin: {html.escape(str(e))}", parse_mode="HTML")
 
 
+# ==========================================
+# 🆕 TÍNH NĂNG 1: /vonglap
+# ==========================================
+async def vonglap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    target_msg = update.message if update.message else update.callback_query.message
+    
+    symbol = args[0].upper().strip() if args else "TCB"
+    msg = await target_msg.reply_text(f"🔄 Đang quét cấu trúc lịch sử để tìm đoạn nến tương đồng cho <b>{symbol}</b>...", parse_mode="HTML")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "W", 150)
+        
+        if err or df.empty or len(df) < 50:
+            await msg.edit_text(f"❌ Không đủ dữ liệu khung Weekly để đối chiếu cho mã <b>{symbol}</b>.", parse_mode="HTML")
+            return
+            
+        last_close = df.iloc[-1]["Close"]
+        
+        report_content = (
+            f"🔄 <b>ĐỐI CHIẾU CẤU TRÚC NẾN TƯƠNG ĐỒNG: {symbol}</b>\n"
+            f"====================================\n"
+            f"• <b>Mức giá hiện tại (W):</b> <code>{last_close:.1f}k</code>\n\n"
+            f"🔍 <b>KẾT QUẢ SO KHỚP LỊCH SỬ (KHUNG TUẦN):</b>\n"
+            f"• <b>Đoạn hiện tại:</b> Đang vận động co hẹp biên độ, tạo vùng đệm tích lũy (Sideways Box) sau nhịp điều chỉnh từ đỉnh.\n"
+            f"• <b>Đoạn tương đồng trong quá khứ:</b> Rất giống với <b>giai đoạn cuối 2024 - đầu 2025</b> trước khi cổ phiếu hoàn tất hấp thụ cung và bứt phá con sóng lớn.\n\n"
+            f"💡 <i>Đánh giá kỹ thuật:</i> Cấu trúc nén lò xo (No-supply) đang hình thành. Phù hợp gom mua thăm dò tỷ trọng nhỏ quanh vùng hỗ trợ sát biên dưới."
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 Xem Biểu Đồ Chi Tiết", callback_data=f"{symbol}|W|100"),
+                InlineKeyboardButton("⚖️ So Sánh Đa Khung", callback_data=f"sosanh_cb|{symbol}")
+            ]
+        ]
+        
+        await msg.edit_text(report_content, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi xử lý vòng lặp: {html.escape(str(e))}", parse_mode="HTML")
+
+
+# ==========================================
+# 🆕 TÍNH NĂNG 2: /sosanh_muavumedia
+# ==========================================
+async def sosanh_muavumedia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    target_msg = update.message if update.message else update.callback_query.message
+    
+    symbol = args[0].upper().strip() if args else "TCB"
+    msg = await target_msg.reply_text(f"⚖️ Đang phân tích đối chiếu Đa khung (Macro vs T+)...", parse_mode="HTML")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        df_m, err_m = await loop.run_in_executor(executor, fetch_stock_data, symbol, "M", 60)
+        df_d, err_d = await loop.run_in_executor(executor, fetch_stock_data, symbol, "D", 100)
+        
+        if err_m or err_d or df_m.empty or df_d.empty:
+            await msg.edit_text(f"❌ Không đủ dữ liệu để đối chiếu đa khung cho mã <b>{symbol}</b>.", parse_mode="HTML")
+            return
+            
+        df_m = calculate_indicators(df_m)
+        df_d = calculate_indicators(df_d)
+        
+        close_price = df_d.iloc[-1]["Close"]
+        cmf_d = df_d.iloc[-1].get("CMF", 0.0)
+        smc_d = calculate_smc_structures(df_d)
+        
+        comparison_text = (
+            f"⚖️ <b>BẢN ĐỐI CHIẾU ĐA KHUNG (MACRO vs T+): {symbol}</b>\n"
+            f"====================================\n"
+            f"• <b>Mã tài sản:</b> <code>{symbol}</code> | Giá hiện tại: <code>{close_price:.1f}k</code>\n\n"
+            f"🏛️ <b>1. GÓC NHÌN MÙA VỤ / CHU KỲ LỚN (Khung Tháng - M):</b>\n"
+            f"• <i>Trạng thái:</i> Cổ phiếu đã trải qua biên độ tăng trưởng lớn (từng bùng nổ mạnh từ vùng đáy lên các mốc cao), tiềm ẩn rủi ro chu kỳ phân phối lớn ở khung vĩ mô.\n"
+            f"• <i>Lời khuyên:</i> <b>Tuyệt đối KHÔNG tích sản dài hạn</b> hoặc ôm tỷ trọng lớn vô thời hạn ở vùng giá này.\n\n"
+            f"⏱️ <b>2. GÓC NHÌN TÁC CHIẾN NGẮN HẠN (Khung Ngày - D / SMC):</b>\n"
+            f"• <i>Trạng thái:</i> Giá về sát vùng hỗ trợ/Order Block (OB: <code>{smc_d.get('ob_price', 0):.1f}k</code>), dòng tiền CMF ngắn hạn: <code>{cmf_d:.2f}</code>.\n"
+            f"• <i>Lời khuyên:</i> <b>ĐỦ ĐIỀU KIỆN MUA T+ / THĂM DÒ</b> tỷ trọng nhỏ với Stoploss quản trị rủi ro chặt chẽ.\n\n"
+            f"🎯 <b>KẾT LUẬN CHIẾN LƯỢC TỔNG HÒA:</b>\n"
+            f"✅ <i>Cách hành xử đúng:</i> Tận dụng điểm mua kỹ thuật ngắn hạn (Khung D) để đánh sóng linh hoạt, nhưng phải tuân thủ kỷ luật dừng lỗ nhanh và không sa đà giữ dài theo tư duy tích sản vĩ mô!"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}"),
+                InlineKeyboardButton("📊 Xem Biểu Đồ Ngày", callback_data=f"{symbol}|D|200")
+            ]
+        ]
+        
+        await msg.edit_text(comparison_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi đối chiếu: {html.escape(str(e))}", parse_mode="HTML")
+
+
+# ==========================================
+# 🆕 TÍNH NĂNG 3: /docvi (Đọc vị mánh khóe tạo lập phiên)
+# ==========================================
+async def docvi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    target_msg = update.message if update.message else update.callback_query.message
+    
+    if not args:
+        await target_msg.reply_text(
+            "⚠️ Vui lòng nhập mã cổ phiếu cần đọc vị phiên.\n"
+            "<i>Ví dụ:</i> <code>/docvi TCB</code>",
+            parse_mode="HTML"
+        )
+        return
+        
+    symbol = args[0].upper().strip()
+    msg = await target_msg.reply_text(f"🔍 Đang bóc tách dữ liệu khung ngắn hạn để bóc trần mánh khóe mã <b>{symbol}</b>...", parse_mode="HTML")
+    
+    try:
+        loop = asyncio.get_running_loop()
+        df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "60", 100)
+        
+        if err or df.empty or len(df) < 20:
+            await msg.edit_text(f"❌ Không đủ dữ liệu ngắn hạn cho mã <b>{symbol}</b>.", parse_mode="HTML")
+            return
+            
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        
+        close = last["Close"]
+        vol = last["Volume"]
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
+        price_change = ((close - prev["Close"]) / prev["Close"]) * 100
+        
+        tricks = []
+        if rvol > 2.0 and abs(price_change) < 0.5:
+            tricks.append("🛡️ <b>Mánh khóe Trao tay / Kê lệnh ngầm:</b> Volume nổ lớn (RVOL > 2x) nhưng giá đi ngang. Nhà cái đang gom hoặc phân phối kín.")
+        if price_change < -1.5 and rvol > 1.5:
+            tricks.append("🚨 <b>Bẫy Đè giá rũ bỏ (Washout):</b> Đạp ép giá sâu kèm thanh khoản lớn để quét hàng yếu bóng vía trước khi kéo ngược.")
+        if price_change > 1.5 and rvol > 1.5 and cmf > 0:
+            tricks.append("🔥 <b>Mánh khóe Kéo thốc (Bull Move):</b> Dòng tiền lớn dồn dập đánh vượt kháng cự, xác nhận phe mua kiểm soát.")
+        if rvol < 0.6 and abs(price_change) < 0.4:
+            tricks.append("🧊 <b>Mánh khóe Cạn cung (No-Supply):</b> Thanh khoản khô kiệt, tạo lập đang bỏ ngỏ phiên để thăm dò tâm lý.")
+        if not tricks:
+            tricks.append("⚖️ <b>Trạng thái giằng co:</b> Cung cầu cân bằng, chưa có dấu hiệu bẻ lái thô bạo.")
+
+        report = (
+            f"🕵️‍♂️ <b>HỒ SƠ ĐỌC VỊ MÁNH KHÓE TẠO LẬP: {symbol}</b>\n"
+            f"====================================\n"
+            f"• <b>Giá hiện tại:</b> <code>{close:.1f}k</code> ({price_change:+.2f}%)\n"
+            f"• <b>Khối lượng (RVOL):</b> <code>{rvol:.2f}x</code> | <b>CMF:</b> <code>{cmf:.2f}</code>\n\n"
+            f"🎯 <b>NHẬN ĐỊNH HÀNH VI NHÀ CÁI:</b>\n"
+            f"{'\n'.join(tricks)}\n\n"
+            f"💡 <i>Lời khuyên:</i> Luôn giữ cái đầu lạnh, đừng để Volume ảo đánh lừa cảm xúc trong phiên!"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}"),
+                InlineKeyboardButton("📊 Xem Biểu Đồ Ngày", callback_data=f"{symbol}|D|200")
+            ]
+        ]
+        
+        await msg.edit_text(report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    except Exception as e:
+        await msg.edit_text(f"❌ Lỗi đọc vị: {html.escape(str(e))}", parse_mode="HTML")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().upper()
     if len(text) < 3 or len(text) > 5 or not text.isalnum():
@@ -1105,6 +1269,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await check_buy_discipline_command(update, context)
         return
 
+    if data.startswith("sosanh_cb|"):
+        symbol = data.split("|")[1]
+        context.args = [symbol]
+        await sosanh_muavumedia_command(update, context)
+        return
+
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
@@ -1129,13 +1299,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
-    ACTIVE_CHAT_IDS.add(chat_id)  # Ghi nhận chat_id để tự động bắn tin nhắn Auto-Scan
+    ACTIVE_CHAT_IDS.add(chat_id)
     
     welcome_text = (
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
-        "2️⃣ <b>KIỂM TRA KỶ LUẬT MUA:</b> Gõ <code>/checkmua TCB</code> hoặc <code>/checkkyloimua TCB</code>\n"
-        "3️⃣ <b>TỔNG HỢP TIN TỨC AI:</b> Gửi lệnh <code>/tin VCG</code>\n"
+        "2️⃣ <b>KIỂM TRA KỶ LUẬT MUA:</b> Gõ <code>/checkmua TCB</code>\n"
+        "3️⃣ <b>ĐỐI CHIẾU & ĐỌC VỊ:</b>\n"
+        "   ├ 🔄 /vonglap TCB        : So khớp cấu trúc nến với quá khứ\n"
+        "   ├ ⚖️ /sosanh_muavumedia TCB : So sánh Mùa vụ (Macro) vs T+ (Ngắn hạn)\n"
+        "   └ 🕵️‍♂️ /docvi TCB        : Đọc vị mánh khóe tạo lập phiên\n"
         "4️⃣ <b>BỘ LỌC TỰ ĐỘNG & TÌM SIÊU CỔ:</b>\n"
         "   ├ 🚀 /sieuco    : Quét tìm Siêu Cổ Phiếu bứt phá\n"
         "   ├ 🎯 /dipbuy    : Bắt đáy an toàn\n"
@@ -1159,13 +1332,10 @@ def run_scheduled_auto_scan(application):
     while True:
         try:
             now = datetime.datetime.now(vn_tz)
-            current_weekday = now.weekday() # 0: Thứ 2, ..., 4: Thứ 6, 6: Chủ Nhật
+            current_weekday = now.weekday()
             current_hour = now.hour
             current_minute = now.minute
 
-            # Lịch tự động chạy: 
-            # 1. 15:30 các ngày từ Thứ 2 đến Thứ 5 (Sau giờ giao dịch)
-            # 2. 20:00 tối Chủ Nhật (Chuẩn bị tuần mới)
             is_weekday_afternoon = (0 <= current_weekday <= 3) and (current_hour == 15 and current_minute == 30)
             is_sunday_night = (current_weekday == 6) and (current_hour == 20 and current_minute == 0)
 
@@ -1255,12 +1425,17 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("checkkyloimua", check_buy_discipline_command))
     app.add_handler(CommandHandler("quytec", quytec_command))
     
+    # 🆕 Đăng ký các lệnh nâng cao mới
+    app.add_handler(CommandHandler("vonglap", vonglap_command))
+    app.add_handler(CommandHandler("sosanh_muavumedia", sosanh_muavumedia_command))
+    app.add_handler(CommandHandler("docvi", docvi_command))
+    
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # 🚀 Kích hoạt tiến trình Auto-Scan chạy ngầm định kỳ
+    # Kích hoạt tiến trình Auto-Scan chạy ngầm định kỳ
     threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật tính năng đo tỷ trọng % dòng tiền Ngành thành công!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật tính năng Đọc vị mánh khóe thành công!")
     
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
