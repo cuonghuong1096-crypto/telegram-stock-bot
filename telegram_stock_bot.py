@@ -352,7 +352,7 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
-# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ TÍCH HỢP CHUẨN)
+# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ TÍCH HỢP CHUẨN HTML)
 # ==========================================
 def get_groq_comprehensive_analysis(symbol):
     symbol = symbol.upper().strip()
@@ -402,7 +402,7 @@ Hãy viết một bản phân tích chuyên sâu, sắc bén, súc tích bằng 
 🕵️‍♂️ <b>3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP TRONG PHIÊN:</b>
 (Bóc trần ý đồ nhà cái qua khối lượng [RVOL] và biến động giá: Có bẫy đè giá rũ bỏ - Washout, kê lệnh gom ngầm, hay kéo thốc? Đưa ra lời khuyên thực chiến).
 
-Yêu cầu: Trình bày rõ ràng, mạnh mẽ, dùng đúng thẻ HTML telegram (<b>, <code>, <i>), không dài dòng thừa thãi.
+YÊU CẦU ĐẶC BIỆT QUAN TRỌNG: TUYỆT ĐỐI KHÔNG dùng dấu sao (**) để in đậm chữ. Chỉ sử dụng đúng các thẻ HTML như <b>...</b> để in đậm và <code>...</code> cho các con số hoặc mức giá. Trình bày rõ ràng, mạnh mẽ, không dài dòng thừa thãi.
 """
 
         completion = client.chat.completions.create(
@@ -957,9 +957,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    # ĐÃ SỬA LỖI TẠI ĐÂY: daemon=True thay vì daemon=Thread=True
     threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
     print("🚀 Bot Quant Trading Pro đã tích hợp Groq AI phân tích toàn diện thành công!")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-
