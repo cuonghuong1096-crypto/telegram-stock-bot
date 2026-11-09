@@ -352,11 +352,12 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
-# HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI
+# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ CẬP NHẬT PROMPT CHUẨN HTML)
 # ==========================================
 def get_groq_comprehensive_analysis(symbol):
     symbol = symbol.upper().strip()
     try:
+        # Lấy dữ liệu 3 khung: Ngày (D), Tuần (W), Tháng (M)
         df_d, err_d = fetch_stock_data(symbol, "D", 60)
         df_w, err_w = fetch_stock_data(symbol, "W", 30)
         df_m, err_m = fetch_stock_data(symbol, "M", 24)
@@ -367,6 +368,7 @@ def get_groq_comprehensive_analysis(symbol):
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
         
+        # Tổng hợp số liệu thô đưa vào prompt cho Groq AI xử lý chuyên sâu
         data_summary = f"""
 Mã cổ phiếu: {symbol}
 - Giá hiện tại: {last_d['Close']:.1f}k
@@ -378,6 +380,7 @@ Mã cổ phiếu: {symbol}
   Đỉnh tháng={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy tháng={df_m['Low'].min() if not df_m.empty else 0:.1f}k
 """
 
+        # Lấy API Key an toàn từ môi trường Render
         groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
         if not groq_api_key:
             return f"⚠️ <b>Lỗi hệ thống:</b> Biến môi trường <code>GROQ_API_KEY</code> chưa được cấu hình trên Render.\n\n<b>Dữ liệu thô:</b>\n<pre>{data_summary}</pre>"
@@ -399,7 +402,7 @@ Hãy viết một bản phân tích chuyên sâu, sắc bén, súc tích bằng 
 🕵️‍♂️ <b>3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP TRONG PHIÊN:</b>
 (Bóc trần ý đồ nhà cái qua khối lượng [RVOL] và biến động giá: Có bẫy đè giá rũ bỏ - Washout, kê lệnh gom ngầm, hay kéo thốc? Đưa ra lời khuyên thực chiến).
 
-YÊU CẦU ĐẶC BIỆT QUAN TRỌNG: TUYỆT ĐỐI KHÔNG dùng dấu sao (**) để in đậm chữ. Chỉ sử dụng đúng các thẻ HTML như <b>...</b> để in đậm và <code>...</code> cho các con số hoặc mức giá. Trình bày rõ ràng, mạnh mẽ, không dài dòng thừa thãi.
+Yêu cầu cực kỳ quan trọng: TUYỆT ĐỐI KHÔNG dùng dấu sao (**) để in đậm. Chỉ sử dụng đúng các thẻ HTML của Telegram như <b>...</b> cho chữ đậm, <code>...code...</code> cho các con số hoặc mã lệnh. Trình bày rõ ràng, mạnh mẽ, không dài dòng thừa thãi.
 """
 
         completion = client.chat.completions.create(
@@ -766,7 +769,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Lỗi tải tin: {html.escape(str(e))}", parse_mode="HTML")
 
 # ==========================================
-# 🆕 LỆNH GỘP MỚI DUY NHẤT: /phantich (hoặc /pt) - ĐÃ FIX LỖI <br>
+# 🆕 LỆNH GỘP MỚI DUY NHẤT: /phantich (hoặc /pt)
 # ==========================================
 async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -787,10 +790,7 @@ async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         loop = asyncio.get_running_loop()
         ai_report = await loop.run_in_executor(executor, get_groq_comprehensive_analysis, symbol)
         
-        # 🛡️ BỘ LỌC AN TOÀN: Loại bỏ thẻ <br> hoặc <br/> do AI sinh ra để tránh lỗi Telegram
-        cleaned_report = ai_report.replace("<br>", "\n").replace("<br/>", "\n").replace("<BR>", "\n")
-        
-        full_report = f"🎯 <b>BẢN TIN PHÂN TÍCH CHUYÊN SÂU AI: {symbol}</b>\n====================================\n\n" + cleaned_report
+        full_report = f"🎯 <b>BẢN TIN PHÂN TÍCH CHUYÊN SÂU AI: {symbol}</b>\n====================================\n\n" + ai_report
         
         keyboard = [
             [
