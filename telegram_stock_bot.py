@@ -677,7 +677,7 @@ async def check_buy_discipline_command(update: Update, context: ContextTypes.DEF
             f"• Sát vùng Order Block ({ob_price:.1f}k): <code>{'✅' if is_near_ob else '⚠️ Chưa sát'}</code>\n"
             f"• Dòng tiền CMF dương ({cmf:.2f}): <code>{'✅' if cmf > 0 else '❌'}</code>\n"
         )
-        keyboard = [[InlineKeyboardButton("🤖 AI Đọc Vị & Vòng Lặp", callback_data=f"pt_cb|{symbol}")]]
+        keyboard = [[InlineKeyboardButton("🤖 AI Đọc Vị & Vòng Lặp", callback_data=f"pt_cb|{symbol}")] ]
         await msg.edit_text(report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
@@ -957,7 +957,9 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=Thread=True).start()
+    # ĐÃ SỬA LỖI TẠI ĐÂY: daemon=True thay vì daemon=Thread=True
+    threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
     print("🚀 Bot Quant Trading Pro đã tích hợp Groq AI phân tích toàn diện thành công!")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+
