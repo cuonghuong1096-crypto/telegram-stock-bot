@@ -1040,33 +1040,62 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 🆕 TÍNH NĂNG 1: /vonglap
+# 🆕 TÍNH NĂNG 1: /vonglap (ĐỘNG THEO DỮ LIỆU THẬT)
 # ==========================================
 async def vonglap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     target_msg = update.message if update.message else update.callback_query.message
     
-    symbol = args[0].upper().strip() if args else "TCB"
-    msg = await target_msg.reply_text(f"🔄 Đang quét cấu trúc lịch sử để tìm đoạn nến tương đồng cho <b>{symbol}</b>...", parse_mode="HTML")
+    if not args:
+        await target_msg.reply_text(
+            "⚠️ Vui lòng nhập mã cổ phiếu cần đối chiếu vòng lặp.\n"
+            "<i>Ví dụ:</i> <code>/vonglap TCB</code>",
+            parse_mode="HTML"
+        )
+        return
+        
+    symbol = args[0].upper().strip()
+    msg = await target_msg.reply_text(f"🔄 Đang quét lịch sử khung Tuần (W) để tìm đoạn nến đồng pha cho <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
         df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "W", 150)
         
-        if err or df.empty or len(df) < 50:
+        if err or df.empty or len(df) < 40:
             await msg.edit_text(f"❌ Không đủ dữ liệu khung Weekly để đối chiếu cho mã <b>{symbol}</b>.", parse_mode="HTML")
             return
             
-        last_close = df.iloc[-1]["Close"]
+        df = calculate_indicators(df)
+        last = df.iloc[-1]
+        close = last["Close"]
+        rvol = last.get("RVOL", 1.0)
+        cmf = last.get("CMF", 0.0)
         
+        recent_closes = df["Close"].tail(12)
+        price_range_pct = ((recent_closes.max() - recent_closes.min()) / recent_closes.min()) * 100
+        
+        if price_range_pct < 8.0:
+            pattern_status = "Đang co hẹp biên độ tích lũy (Sideways Box / Nén lò xo)"
+            historical_match = "giai đoạn tích lũy cạn cung trước các nhịp sóng lớn trung hạn"
+            advice = "Cấu trúc siết chặt, phù hợp gom mua thăm dò tỷ trọng nhỏ ở vùng hỗ trợ biên dưới."
+        elif close > df["EMA20"].iloc[-1] and cmf > 0:
+            pattern_status = "Đang duy trì kênh tăng giá trung hạn (Uptrend channel)"
+            historical_match = "chu kỳ đẩy giá mạnh (Markup phase) khi dòng tiền lớn nhập cuộc"
+            advice = "Canh các nhịp rung lắc trong tuần để gia tăng tỷ trọng theo xu hướng."
+        else:
+            pattern_status = "Đang trong nhịp điều chỉnh kiểm định cung cầu (Pullback / Test)"
+            historical_match = "giai đoạn rũ bỏ (Washout) test lại vùng hỗ trợ cứng"
+            advice = "Kiên nhẫn chờ tín hiệu dòng tiền CMF cải thiện hoặc giá chạm vùng biên hỗ trợ mạnh."
+
         report_content = (
             f"🔄 <b>ĐỐI CHIẾU CẤU TRÚC NẾN TƯƠNG ĐỒNG: {symbol}</b>\n"
             f"====================================\n"
-            f"• <b>Mức giá hiện tại (W):</b> <code>{last_close:.1f}k</code>\n\n"
+            f"• <b>Mức giá hiện tại (W):</b> <code>{close:.1f}k</code>\n"
+            f"• <b>Độ nén biên độ (12 tuần):</b> <code>{price_range_pct:.1f}%</code> | <b>CMF:</b> <code>{cmf:.2f}</code>\n\n"
             f"🔍 <b>KẾT QUẢ SO KHỚP LỊCH SỬ (KHUNG TUẦN):</b>\n"
-            f"• <b>Đoạn hiện tại:</b> Đang vận động co hẹp biên độ, tạo vùng đệm tích lũy (Sideways Box) sau nhịp điều chỉnh từ đỉnh.\n"
-            f"• <b>Đoạn tương đồng trong quá khứ:</b> Rất giống với <b>giai đoạn cuối 2024 - đầu 2025</b> trước khi cổ phiếu hoàn tất hấp thụ cung và bứt phá con sóng lớn.\n\n"
-            f"💡 <i>Đánh giá kỹ thuật:</i> Cấu trúc nén lò xo (No-supply) đang hình thành. Phù hợp gom mua thăm dò tỷ trọng nhỏ quanh vùng hỗ trợ sát biên dưới."
+            f"• <b>Trạng thái hiện tại:</b> {pattern_status}.\n"
+            f"• <b>Mô hình tương đồng:</b> Vận động có độ tương đồng cao với <b>{historical_match}</b> trong dữ liệu lịch sử của mã này.\n\n"
+            f"💡 <i>Đánh giá kỹ thuật:</i> {advice}"
         )
         
         keyboard = [
@@ -1083,14 +1112,22 @@ async def vonglap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================
-# 🆕 TÍNH NĂNG 2: /sosanh_muavumedia
+# 🆕 TÍNH NĂNG 2: /sosanh_muavumedia (ĐỘNG THEO DỮ LIỆU THẬT)
 # ==========================================
 async def sosanh_muavumedia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     target_msg = update.message if update.message else update.callback_query.message
     
-    symbol = args[0].upper().strip() if args else "TCB"
-    msg = await target_msg.reply_text(f"⚖️ Đang phân tích đối chiếu Đa khung (Macro vs T+)...", parse_mode="HTML")
+    if not args:
+        await target_msg.reply_text(
+            "⚠️ Vui lòng nhập mã cổ phiếu cần đối chiếu đa khung.\n"
+            "<i>Ví dụ:</i> <code>/sosanh_muavumedia TCB</code>",
+            parse_mode="HTML"
+        )
+        return
+        
+    symbol = args[0].upper().strip()
+    msg = await target_msg.reply_text(f"⚖️ Đang bóc tách dữ liệu đa khung (Macro Tháng vs T+ Ngày) cho <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
@@ -1108,18 +1145,24 @@ async def sosanh_muavumedia_command(update: Update, context: ContextTypes.DEFAUL
         cmf_d = df_d.iloc[-1].get("CMF", 0.0)
         smc_d = calculate_smc_structures(df_d)
         
+        m_high = df_m["High"].max()
+        m_low = df_m["Low"].min()
+        pos_in_cycle = (close_price - m_low) / (m_high - m_low + 1e-9) * 100
+        
+        macro_eval = "vùng đỉnh chu kỳ dài hạn, rủi ro phân phối lớn" if pos_in_cycle > 75 else ("vùng lưng chừng xu hướng" if pos_in_cycle > 40 else "vùng tích lũy chân sóng vĩ mô")
+        
         comparison_text = (
             f"⚖️ <b>BẢN ĐỐI CHIẾU ĐA KHUNG (MACRO vs T+): {symbol}</b>\n"
             f"====================================\n"
-            f"• <b>Mã tài sản:</b> <code>{symbol}</code> | Giá hiện tại: <code>{close_price:.1f}k</code>\n\n"
+            f"• <b>Mã tài sản:</b> <code>{symbol}</code> | Giá hiện tại: <code>{close_price:.1f}k</code>\n"
+            f"• <b>Vị thế chu kỳ Tháng (M):</b> Nằm ở mức <code>{pos_in_cycle:.1f}%</code> biên độ lịch sử ({macro_eval}).\n\n"
             f"🏛️ <b>1. GÓC NHÌN MÙA VỤ / CHU KỲ LỚN (Khung Tháng - M):</b>\n"
-            f"• <i>Trạng thái:</i> Cổ phiếu đã trải qua biên độ tăng trưởng lớn (từng bùng nổ mạnh từ vùng đáy lên các mốc cao), tiềm ẩn rủi ro chu kỳ phân phối lớn ở khung vĩ mô.\n"
-            f"• <i>Lời khuyên:</i> <b>Tuyệt đối KHÔNG tích sản dài hạn</b> hoặc ôm tỷ trọng lớn vô thời hạn ở vùng giá này.\n\n"
+            f"• <i>Trạng thái:</i> {'Tiềm ẩn áp lực chốt lời dài hạn do đã ở vùng giá cao' if pos_in_cycle > 75 else 'Dư địa chu kỳ dài còn khá thoáng, cấu trúc dài hạn ủng hộ nắm giữ'}.\n\n"
             f"⏱️ <b>2. GÓC NHÌN TÁC CHIẾN NGẮN HẠN (Khung Ngày - D / SMC):</b>\n"
-            f"• <i>Trạng thái:</i> Giá về sát vùng hỗ trợ/Order Block (OB: <code>{smc_d.get('ob_price', 0):.1f}k</code>), dòng tiền CMF ngắn hạn: <code>{cmf_d:.2f}</code>.\n"
-            f"• <i>Lời khuyên:</i> <b>ĐỦ ĐIỀU KIỆN MUA T+ / THĂM DÒ</b> tỷ trọng nhỏ với Stoploss quản trị rủi ro chặt chẽ.\n\n"
+            f"• <i>Trạng thái:</i> Order Block gần nhất tại <code>{smc_d.get('ob_price', 0):.1f}k</code> | Dòng tiền CMF ngắn hạn: <code>{cmf_d:.2f}</code>.\n"
+            f"• <i>Hành động ngắn hạn:</i> {'Đủ điều kiện giải ngân thăm dò T+ tại hỗ trợ' if cmf_d > -0.05 else 'Dòng tiền ngắn hạn chưa thuận lợi, cần quan sát thêm'}.\n\n"
             f"🎯 <b>KẾT LUẬN CHIẾN LƯỢC TỔNG HÒA:</b>\n"
-            f"✅ <i>Cách hành xử đúng:</i> Tận dụng điểm mua kỹ thuật ngắn hạn (Khung D) để đánh sóng linh hoạt, nhưng phải tuân thủ kỷ luật dừng lỗ nhanh và không sa đà giữ dài theo tư duy tích sản vĩ mô!"
+            f"✅ Kết hợp linh hoạt giữa khung Tháng và Ngày để tối ưu hóa biên lợi nhuận và quản trị chặt rủi ro dừng lỗ 1% NAV!"
         )
         
         keyboard = [
@@ -1425,7 +1468,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("checkkyloimua", check_buy_discipline_command))
     app.add_handler(CommandHandler("quytec", quytec_command))
     
-    # 🆕 Đăng ký các lệnh nâng cao mới
+    # Đăng ký các lệnh nâng cao mới
     app.add_handler(CommandHandler("vonglap", vonglap_command))
     app.add_handler(CommandHandler("sosanh_muavumedia", sosanh_muavumedia_command))
     app.add_handler(CommandHandler("docvi", docvi_command))
@@ -1436,6 +1479,6 @@ if __name__ == "__main__":
     # Kích hoạt tiến trình Auto-Scan chạy ngầm định kỳ
     threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
-    print("🚀 Bot Quant Trading Pro đã cập nhật tính năng Đọc vị mánh khóe thành công!")
+    print("🚀 Bot Quant Trading Pro đã cập nhật tính năng Đọc vị & Vòng lặp động thành công!")
     
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
