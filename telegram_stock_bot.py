@@ -830,6 +830,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    # ⚡ PHẢN HỒI NGAY LẬP TỨC CHO TELEGRAM ĐỂ BỎ VÒNG QUAY TẢI MÀU XÁM Ở NÚT BẤM
     await query.answer()
     data = query.data
 
@@ -855,7 +856,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
-        msg = await query.message.reply_text(f"⏳ Đang phân tích {symbol.upper()} (Khung: {resolution})...")
+        
+        # 🚀 GỬI NGAY TIN NHẮN THÔNG BÁO TRẠNG THÁI ĐANG XỬ LÝ
+        msg = await query.message.reply_text(f"⚡ Đang tải dữ liệu khung {resolution} của <b>{symbol.upper()}</b>...", parse_mode="HTML")
         try:
             loop = asyncio.get_running_loop()
             result = await asyncio.wait_for(
@@ -870,6 +873,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.delete()
             await context.bot.send_photo(chat_id=chat_id, photo=img_buf, caption=text_part1, parse_mode="HTML")
             await context.bot.send_message(chat_id=chat_id, text=text_part2, reply_markup=reply_markup, parse_mode="HTML")
+        except asyncio.TimeoutError:
+            await msg.edit_text("⏱️ Quá thời gian xử lý yêu cầu (Timeout). Vui lòng thử lại sau!", parse_mode="HTML")
         except Exception as e:
             await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
