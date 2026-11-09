@@ -1,3 +1,4 @@
+
 import datetime
 import io
 import json
@@ -352,7 +353,7 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
-# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI
+# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ AN TOÀN HTML)
 # ==========================================
 def get_groq_comprehensive_analysis(symbol):
     symbol = symbol.upper().strip()
@@ -362,7 +363,7 @@ def get_groq_comprehensive_analysis(symbol):
         df_m, err_m = fetch_stock_data(symbol, "M", 24)
         
         if err_d or df_d.empty:
-            return f"❌ Không lấy được dữ liệu phân tích kỹ thuật cho mã <b>{symbol}</b>."
+            return f"❌ Không lấy được dữ liệu phân tích kỹ thuật cho mã {symbol}."
 
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
@@ -372,34 +373,34 @@ Mã cổ phiếu: {symbol}
 - Giá hiện tại: {last_d['Close']:.1f}k
 - Khung Ngày (D): CMF={last_d.get('CMF', 0):.2f}, RVOL={last_d.get('RVOL', 1):.2f}x, RSI={last_d.get('RSI', 50):.1f}
 - Biên độ dao động gần nhất (D): Cao nhất={df_d['High'].tail(10).max():.1f}k, Thấp nhất={df_d['Low'].tail(10).min():.1f}k
-- Khung Tuần (W) - Dữ liệu 12 nến gần nhất: 
-  {df_w['Close'].tail(12).tolist() if not df_w.empty else 'N/A'}
-- Khung Tháng (M) - Vị thế giá trong lịch sử: 
-  Đỉnh tháng={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy tháng={df_m['Low'].min() if not df_m.empty else 0:.1f}k
+- Khung Tuần (W): {df_w['Close'].tail(12).tolist() if not df_w.empty else 'N/A'}
+- Khung Tháng (M): Đỉnh={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy={df_m['Low'].min() if not df_m.empty else 0:.1f}k
 """
 
         groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
         if not groq_api_key:
-            return f"⚠️ <b>Lỗi hệ thống:</b> Biến môi trường <code>GROQ_API_KEY</code> chưa được cấu hình trên Render.\n\n<b>Dữ liệu thô:</b>\n<pre>{data_summary}</pre>"
+            return f"⚠️ Lỗi hệ thống: Biến môi trường GROQ_API_KEY chưa được cấu hình.\n\n{data_summary}"
 
         client = Groq(api_key=groq_api_key)
         prompt = f"""
-Bạn là một chuyên gia phân tích kỹ thuật chứng khoán cao cấp, chuyên đọc vị hành vi nhà cái (SMC) và phân tích đa khung thời gian (Tháng - Tuần - Ngày). 
-Dựa vào dữ liệu thống kê kỹ thuật của mã {symbol} dưới đây:
+Bạn là chuyên gia phân tích kỹ thuật chứng khoán. Dựa vào dữ liệu của mã {symbol}:
 {data_summary}
 
-Hãy viết một bản phân tích chuyên sâu, sắc bén, súc tích bằng tiếng Việt theo đúng chuẩn định dạng HTML Telegram gồm 3 phần sau:
+Hãy viết một bản phân tích ngắn gọn, sắc bén gồm 3 phần:
 
-🔄 <b>1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN):</b>
-(Đánh giá chu kỳ hiện tại đang giống giai đoạn nào trong lịch sử: Tích lũy cạn cung, Rũ bỏ, hay Đẩy giá; đưa ra đánh giá xu hướng trung hạn).
+1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN):
+(Đánh giá chu kỳ hiện tại: tích lũy, rũ bỏ hay đẩy giá).
 
-⚖️ <b>2. BẢN ĐỐI CHIẾU ĐA KHUNG (MACRO THÁNG vs T+ NGÀY):</b>
-(Phân tích vị thế giá hiện tại so với chu kỳ lớn Khung Tháng [vùng đỉnh dài hạn hay chân sóng tích lũy] kết hợp với dòng tiền ngắn hạn T+ khung Ngày để định hướng vị thế).
+2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY):
+(Vị thế giá macro so với dòng tiền ngắn hạn).
 
-🕵️‍♂️ <b>3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP TRONG PHIÊN:</b>
-(Bóc trần ý đồ nhà cái qua khối lượng [RVOL] và biến động giá: Có bẫy đè giá rũ bỏ - Washout, kê lệnh gom ngầm, hay kéo thốc? Đưa ra lời khuyên thực chiến).
+3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP:
+(Ý đồ qua khối lượng RVOL và biến động giá, lời khuyên thực chiến).
 
-Yêu cầu cực kỳ quan trọng: TUYỆT ĐỐI KHÔNG dùng dấu sao (**) để in đậm. Chỉ sử dụng đúng các thẻ HTML của Telegram như <b>...</b> cho chữ đậm, <code>...code...</code> cho các con số hoặc mã lệnh. Trình bày rõ ràng, mạnh mẽ, không dài dòng thừa thãi.
+YÊU CẦU BẮT BUỘC: 
+- KHÔNG sử dụng bất kỳ thẻ HTML nào ngoại trừ cặp thẻ <b> và </b> cho tiêu đề hoặc từ khóa quan trọng. 
+- TUYỆT ĐỐI KHÔNG dùng ký tự < hoặc > đơn lẻ trong văn bản (ví dụ nếu viết nhỏ hơn hãy dùng chữ "dưới").
+- Không dùng dấu sao (**).
 """
 
         completion = client.chat.completions.create(
@@ -410,7 +411,7 @@ Yêu cầu cực kỳ quan trọng: TUYỆT ĐỐI KHÔNG dùng dấu sao (**) �
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"❌ Lỗi xử lý Groq AI: {html.escape(str(e))}"
+        return f"❌ Lỗi xử lý Groq AI: {str(e)}"
 
 # ==========================================
 # 2. HÀM PHÂN TÍCH KỸ THUẬT & SMC GỐC
