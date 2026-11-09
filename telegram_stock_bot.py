@@ -109,36 +109,34 @@ def load_portfolios():
 USER_PORTFOLIOS = load_portfolios()
 
 # ==========================================
-# 1. HÀM CALL DATA & GỘP KHUNG THỜI GIAN CHUẨN (ĐÃ MỞ RỘNG KHOẢNG THỜI GIAN VÀ FIX LỖI W/M)
+# 1. HÀM CALL DATA ĐÃ NÂNG CẤP XỬ LÝ AN TOÀN ĐA KHUNG
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
-    
-    api_resolution = "60" if resolution == "60" else "D"
-    
-    # Xác định khoảng thời gian lùi về quá khứ an toàn cho từng khung
+    cache_key = f"{symbol}_{resolution}_{count}"
     now_ts = time.time()
-    if resolution == "M":
-        lookback_days = max(count * 40, 3650)  # Kéo tối đa khoảng 10 năm cho khung Tháng
-    elif resolution == "W":
-        lookback_days = max(count * 15, 1825)  # Kéo tối đa khoảng 5 năm cho khung Tuần
-    elif resolution == "60":
-        lookback_days = max(count * 2, 60)     # Khung ngắn hạn 1H
-    else:
-        lookback_days = max(count * 2, 365)    # Khung Ngày (D)
 
-    cache_key = f"{symbol}_{resolution}"
     if cache_key in STOCK_DATA_CACHE:
         cached_df, cached_err, cached_time = STOCK_DATA_CACHE[cache_key]
         if now_ts - cached_time < 60:
             return cached_df, cached_err
 
+    if resolution == "60":
+        api_res = "60"
+        lookback_days = max(count * 2, 30)
+    elif resolution in ["W", "M"]:
+        api_res = "D"  # Lấy khung ngày gốc rồi gộp lên W/M để đảm bảo dữ liệu đầy đủ
+        lookback_days = 3650 if resolution == "M" else 1825
+    else:
+        api_res = "D"
+        lookback_days = max(count * 2, 365)
+
     end_time = int(now_ts)
     start_time = int(end_time - (lookback_days * 86400))
 
-    df_raw = pd.DataFrame()
-    url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={api_resolution}&symbol={symbol}&from={start_time}&to={end_time}"
+    url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={api_res}&symbol={symbol}&from={start_time}&to={end_time}"
     
+    df_raw = pd.DataFrame()
     try:
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://dchart.vndirect.com.vn/"}
         res = requests.get(url, headers=headers, timeout=5.0)
@@ -161,18 +159,10 @@ def fetch_stock_data(symbol, resolution="D", count=150):
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
     
-    # Gộp dữ liệu chuẩn xác nếu là khung Tuần (W) hoặc Tháng (M)
     if resolution in ["W", "M"]:
         df_raw.set_index("time", inplace=True)
         rule = "W-FRI" if resolution == "W" else "ME"
-        
-        agg_dict = {
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-            "Volume": "sum"
-        }
+        agg_dict = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
         df_resampled = df_raw.resample(rule).agg(agg_dict).dropna().reset_index()
         ret_df = df_resampled.tail(count).reset_index(drop=True)
     else:
@@ -1056,68 +1046,48 @@ async def vonglap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     if not args:
-        await target_msg.reply_text(
-            "⚠️ Vui lòng nhập mã cổ phiếu cần đối chiếu vòng lặp.\n"
-            "<i>Ví dụ:</i> <code>/vonglap TCB</code>",
-            parse_mode="HTML"
-        )
+        await target_msg.reply_text("⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/vonglap TCB</code>", parse_mode="HTML")
         return
         
     symbol = args[0].upper().strip()
-    msg = await target_msg.reply_text(f"🔄 Đang quét lịch sử khung Tuần (W) để tìm đoạn nến đồng pha cho <b>{symbol}</b>...", parse_mode="HTML")
+    msg = await target_msg.reply_text(f"🔄 Đang quét lịch sử khung Tuần (W) cho <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
         df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "W", 150)
         
-        if err or df.empty or len(df) < 40:
-            await msg.edit_text(f"❌ Không đủ dữ liệu khung Weekly để đối chiếu cho mã <b>{symbol}</b>.", parse_mode="HTML")
+        if err or df.empty or len(df) < 20:
+            await msg.edit_text(f"❌ Không đủ dữ liệu khung Weekly cho mã <b>{symbol}</b> (Lỗi: {err}).", parse_mode="HTML")
             return
             
         df = calculate_indicators(df)
         last = df.iloc[-1]
         close = last["Close"]
-        rvol = last.get("RVOL", 1.0)
         cmf = last.get("CMF", 0.0)
         
         recent_closes = df["Close"].tail(12)
-        price_range_pct = ((recent_closes.max() - recent_closes.min()) / recent_closes.min()) * 100
+        price_range_pct = ((recent_closes.max() - recent_closes.min()) / (recent_closes.min() + 1e-9)) * 100
         
         if price_range_pct < 8.0:
             pattern_status = "Đang co hẹp biên độ tích lũy (Sideways Box / Nén lò xo)"
-            historical_match = "giai đoạn tích lũy cạn cung trước các nhịp sóng lớn trung hạn"
-            advice = "Cấu trúc siết chặt, phù hợp gom mua thăm dò tỷ trọng nhỏ ở vùng hỗ trợ biên dưới."
-        elif close > df["EMA20"].iloc[-1] and cmf > 0:
-            pattern_status = "Đang duy trì kênh tăng giá trung hạn (Uptrend channel)"
-            historical_match = "chu kỳ đẩy giá mạnh (Markup phase) khi dòng tiền lớn nhập cuộc"
-            advice = "Canh các nhịp rung lắc trong tuần để gia tăng tỷ trọng theo xu hướng."
+            historical_match = "giai đoạn tích lũy cạn cung trước sóng lớn"
+            advice = "Phù hợp gom mua thăm dò tỷ trọng nhỏ ở vùng biên hỗ trợ."
         else:
-            pattern_status = "Đang trong nhịp điều chỉnh kiểm định cung cầu (Pullback / Test)"
-            historical_match = "giai đoạn rũ bỏ (Washout) test lại vùng hỗ trợ cứng"
-            advice = "Kiên nhẫn chờ tín hiệu dòng tiền CMF cải thiện hoặc giá chạm vùng biên hỗ trợ mạnh."
+            pattern_status = "Đang trong kênh xu hướng trung hạn"
+            historical_match = "chu kỳ vận động dòng tiền lớn"
+            advice = "Canh nhịp rung lắc để gia tăng tỷ trọng theo xu hướng."
 
         report_content = (
-            f"🔄 <b>ĐỐI CHIẾU CẤU TRÚC NẾN TƯƠNG ĐỒNG: {symbol}</b>\n"
+            f"🔄 <b>ĐỐI CHIẾU CẤU TRÚC NẾN: {symbol}</b>\n"
             f"====================================\n"
-            f"• <b>Mức giá hiện tại (W):</b> <code>{close:.1f}k</code>\n"
-            f"• <b>Độ nén biên độ (12 tuần):</b> <code>{price_range_pct:.1f}%</code> | <b>CMF:</b> <code>{cmf:.2f}</code>\n\n"
-            f"🔍 <b>KẾT QUẢ SO KHỚP LỊCH SỬ (KHUNG TUẦN):</b>\n"
-            f"• <b>Trạng thái hiện tại:</b> {pattern_status}.\n"
-            f"• <b>Mô hình tương đồng:</b> Vận động có độ tương đồng cao với <b>{historical_match}</b> trong dữ liệu lịch sử của mã này.\n\n"
-            f"💡 <i>Đánh giá kỹ thuật:</i> {advice}"
+            f"• <b>Giá hiện tại (W):</b> <code>{close:.1f}k</code> | <b>CMF:</b> <code>{cmf:.2f}</code>\n"
+            f"• <b>Trạng thái:</b> {pattern_status}\n"
+            f"• <b>Đánh giá:</b> Tương đồng với {historical_match}. {advice}"
         )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("📊 Xem Biểu Đồ Chi Tiết", callback_data=f"{symbol}|W|100"),
-                InlineKeyboardButton("⚖️ So Sánh Đa Khung", callback_data=f"sosanh_cb|{symbol}")
-            ]
-        ]
-        
+        keyboard = [[InlineKeyboardButton("📊 Xem Biểu Đồ Tuần", callback_data=f"{symbol}|W|100")]]
         await msg.edit_text(report_content, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi xử lý vòng lặp: {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 # ==========================================
@@ -1128,15 +1098,11 @@ async def sosanh_muavumedia_command(update: Update, context: ContextTypes.DEFAUL
     target_msg = update.message if update.message else update.callback_query.message
     
     if not args:
-        await target_msg.reply_text(
-            "⚠️ Vui lòng nhập mã cổ phiếu cần đối chiếu đa khung.\n"
-            "<i>Ví dụ:</i> <code>/sosanh_muavumedia TCB</code>",
-            parse_mode="HTML"
-        )
+        await target_msg.reply_text("⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/sosanh_muavumedia TCB</code>", parse_mode="HTML")
         return
         
     symbol = args[0].upper().strip()
-    msg = await target_msg.reply_text(f"⚖️ Đang bóc tách dữ liệu đa khung (Macro Tháng vs T+ Ngày) cho <b>{symbol}</b>...", parse_mode="HTML")
+    msg = await target_msg.reply_text(f"⚖️ Đang đối chiếu đa khung (Tháng vs Ngày) cho <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
@@ -1144,47 +1110,28 @@ async def sosanh_muavumedia_command(update: Update, context: ContextTypes.DEFAUL
         df_d, err_d = await loop.run_in_executor(executor, fetch_stock_data, symbol, "D", 100)
         
         if err_m or err_d or df_m.empty or df_d.empty:
-            await msg.edit_text(f"❌ Không đủ dữ liệu để đối chiếu đa khung cho mã <b>{symbol}</b>.", parse_mode="HTML")
+            await msg.edit_text(f"❌ Không đủ dữ liệu đa khung cho mã <b>{symbol}</b>.", parse_mode="HTML")
             return
             
-        df_m = calculate_indicators(df_m)
-        df_d = calculate_indicators(df_d)
-        
         close_price = df_d.iloc[-1]["Close"]
         cmf_d = df_d.iloc[-1].get("CMF", 0.0)
-        smc_d = calculate_smc_structures(df_d)
         
         m_high = df_m["High"].max()
         m_low = df_m["Low"].min()
-        pos_in_cycle = (close_price - m_low) / (m_high - m_low + 1e-9) * 100
-        
-        macro_eval = "vùng đỉnh chu kỳ dài hạn, rủi ro phân phối lớn" if pos_in_cycle > 75 else ("vùng lưng chừng xu hướng" if pos_in_cycle > 40 else "vùng tích lũy chân sóng vĩ mô")
+        pos_in_cycle = ((close_price - m_low) / (m_high - m_low + 1e-9)) * 100
         
         comparison_text = (
-            f"⚖️ <b>BẢN ĐỐI CHIẾU ĐA KHUNG (MACRO vs T+): {symbol}</b>\n"
+            f"⚖️ <b>ĐỐI CHIẾU ĐA KHUNG (MACRO vs T+): {symbol}</b>\n"
             f"====================================\n"
-            f"• <b>Mã tài sản:</b> <code>{symbol}</code> | Giá hiện tại: <code>{close_price:.1f}k</code>\n"
-            f"• <b>Vị thế chu kỳ Tháng (M):</b> Nằm ở mức <code>{pos_in_cycle:.1f}%</code> biên độ lịch sử ({macro_eval}).\n\n"
-            f"🏛️ <b>1. GÓC NHÌN MÙA VỤ / CHU KỲ LỚN (Khung Tháng - M):</b>\n"
-            f"• <i>Trạng thái:</i> {'Tiềm ẩn áp lực chốt lời dài hạn do đã ở vùng giá cao' if pos_in_cycle > 75 else 'Dư địa chu kỳ dài còn khá thoáng, cấu trúc dài hạn ủng hộ nắm giữ'}.\n\n"
-            f"⏱️ <b>2. GÓC NHÌN TÁC CHIẾN NGẮN HẠN (Khung Ngày - D / SMC):</b>\n"
-            f"• <i>Trạng thái:</i> Order Block gần nhất tại <code>{smc_d.get('ob_price', 0):.1f}k</code> | Dòng tiền CMF ngắn hạn: <code>{cmf_d:.2f}</code>.\n"
-            f"• <i>Hành động ngắn hạn:</i> {'Đủ điều kiện giải ngân thăm dò T+ tại hỗ trợ' if cmf_d > -0.05 else 'Dòng tiền ngắn hạn chưa thuận lợi, cần quan sát thêm'}.\n\n"
-            f"🎯 <b>KẾT LUẬN CHIẾN LƯỢC TỔNG HÒA:</b>\n"
-            f"✅ Kết hợp linh hoạt giữa khung Tháng và Ngày để tối ưu hóa biên lợi nhuận và quản trị chặt rủi ro dừng lỗ 1% NAV!"
+            f"• <b>Giá hiện tại:</b> <code>{close_price:.1f}k</code>\n"
+            f"• <b>Vị thế chu kỳ Tháng (M):</b> <code>{pos_in_cycle:.1f}%</code> biên độ lịch sử.\n"
+            f"• <b>Dòng tiền ngắn hạn (CMF):</b> <code>{cmf_d:.2f}</code>\n\n"
+            f"🎯 <b>Nhận định:</b> Kết hợp khung Tháng xác định vùng giá và khung Ngày (D) để tối ưu điểm giải ngân theo quản trị 1% NAV."
         )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}"),
-                InlineKeyboardButton("📊 Xem Biểu Đồ Ngày", callback_data=f"{symbol}|D|200")
-            ]
-        ]
-        
+        keyboard = [[InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")]]
         await msg.edit_text(comparison_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi đối chiếu: {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 # ==========================================
@@ -1195,21 +1142,19 @@ async def docvi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_msg = update.message if update.message else update.callback_query.message
     
     if not args:
-        await target_msg.reply_text(
-            "⚠️ Vui lòng nhập mã cổ phiếu cần đọc vị phiên.\n"
-            "<i>Ví dụ:</i> <code>/docvi TCB</code>",
-            parse_mode="HTML"
-        )
+        await target_msg.reply_text("⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/docvi TCB</code>", parse_mode="HTML")
         return
         
     symbol = args[0].upper().strip()
-    msg = await target_msg.reply_text(f"🔍 Đang bóc tách dữ liệu khung ngắn hạn để bóc trần mánh khóe mã <b>{symbol}</b>...", parse_mode="HTML")
+    msg = await target_msg.reply_text(f"🔍 Đang bóc tách khung ngắn hạn đọc vị <b>{symbol}</b>...", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
         df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "60", 100)
-        
-        if err or df.empty or len(df) < 20:
+        if err or df.empty or len(df) < 10:
+            df, err = await loop.run_in_executor(executor, fetch_stock_data, symbol, "D", 50)
+            
+        if err or df.empty or len(df) < 10:
             await msg.edit_text(f"❌ Không đủ dữ liệu ngắn hạn cho mã <b>{symbol}</b>.", parse_mode="HTML")
             return
             
@@ -1218,43 +1163,29 @@ async def docvi_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prev = df.iloc[-2]
         
         close = last["Close"]
-        vol = last["Volume"]
         rvol = last.get("RVOL", 1.0)
         cmf = last.get("CMF", 0.0)
-        price_change = ((close - prev["Close"]) / prev["Close"]) * 100
+        price_change = ((close - prev["Close"]) / (prev["Close"] + 1e-9)) * 100
         
-        tricks = []
+        trick_note = "Trạng thái cung cầu bình ổn, dòng tiền tạo lập chưa có biến động đột biến."
         if rvol > 2.0 and abs(price_change) < 0.5:
-            tricks.append("🛡️ <b>Mánh khóe Trao tay / Kê lệnh ngầm:</b> Volume nổ lớn (RVOL > 2x) nhưng giá đi ngang. Nhà cái đang gom hoặc phân phối kín.")
-        if price_change < -1.5 and rvol > 1.5:
-            tricks.append("🚨 <b>Bẫy Đè giá rũ bỏ (Washout):</b> Đạp ép giá sâu kèm thanh khoản lớn để quét hàng yếu bóng vía trước khi kéo ngược.")
-        if price_change > 1.5 and rvol > 1.5 and cmf > 0:
-            tricks.append("🔥 <b>Mánh khóe Kéo thốc (Bull Move):</b> Dòng tiền lớn dồn dập đánh vượt kháng cự, xác nhận phe mua kiểm soát.")
-        if rvol < 0.6 and abs(price_change) < 0.4:
-            tricks.append("🧊 <b>Mánh khóe Cạn cung (No-Supply):</b> Thanh khoản khô kiệt, tạo lập đang bỏ ngỏ phiên để thăm dò tâm lý.")
-        if not tricks:
-            tricks.append("⚖️ <b>Trạng thái giằng co:</b> Cung cầu cân bằng, chưa có dấu hiệu bẻ lái thô bạo.")
+            trick_note = "🛡️ Mánh khóe Trao tay / Kê lệnh ngầm gom/phân phối kín."
+        elif price_change < -1.5 and rvol > 1.5:
+            trick_note = "🚨 Bẫy Đè giá rũ bỏ (Washout) quét hàng yếu bóng vía."
+        elif price_change > 1.5 and rvol > 1.5:
+            trick_note = "🔥 Mánh khóe Kéo thốc (Bull Move) xác nhận dòng tiền lớn."
 
         report = (
-            f"🕵️‍♂️ <b>HỒ SƠ ĐỌC VỊ MÁNH KHÓE TẠO LẬP: {symbol}</b>\n"
+            f"🕵️‍♂️ <b>ĐỌC VỊ MÁNH KHÓE TẠO LẬP: {symbol}</b>\n"
             f"====================================\n"
-            f"• <b>Giá hiện tại:</b> <code>{close:.1f}k</code> ({price_change:+.2f}%)\n"
-            f"• <b>Khối lượng (RVOL):</b> <code>{rvol:.2f}x</code> | <b>CMF:</b> <code>{cmf:.2f}</code>\n\n"
-            f"🎯 <b>NHẬN ĐỊNH HÀNH VI NHÀ CÁI:</b>\n"
-            f"{'\n'.join(tricks)}\n\n"
-            f"💡 <i>Lời khuyên:</i> Luôn giữ cái đầu lạnh, đừng để Volume ảo đánh lừa cảm xúc trong phiên!"
+            f"• <b>Biến động:</b> <code>{close:.1f}k</code> ({price_change:+.2f}%)\n"
+            f"• <b>RVOL:</b> <code>{rvol:.2f}x</code> | <b>CMF:</b> <code>{cmf:.2f}</code>\n\n"
+            f"🎯 <b>Hành vi nhà cái:</b> {trick_note}"
         )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}"),
-                InlineKeyboardButton("📊 Xem Biểu Đồ Ngày", callback_data=f"{symbol}|D|200")
-            ]
-        ]
-        
+        keyboard = [[InlineKeyboardButton("📊 Xem Biểu Đồ", callback_data=f"{symbol}|D|200")]]
         await msg.edit_text(report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ Lỗi đọc vị: {html.escape(str(e))}", parse_mode="HTML")
+        await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
