@@ -336,7 +336,7 @@ def get_latest_stock_news(symbol):
         news_items = [f"- Tiêu đề: {entry.title}" for entry in feed.entries[:5]]
         raw_news_text = "\n".join(news_items)
 
-        groq_api_key = os.environ.get("GROQ_API_KEY")
+        groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
         if not groq_api_key:
             return f"📰 <b>TIN TỨC THÔ {symbol}:</b>\n\n" + raw_news_text
 
@@ -352,7 +352,7 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
-# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (GỘP CHUNG VÀO 1)
+# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ TÍCH HỢP CHUẨN)
 # ==========================================
 def get_groq_comprehensive_analysis(symbol):
     symbol = symbol.upper().strip()
@@ -380,9 +380,10 @@ Mã cổ phiếu: {symbol}
   Đỉnh tháng={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy tháng={df_m['Low'].min() if not df_m.empty else 0:.1f}k
 """
 
-        groq_api_key = os.environ.get("GROQ_API_KEY")
+        # Lấy API Key an toàn từ môi trường Render
+        groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
         if not groq_api_key:
-            return f"⚠️ Thiếu GROQ_API_KEY. Dữ liệu thô:\n<pre>{data_summary}</pre>"
+            return f"⚠️ <b>Lỗi hệ thống:</b> Biến môi trường <code>GROQ_API_KEY</code> chưa được cấu hình trên Render.\n\n<b>Dữ liệu thô:</b>\n<pre>{data_summary}</pre>"
 
         client = Groq(api_key=groq_api_key)
         prompt = f"""
@@ -956,7 +957,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
+    threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=Thread=True).start()
 
-    print("🚀 Bot Quant Trading Pro đã gộp lệnh và tích hợp Groq AI thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp Groq AI phân tích toàn diện thành công!")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
