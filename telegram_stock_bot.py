@@ -352,6 +352,67 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
+# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ AN TOÀN HTML)
+# ==========================================
+def get_groq_comprehensive_analysis(symbol):
+    symbol = symbol.upper().strip()
+    try:
+        df_d, err_d = fetch_stock_data(symbol, "D", 60)
+        df_w, err_w = fetch_stock_data(symbol, "W", 30)
+        df_m, err_m = fetch_stock_data(symbol, "M", 24)
+        
+        if err_d or df_d.empty:
+            return f"❌ Không lấy được dữ liệu phân tích kỹ thuật cho mã {symbol}."
+
+        df_d = calculate_indicators(df_d)
+        last_d = df_d.iloc[-1]
+        
+        data_summary = f"""
+Mã cổ phiếu: {symbol}
+- Giá hiện tại: {last_d['Close']:.1f}k
+- Khung Ngày (D): CMF={last_d.get('CMF', 0):.2f}, RVOL={last_d.get('RVOL', 1):.2f}x, RSI={last_d.get('RSI', 50):.1f}
+- Biên độ dao động gần nhất (D): Cao nhất={df_d['High'].tail(10).max():.1f}k, Thấp nhất={df_d['Low'].tail(10).min():.1f}k
+- Khung Tuần (W): {df_w['Close'].tail(12).tolist() if not df_w.empty else 'N/A'}
+- Khung Tháng (M): Đỉnh={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy={df_m['Low'].min() if not df_m.empty else 0:.1f}k
+"""
+
+        groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+        if not groq_api_key:
+            return f"⚠️ Lỗi hệ thống: Biến môi trường GROQ_API_KEY chưa được cấu hình.\n\n{data_summary}"
+
+        client = Groq(api_key=groq_api_key)
+        prompt = f"""
+Bạn là chuyên gia phân tích kỹ thuật chứng khoán. Dựa vào dữ liệu của mã {symbol}:
+{data_summary}
+
+Hãy viết một bản phân tích ngắn gọn, sắc bén gồm 3 phần:
+
+1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN):
+(Đánh giá chu kỳ hiện tại: tích lũy, rũ bỏ hay đẩy giá).
+
+2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY):
+(Vị thế giá macro so với dòng tiền ngắn hạn).
+
+3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP:
+(Ý đồ qua khối lượng RVOL và biến động giá, lời khuyên thực chiến).
+
+YÊU CẦU BẮT BUỘC: 
+- KHÔNG sử dụng bất kỳ thẻ HTML nào ngoại trừ cặp thẻ <b> và </b> cho tiêu đề hoặc từ khóa quan trọng. 
+- TUYỆT ĐỐI KHÔNG dùng ký tự < hoặc > đơn lẻ trong văn bản (ví dụ nếu viết nhỏ hơn hãy dùng chữ "dưới").
+- Không dùng dấu sao (**).
+"""
+
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=900
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"❌ Lỗi xử lý Groq AI: {str(e)}"
+
+# ==========================================
 # 2. HÀM PHÂN TÍCH KỸ THUẬT & SMC GỐC
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
@@ -705,7 +766,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Lỗi tải tin: {html.escape(str(e))}", parse_mode="HTML")
 
 # ==========================================
-# 🆕 LỆNH GỘP MỚI DUY NHẤT: /phantich (hoặc /pt) - CÓ TỰ ĐỘNG CHIA NHỎ TIN NHẮN
+# 🆕 LỆNH GỘP MỚI DUY NHẤT: /phantich (hoặc /pt)
 # ==========================================
 async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -724,89 +785,21 @@ async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         loop = asyncio.get_running_loop()
-        groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
-        client = Groq(api_key=groq_api_key)
+        ai_report = await loop.run_in_executor(executor, get_groq_comprehensive_analysis, symbol)
         
-        # Lấy dữ liệu thô
-        df_d, err_d = fetch_stock_data(symbol, "D", 60)
-        df_w, err_w = fetch_stock_data(symbol, "W", 30)
-        df_m, err_m = fetch_stock_data(symbol, "M", 24)
-        
-        if err_d or df_d.empty:
-            await msg.edit_text(f"❌ Không lấy được dữ liệu phân tích kỹ thuật cho mã <b>{symbol}</b>.", parse_mode="HTML")
-            return
-
-        df_d = calculate_indicators(df_d)
-        last_d = df_d.iloc[-1]
-        
-        data_summary = f"""
-Mã cổ phiếu: {symbol}
-- Giá hiện tại: {last_d['Close']:.1f}k
-- Khung Ngày (D): CMF={last_d.get('CMF', 0):.2f}, RVOL={last_d.get('RVOL', 1):.2f}x, RSI={last_d.get('RSI', 50):.1f}
-- Biên độ dao động gần nhất (D): Cao nhất={df_d['High'].tail(10).max():.1f}k, Thấp nhất={df_d['Low'].tail(10).min():.1f}k
-- Khung Tuần (W): {df_w['Close'].tail(12).tolist() if not df_w.empty else 'N/A'}
-- Khung Tháng (M): Đỉnh={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy={df_m['Low'].min() if not df_m.empty else 0:.1f}k
-"""
-
-        prompt = f"""
-Bạn là chuyên gia phân tích kỹ thuật chứng khoán. Dựa vào dữ liệu của mã {symbol}:
-{data_summary}
-
-Hãy viết một bản phân tích cực kỳ chi tiết, sắc bén, đầy đủ các phần sau:
-
-1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN):
-(Đánh giá chi tiết chu kỳ hiện tại: tích lũy, rũ bỏ hay đẩy giá; hành vi dòng tiền lớn).
-
-2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY):
-(Vị thế giá macro khung tháng so với dòng tiền ngắn hạn khung ngày).
-
-3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP & HÀNH VI TRONG PHIÊN:
-(Ý đồ nhà cái qua khối lượng RVOL và biến động giá thực tế).
-
-4. KỊCH BẢN THỰC CHIẾN & QUẢN TRỊ RỦI RO:
-(Đưa ra chiến lược hành động cụ thể cho người mua mới và người đang cầm hàng, mức chặn lỗ stoploss rõ ràng).
-
-YÊU CẦU BẮT BUỘC: 
-- KHÔNG sử dụng bất kỳ thẻ HTML nào ngoại trừ cặp thẻ <b> và </b> cho tiêu đề hoặc từ khóa quan trọng. 
-- TUYỆT ĐỐI KHÔNG dùng ký tự < hoặc > đơn lẻ trong văn bản.
-- Không dùng dấu sao (**). Viết đầy đủ trọn vẹn, không cắt cụt câu.
-"""
-
-        completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1500  # Tăng max_tokens để AI viết thoải mái đầy đủ ý
-        )
-        ai_report = completion.choices[0].message.content
+        # 🛡️ BỘ LỌC AN TOÀN: Loại bỏ thẻ <br> / <br/> để không bao giờ bị lỗi Telegram
         cleaned_report = ai_report.replace("<br>", "\n").replace("<br/>", "\n").replace("<BR>", "\n")
         
         full_report = f"🎯 <b>BẢN TIN PHÂN TÍCH CHUYÊN SÂU AI: {symbol}</b>\n====================================\n\n" + cleaned_report
-        chat_id = update.effective_chat.id
         
-        # 🛡️ CHIA NHỎ TIN NHẮN NẾU QUÁ DÀI (Hạn chế lỗi giới hạn ký tự Telegram)
-        if len(full_report) > 3900:
-            chunks = [full_report[i:i+3900] for i in range(0, len(full_report), 3900)]
-            await msg.edit_text(chunks[0], parse_mode="HTML")
-            for chunk in chunks[1:]:
-                await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("📊 Xem Biểu Đồ Kỹ Thuật", callback_data=f"{symbol}|D|200"),
-                    InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")
-                ]
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 Xem Biểu Đồ Kỹ Thuật", callback_data=f"{symbol}|D|200"),
+                InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")
             ]
-            await context.bot.send_message(chat_id=chat_id, text="📌 <b>Hành động tiếp theo:</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-        else:
-            keyboard = [
-                [
-                    InlineKeyboardButton("📊 Xem Biểu Đồ Kỹ Thuật", callback_data=f"{symbol}|D|200"),
-                    InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")
-                ]
-            ]
-            await msg.edit_text(full_report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML", disable_web_page_preview=True)
-
+        ]
+        
+        await msg.edit_text(full_report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML", disable_web_page_preview=True)
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi phân tích AI: {html.escape(str(e))}", parse_mode="HTML")
 
