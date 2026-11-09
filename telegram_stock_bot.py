@@ -109,31 +109,39 @@ def load_portfolios():
 USER_PORTFOLIOS = load_portfolios()
 
 # ==========================================
-# 1. HÀM CALL DATA & GỘP KHUNG THỜI GIAN CHUẨN (Dùng VNDirect API)
+# 1. HÀM CALL DATA & GỘP KHUNG THỜI GIAN CHUẨN (ĐÃ MỞ RỘNG KHOẢNG THỜI GIAN VÀ FIX LỖI W/M)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
     
     api_resolution = "60" if resolution == "60" else "D"
-    fetch_count = count * 7 if resolution in ["W", "M"] else count
+    
+    # Xác định khoảng thời gian lùi về quá khứ an toàn cho từng khung
+    now_ts = time.time()
+    if resolution == "M":
+        lookback_days = max(count * 40, 3650)  # Kéo tối đa khoảng 10 năm cho khung Tháng
+    elif resolution == "W":
+        lookback_days = max(count * 15, 1825)  # Kéo tối đa khoảng 5 năm cho khung Tuần
+    elif resolution == "60":
+        lookback_days = max(count * 2, 60)     # Khung ngắn hạn 1H
+    else:
+        lookback_days = max(count * 2, 365)    # Khung Ngày (D)
 
     cache_key = f"{symbol}_{resolution}"
-    now_ts = time.time()
-
     if cache_key in STOCK_DATA_CACHE:
         cached_df, cached_err, cached_time = STOCK_DATA_CACHE[cache_key]
         if now_ts - cached_time < 60:
             return cached_df, cached_err
 
     end_time = int(now_ts)
-    start_time = end_time - (fetch_count * 86400 * 2)
+    start_time = int(end_time - (lookback_days * 86400))
 
     df_raw = pd.DataFrame()
-    
     url = f"https://dchart-api.vndirect.com.vn/dchart/history?resolution={api_resolution}&symbol={symbol}&from={start_time}&to={end_time}"
+    
     try:
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://dchart.vndirect.com.vn/"}
-        res = requests.get(url, headers=headers, timeout=4.5)
+        res = requests.get(url, headers=headers, timeout=5.0)
         if res.status_code == 200:
             data = res.json()
             if data.get("s") == "ok" and "t" in data and len(data["t"]) > 0:
@@ -147,12 +155,13 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         return pd.DataFrame(), res_err
 
     if df_raw.empty:
-        res_err = "Không có dữ liệu"
+        res_err = "Không có dữ liệu từ máy chủ"
         STOCK_DATA_CACHE[cache_key] = (pd.DataFrame(), res_err, now_ts)
         return pd.DataFrame(), res_err
 
     df_raw = df_raw[["time", "Open", "High", "Low", "Close", "Volume"]].sort_values("time").reset_index(drop=True)
     
+    # Gộp dữ liệu chuẩn xác nếu là khung Tuần (W) hoặc Tháng (M)
     if resolution in ["W", "M"]:
         df_raw.set_index("time", inplace=True)
         rule = "W-FRI" if resolution == "W" else "ME"
