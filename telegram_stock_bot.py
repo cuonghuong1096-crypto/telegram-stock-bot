@@ -352,22 +352,26 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
-# 🆕 HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (ĐÃ AN TOÀN HTML)
+# HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (CÓ THỬ LẠI KHI LỖI KẾT NỐI)
 # ==========================================
 def get_groq_comprehensive_analysis(symbol):
     symbol = symbol.upper().strip()
-    try:
-        df_d, err_d = fetch_stock_data(symbol, "D", 60)
-        df_w, err_w = fetch_stock_data(symbol, "W", 30)
-        df_m, err_m = fetch_stock_data(symbol, "M", 24)
-        
-        if err_d or df_d.empty:
-            return f"❌ Không lấy được dữ liệu phân tích kỹ thuật cho mã {symbol}."
+    max_retries = 3
+    retry_delay = 2
 
-        df_d = calculate_indicators(df_d)
-        last_d = df_d.iloc[-1]
-        
-        data_summary = f"""
+    for attempt in range(max_retries):
+        try:
+            df_d, err_d = fetch_stock_data(symbol, "D", 60)
+            df_w, err_w = fetch_stock_data(symbol, "W", 30)
+            df_m, err_m = fetch_stock_data(symbol, "M", 24)
+            
+            if err_d or df_d.empty:
+                return f"❌ Không lấy được dữ liệu phân tích kỹ thuật cho mã {symbol}."
+
+            df_d = calculate_indicators(df_d)
+            last_d = df_d.iloc[-1]
+            
+            data_summary = f"""
 Mã cổ phiếu: {symbol}
 - Giá hiện tại: {last_d['Close']:.1f}k
 - Khung Ngày (D): CMF={last_d.get('CMF', 0):.2f}, RVOL={last_d.get('RVOL', 1):.2f}x, RSI={last_d.get('RSI', 50):.1f}
@@ -376,41 +380,42 @@ Mã cổ phiếu: {symbol}
 - Khung Tháng (M): Đỉnh={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy={df_m['Low'].min() if not df_m.empty else 0:.1f}k
 """
 
-        groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
-        if not groq_api_key:
-            return f"⚠️ Lỗi hệ thống: Biến môi trường GROQ_API_KEY chưa được cấu hình.\n\n{data_summary}"
+            groq_api_key = os.environ.get("GROQ_API_KEY", "").strip()
+            if not groq_api_key:
+                return f"⚠️ Lỗi hệ thống: Biến môi trường GROQ_API_KEY chưa được cấu hình.\n\n{data_summary}"
 
-        client = Groq(api_key=groq_api_key)
-        prompt = f"""
+            client = Groq(api_key=groq_api_key)
+            prompt = f"""
 Bạn là chuyên gia phân tích kỹ thuật chứng khoán. Dựa vào dữ liệu của mã {symbol}:
 {data_summary}
 
-Hãy viết một bản phân tích ngắn gọn, sắc bén gồm 3 phần:
-
-1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN):
-(Đánh giá chu kỳ hiện tại: tích lũy, rũ bỏ hay đẩy giá).
-
-2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY):
-(Vị thế giá macro so với dòng tiền ngắn hạn).
-
-3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP:
-(Ý đồ qua khối lượng RVOL và biến động giá, lời khuyên thực chiến).
+Hãy viết một bản phân tích cực kỳ chi tiết, sắc bén gồm các phần:
+1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN)
+2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY)
+3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP & HÀNH VI TRONG PHIÊN
+4. KỊCH BẢN THỰC CHIẾN & QUẢN TRỊ RỦI RO
 
 YÊU CẦU BẮT BUỘC: 
 - KHÔNG sử dụng bất kỳ thẻ HTML nào ngoại trừ cặp thẻ <b> và </b> cho tiêu đề hoặc từ khóa quan trọng. 
-- TUYỆT ĐỐI KHÔNG dùng ký tự < hoặc > đơn lẻ trong văn bản (ví dụ nếu viết nhỏ hơn hãy dùng chữ "dưới").
-- Không dùng dấu sao (**).
+- TUYỆT ĐỐI KHÔNG dùng ký tự < hoặc > đơn lẻ trong văn bản.
+- Không dùng dấu sao (**). Viết trọn vẹn, không cắt cụt câu.
 """
 
-        completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=900
-        )
-        return completion.choices[0].message.content
-    except Exception as e:
-        return f"❌ Lỗi xử lý Groq AI: {str(e)}"
+            completion = client.chat.completions.create(
+                model="openai/gpt-oss-120b",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1500
+            )
+            return completion.choices[0].message.content
+
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2
+                continue
+            else:
+                return f"❌ Lỗi kết nối AI sau {max_retries} lần thử: {str(e)}"
 
 # ==========================================
 # 2. HÀM PHÂN TÍCH KỸ THUẬT & SMC GỐC
@@ -431,7 +436,6 @@ def analyze_stock(symbol, resolution="D", count=200):
     cmf = last.get("CMF", 0.0)
     rvol = last.get("RVOL", 1.0)
     sma200 = last.get("SMA200", close)
-    adx = last.get("ADX", 25.0)
 
     span_a = last.get("Senkou_Span_A", close)
     span_b = last.get("Senkou_Span_B", close)
@@ -766,7 +770,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Lỗi tải tin: {html.escape(str(e))}", parse_mode="HTML")
 
 # ==========================================
-# 🆕 LỆNH GỘP MỚI DUY NHẤT: /phantich (hoặc /pt)
+# LỆNH GỘP /phantich (hoặc /pt) - CÓ CHIA NHỎ TIN NHẮN
 # ==========================================
 async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -787,19 +791,32 @@ async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         loop = asyncio.get_running_loop()
         ai_report = await loop.run_in_executor(executor, get_groq_comprehensive_analysis, symbol)
         
-        # 🛡️ BỘ LỌC AN TOÀN: Loại bỏ thẻ <br> / <br/> để không bao giờ bị lỗi Telegram
         cleaned_report = ai_report.replace("<br>", "\n").replace("<br/>", "\n").replace("<BR>", "\n")
-        
         full_report = f"🎯 <b>BẢN TIN PHÂN TÍCH CHUYÊN SÂU AI: {symbol}</b>\n====================================\n\n" + cleaned_report
+        chat_id = update.effective_chat.id
         
-        keyboard = [
-            [
-                InlineKeyboardButton("📊 Xem Biểu Đồ Kỹ Thuật", callback_data=f"{symbol}|D|200"),
-                InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")
+        if len(full_report) > 3900:
+            chunks = [full_report[i:i+3900] for i in range(0, len(full_report), 3900)]
+            await msg.edit_text(chunks[0], parse_mode="HTML")
+            for chunk in chunks[1:]:
+                await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode="HTML")
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("📊 Xem Biểu Đồ Kỹ Thuật", callback_data=f"{symbol}|D|200"),
+                    InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")
+                ]
             ]
-        ]
-        
-        await msg.edit_text(full_report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML", disable_web_page_preview=True)
+            await context.bot.send_message(chat_id=chat_id, text="📌 <b>Hành động tiếp theo:</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        else:
+            keyboard = [
+                [
+                    InlineKeyboardButton("📊 Xem Biểu Đồ Kỹ Thuật", callback_data=f"{symbol}|D|200"),
+                    InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}")
+                ]
+            ]
+            await msg.edit_text(full_report, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML", disable_web_page_preview=True)
+
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi phân tích AI: {html.escape(str(e))}", parse_mode="HTML")
 
@@ -830,7 +847,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # ⚡ PHẢN HỒI NGAY LẬP TỨC CHO TELEGRAM ĐỂ BỎ VÒNG QUAY TẢI MÀU XÁM Ở NÚT BẤM
     await query.answer()
     data = query.data
 
@@ -856,8 +872,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = data.split("|")
     if len(parts) == 3:
         symbol, resolution, count = parts[0], parts[1], int(parts[2])
-        
-        # 🚀 GỬI NGAY TIN NHẮN THÔNG BÁO TRẠNG THÁI ĐANG XỬ LÝ
         msg = await query.message.reply_text(f"⚡ Đang tải dữ liệu khung {resolution} của <b>{symbol.upper()}</b>...", parse_mode="HTML")
         try:
             loop = asyncio.get_running_loop()
@@ -926,7 +940,7 @@ def run_scheduled_auto_scan(application):
             time.sleep(60)
 
 # ==========================================
-# 6. SERVER & CHẠY BOT
+# 6. SERVER & CHẠY BOT (CÓ TÍCH HỢP HÀM ĐÁNH THỨC RENDER MỖI 3 GIÂY)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -935,10 +949,28 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Quant Pro Bot Running!")
 
 def run_http_server():
-    HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 8080))), SimpleHTTPRequestHandler).serve_forever()
+    server_port = int(os.environ.get("PORT", 8080))
+    HTTPServer(("0.0.0.0", server_port), SimpleHTTPRequestHandler).serve_forever()
+
+def render_awakener_daemon():
+    """Hàm tự động ping HTTP chính mình mỗi 3 giây để đánh thức Render không bị ngủ đông"""
+    port = os.environ.get("PORT", "8080")
+    # Lấy URL Render từ biến môi trường nếu có, hoặc tự động trỏ về localhost
+    render_external_url = os.environ.get("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{port}")
+    
+    while True:
+        try:
+            requests.get(render_external_url, timeout=3)
+        except Exception:
+            pass
+        time.sleep(3)
 
 if __name__ == "__main__":
+    # Khởi chạy HTTP Server
     threading.Thread(target=run_http_server, daemon=True).start()
+    
+    # ⚡ KHỞI CHẠY TIẾN TRÌNH ĐÁNH THỨC RENDER MỖI 3 GIÂY
+    threading.Thread(target=render_awakener_daemon, daemon=True).start()
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
@@ -964,5 +996,5 @@ if __name__ == "__main__":
 
     threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
 
-    print("🚀 Bot Quant Trading Pro đã tích hợp Groq AI phân tích toàn diện thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp Groq AI và Auto-Awakener (3s/lần) thành công!")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
