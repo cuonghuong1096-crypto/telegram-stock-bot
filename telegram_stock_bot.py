@@ -109,7 +109,7 @@ def load_portfolios():
 USER_PORTFOLIOS = load_portfolios()
 
 # ==========================================
-# 1. HÀM CALL DATA ĐÃ NÂNG CẤP XỬ LÝ AN TOÀN ĐA KHUNG
+# 1. HÀM CALL DATA & CHỈ BÁO NÂNG CAO (ICHIMOKU, MACD, BB, ATR, RS)
 # ==========================================
 def fetch_stock_data(symbol, resolution="D", count=150):
     symbol = symbol.upper().strip()
@@ -125,7 +125,7 @@ def fetch_stock_data(symbol, resolution="D", count=150):
         api_res = "60"
         lookback_days = max(count * 2, 30)
     elif resolution in ["W", "M"]:
-        api_res = "D"  # Lấy khung ngày gốc rồi gộp lên W/M để đảm bảo dữ liệu đầy đủ
+        api_res = "D"
         lookback_days = 3650 if resolution == "M" else 1825
     else:
         api_res = "D"
@@ -172,35 +172,114 @@ def fetch_stock_data(symbol, resolution="D", count=150):
     return ret_df, None
 
 def calculate_indicators(df):
-    if df.empty or len(df) < 30:
+    if df.empty or len(df) < 55:
         return df
 
+    # 1. RSI (14)
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
+    # 2. Bollinger Bands (20, 2)
     df["BB_Middle"] = df["Close"].rolling(20).mean()
     bb_std = df["Close"].rolling(20).std()
     df["BB_Upper"] = df["BB_Middle"] + (bb_std * 2)
     df["BB_Lower"] = df["BB_Middle"] - (bb_std * 2)
 
+    # 3. MACD (12, 26, 9)
+    exp1 = df["Close"].ewm(span=12, adjust=False).mean()
+    exp2 = df["Close"].ewm(span=26, adjust=False).mean()
+    df["MACD_Line"] = exp1 - exp2
+    df["MACD_Signal"] = df["MACD_Line"].ewm(span=9, adjust=False).mean()
+    df["MACD_Hist"] = df["MACD_Line"] - df["MACD_Signal"]
+
+    # 4. ATR (Average True Range - 14)
+    high_low = df["High"] - df["Low"]
+    high_close = np.abs(df["High"] - df["Close"].shift())
+    low_close = np.abs(df["Low"] - df["Close"].shift())
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df["ATR"] = true_range.rolling(14).mean()
+
+    # 5. CMF & RVOL
     mf_multiplier = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / (df["High"] - df["Low"] + 1e-9)
     df["CMF"] = (mf_multiplier * df["Volume"]).rolling(20).sum() / (df["Volume"].rolling(20).sum() + 1e-9)
-
     df["Vol_SMA20"] = df["Volume"].rolling(20).mean()
     df["RVOL"] = df["Volume"] / (df["Vol_SMA20"] + 1e-9)
 
+    # 6. Đường trung bình
     df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["SMA50"] = df["Close"].rolling(50).mean()
     df["SMA200"] = df["Close"].rolling(200).mean()
 
+    # 7. ICHIMOKU KINKO HYO CHUYÊN SÂU
     df["Tenkan_sen"] = (df["High"].rolling(window=9).max() + df["Low"].rolling(window=9).min()) / 2
     df["Kijun_sen"] = (df["High"].rolling(window=26).max() + df["Low"].rolling(window=26).min()) / 2
     df["Senkou_Span_A"] = (df["Tenkan_sen"] + df["Kijun_sen"]) / 2
     df["Senkou_Span_B"] = (df["High"].rolling(window=52).max() + df["Low"].rolling(window=52).min()) / 2
 
     return df
+
+def calculate_relative_strength(df, symbol):
+    """Tính điểm Sức mạnh Tương đối (RS) so với VNINDEX trong 60 phiên gần nhất"""
+    try:
+        df_index, err = fetch_stock_data("VNINDEX", resolution="D", count=len(df))
+        if err or df_index.empty or len(df_index) < len(df):
+            return 50 # Mặc định trung bình
+        
+        # Hiệu suất cổ phiếu % trong khoảng thời gian
+        stock_perf = (df["Close"].iloc[-1] - df["Close"].iloc[0]) / df["Close"].iloc[0] * 100
+        index_perf = (df_index["Close"].iloc[-1] - df_index["Close"].iloc[0]) / df_index["Close"].iloc[0] * 100
+        
+        diff = stock_perf - index_perf
+        # Quy đổi ra điểm thang 100
+        rs_score = int(min(max(50 + (diff * 2), 10), 99))
+        return rs_score
+    except:
+        return 50
+
+def check_bull_trap(df):
+    """Phát hiện bẫy tăng giá giả (Bull Trap)"""
+    if len(df) < 5: return False
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    # Giá vượt đỉnh 10 phiên trước nhưng CMF âm và khối lượng không tương xứng
+    recent_high = df["High"].tail(10).max()
+    is_breakout = last["Close"] >= recent_high * 0.99
+    is_fakeout = is_breakout and (last.get("CMF", 0) < -0.02 or last.get("RVOL", 1) < 0.9)
+    return is_fakeout
+
+def calculate_volume_profile_detailed(df, bins=25):
+    if df.empty or len(df) < 20:
+        return 0, 0, 0, 0
+    sub_df = df.tail(50)
+    hist, bin_edges = np.histogram(sub_df["Close"], bins=bins, weights=sub_df["Volume"])
+    poc_idx = np.argmax(hist)
+    poc = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
+    
+    total_vol = np.sum(hist)
+    target_vol = total_vol * 0.70
+    current_vol = hist[poc_idx]
+    left = poc_idx
+    right = poc_idx
+    
+    while current_vol < target_vol:
+        added = False
+        if right < len(hist) - 1:
+            right += 1
+            current_vol += hist[right]
+            added = True
+        if left > 0:
+            left -= 1
+            current_vol += hist[left]
+            added = True
+        if not added:
+            break
+            
+    val = bin_edges[left]
+    vah = bin_edges[right + 1]
+    return round(poc, 2), round(vah, 2), round(val, 2), round(bin_edges[0], 2)
 
 def calculate_smc_structures(df):
     if df.empty or len(df) < 20:
@@ -257,15 +336,6 @@ def calculate_position_size_1pct(entry_price, stop_loss_price, total_nav_vnd=DEF
     suggested_qty = max(suggested_qty, 100)
     actual_risk_pct_nav = ((suggested_qty * (entry_price - stop_loss_price) * 1000) / total_nav_vnd) * 100
     return suggested_qty, round(actual_risk_pct_nav, 2)
-
-def calculate_volume_profile(df, bins=20):
-    if df.empty or len(df) < 20:
-        return 0, 0, 0
-    sub_df = df.tail(40)
-    hist, bin_edges = np.histogram(sub_df["Close"], bins=bins, weights=sub_df["Volume"])
-    poc_idx = np.argmax(hist)
-    poc = (bin_edges[poc_idx] + bin_edges[poc_idx + 1]) / 2
-    return poc, bin_edges[-1], bin_edges[0]
 
 def check_vnindex_health():
     now_ts = time.time()
@@ -352,7 +422,7 @@ def get_latest_stock_news(symbol):
         return f"❌ Lỗi Groq AI tin tức: {html.escape(str(e))}"
 
 # ==========================================
-# HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI (CÓ THỬ LẠI KHI LỖI KẾT NỐI)
+# HÀM PHÂN TÍCH ĐA KHUNG VÀ ĐỌC VỊ BẰNG GROQ AI
 # ==========================================
 def get_groq_comprehensive_analysis(symbol):
     symbol = symbol.upper().strip()
@@ -370,11 +440,14 @@ def get_groq_comprehensive_analysis(symbol):
 
             df_d = calculate_indicators(df_d)
             last_d = df_d.iloc[-1]
+            rs_score = calculate_relative_strength(df_d, symbol)
             
             data_summary = f"""
 Mã cổ phiếu: {symbol}
 - Giá hiện tại: {last_d['Close']:.1f}k
+- Sức mạnh tương đối (RS Rating): {rs_score}/100
 - Khung Ngày (D): CMF={last_d.get('CMF', 0):.2f}, RVOL={last_d.get('RVOL', 1):.2f}x, RSI={last_d.get('RSI', 50):.1f}
+- Ichimoku (D): Tenkan={last_d.get('Tenkan_sen', 0):.1f}, Kijun={last_d.get('Kijun_sen', 0):.1f}, SpanA={last_d.get('Senkou_Span_A', 0):.1f}, SpanB={last_d.get('Senkou_Span_B', 0):.1f}
 - Biên độ dao động gần nhất (D): Cao nhất={df_d['High'].tail(10).max():.1f}k, Thấp nhất={df_d['Low'].tail(10).min():.1f}k
 - Khung Tuần (W): {df_w['Close'].tail(12).tolist() if not df_w.empty else 'N/A'}
 - Khung Tháng (M): Đỉnh={df_m['High'].max() if not df_m.empty else 0:.1f}k, Đáy={df_m['Low'].min() if not df_m.empty else 0:.1f}k
@@ -386,17 +459,17 @@ Mã cổ phiếu: {symbol}
 
             client = Groq(api_key=groq_api_key)
             prompt = f"""
-Bạn là chuyên gia phân tích kỹ thuật chứng khoán. Dựa vào dữ liệu của mã {symbol}:
+Bạn là chuyên gia phân tích kỹ thuật chứng khoán. Dựa vào dữ liệu và hệ thống bộ lọc nâng cao của mã {symbol}:
 {data_summary}
 
 Hãy viết một bản phân tích cực kỳ chi tiết, sắc bén gồm các phần:
-1. ĐỐI CHIẾU VÒNG LẶP & CẤU TRÚC NẾN (KHUNG TUẦN)
-2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY)
-3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP & HÀNH VI TRONG PHIÊN
+1. ĐỐI CHIẾU VÒNG LẶP & MÂY ICHIMOKU (KHUNG TUẦN & NGÀY)
+2. BẢN ĐỐI CHIẾU ĐA KHUNG (THÁNG vs NGÀY) & CHỈ SỐ RS
+3. ĐỌC VỊ MÁNH KHÓE TẠO LẬP & HÀNH VI TRONG PHIÊN (BẪY GIÁ / TRAP)
 4. KỊCH BẢN THỰC CHIẾN & QUẢN TRỊ RỦI RO
 
 YÊU CẦU BẮT BUỘC: 
-- KHÔNG sử dụng bất kỳ thẻ HTML nào ngoại trừ cặp thẻ <b> và </b> cho tiêu đề hoặc từ khóa quan trọng. 
+- KHÔNG sử dụng bất kỳ thẻ HTML nào ngoại trừ cặp thẻ <b> dan </b> cho tiêu đề hoặc từ khóa quan trọng. 
 - TUYỆT ĐỐI KHÔNG dùng ký tự < hoặc > đơn lẻ trong văn bản.
 - Không dùng dấu sao (**). Viết trọn vẹn, không cắt cụt câu.
 """
@@ -418,7 +491,7 @@ YÊU CẦU BẮT BUỘC:
                 return f"❌ Lỗi kết nối AI sau {max_retries} lần thử: {str(e)}"
 
 # ==========================================
-# 2. HÀM PHÂN TÍCH KỸ THUẬT & SMC GỐC
+# 2. HÀM PHÂN TÍCH KỸ THUẬT & VẼ BIỂU ĐỒ 2 TẦNG (TÍCH HỢP ICHIMOKU & RS & TRAP DETECTOR)
 # ==========================================
 def analyze_stock(symbol, resolution="D", count=200):
     def fmt(p): return f"{p:.1f}k"
@@ -430,19 +503,27 @@ def analyze_stock(symbol, resolution="D", count=200):
     df = calculate_indicators(df)
     smc = calculate_smc_structures(df)
     mkt_health = check_vnindex_health()
+    rs_score = calculate_relative_strength(df, symbol)
+    is_trap = check_bull_trap(df)
 
     last = df.iloc[-1]
     close = last["Close"]
     cmf = last.get("CMF", 0.0)
     rvol = last.get("RVOL", 1.0)
+    rsi = last.get("RSI", 50.0)
+    atr = last.get("ATR", close * 0.03)
+    macd = last.get("MACD_Line", 0.0)
+    macd_signal = last.get("MACD_Signal", 0.0)
     sma200 = last.get("SMA200", close)
 
+    tenkan = last.get("Tenkan_sen", close)
+    kijun = last.get("Kijun_sen", close)
     span_a = last.get("Senkou_Span_A", close)
     span_b = last.get("Senkou_Span_B", close)
     cloud_top = max(span_a, span_b)
     cloud_bottom = min(span_a, span_b)
 
-    poc, vah, val = calculate_volume_profile(df)
+    poc, vah, val, _ = calculate_volume_profile_detailed(df)
     
     is_near_sma200 = (close >= sma200 * 0.97) and (close < sma200)
     is_downtrend_heavy = (close < sma200) and not (is_near_sma200 and cmf > 0.03)
@@ -450,19 +531,30 @@ def analyze_stock(symbol, resolution="D", count=200):
     confluence_points = []
     score = 50
 
-    if close > cloud_top: score += 20; confluence_points.append("Giá nằm trên mây Kumo")
-    elif close >= cloud_bottom: score += 10; confluence_points.append("Giá trong mây Kumo")
-    else: confluence_points.append("⚠️ Giá nằm dưới mây Kumo")
+    # Chấm điểm dựa trên các bộ lọc nâng cao
+    if rs_score >= 75: score += 15; confluence_points.append(f"⭐ Sức mạnh RS vượt trội ({rs_score}/100)")
+    elif rs_score >= 50: score += 5; confluence_points.append(f"RS trung bình ({rs_score}/100)")
+    else: score -= 10; confluence_points.append(f"⚠️ Sức mạnh RS yếu ({rs_score}/100)")
+
+    if is_trap: 
+        score -= 25; confluence_points.append("🚨 CẢNH BÁO BẪY TĂNG GIÁ (BULL TRAP)")
+
+    if close > cloud_top: 
+        score += 15; confluence_points.append("☁️ Giá vượt trên mây Kumo")
+    elif close >= cloud_bottom: 
+        score += 8; confluence_points.append("☁️ Giá nằm trong mây Kumo")
+    else: 
+        score -= 10; confluence_points.append("⚠️ Giá nằm dưới mây Kumo")
+        
+    if tenkan > kijun:
+        score += 10; confluence_points.append("⚔️ Tenkan cắt lên Kijun")
     
+    if macd > macd_signal: score += 10; confluence_points.append(f"MACD cắt lên tín hiệu")
     if smc["has_ob"]: score += 10; confluence_points.append(f"🔥 [Order Block tại {fmt(smc['ob_price'])}]")
     if smc["has_liquidity_sweep"]: score += 15; confluence_points.append("🎯 [Quét thanh khoản rút chân]")
     
     if cmf > 0.03: score += 15; confluence_points.append(f"Dòng tiền lớn CMF mạnh ({cmf:.2f})")
     elif cmf < -0.1: score -= 20; confluence_points.append(f"🚨 Dòng tiền rút ròng ({cmf:.2f})")
-
-    if is_downtrend_heavy and cmf < 0:
-        score = min(score, 40)
-        confluence_points.append("🛡️ [Khiên chống Downtrend]")
 
     confidence_score = min(max(int(score * mkt_health["score_modifier"]), 10), 90)
 
@@ -471,11 +563,11 @@ def analyze_stock(symbol, resolution="D", count=200):
     entry_avg = (entry_1 + entry_2) / 2
     
     recent_swing_low = df["Low"].tail(10).min()
-    stop_loss = round(min(entry_avg * 0.93, recent_swing_low * 0.98), 2)
+    stop_loss = round(min(entry_avg - (1.5 * atr), recent_swing_low * 0.98), 2)
     sug_qty, _ = calculate_position_size_1pct(entry_avg, stop_loss)
     ob_title, _, _ = check_ob_confirmation_type(df, smc)
 
-    if confidence_score >= 65 and not is_downtrend_heavy:
+    if confidence_score >= 65 and not is_downtrend_heavy and not is_trap:
         system_status = "ĐÈN XANH: MỞ MUA / TĂNG GA"
         driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Cao tốc thông thoáng, CMF > 0. <b>ĐẠP GA MẠNH</b>."
         final_icon = f"🟢 <b>NÊN MUA (Độ tin cậy: {confidence_score}%)</b>"
@@ -487,18 +579,21 @@ def analyze_stock(symbol, resolution="D", count=200):
         action_note = f"Đi chậm, quan sát hỗ trợ, Stoploss: <code>{fmt(stop_loss)}</code>."
     else:
         system_status = "ĐÈN ĐỎ: DỪNG XE / QUAN SÁT"
-        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Trượt dốc / Mất phanh. <b>TẤP LỀ NGHỈ NGƠI</b>."
+        driving_conclusion = "🛣️ <b>Trạng thái lái xe:</b> Trượt dốc / Cảnh báo bẫy. <b>TẤP LỀ NGHỈ NGƠI</b>."
         final_icon = f"🔴 <b>TẤP XE VÀO LỀ (Độ tin cậy: {confidence_score}%)</b>"
-        action_note = "Xu hướng giảm rủi ro cao. <b>Tuyệt đối đứng ngoài!</b>"
+        action_note = "Xu hướng rủi ro cao hoặc có bẫy giá. <b>Tuyệt đối đứng ngoài!</b>"
 
-    text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH KỸ THUẬT: {symbol.upper()}</b>\n"
+    text_part1 = f"📊 <b>BÁO CÁO PHÂN TÍCH QUANT & FILTERS: {symbol.upper()}</b>\n"
     text_part1 += f"🗓️ Ngày: {last['time'].strftime('%Y-%m-%d')} | Khung: {resolution} | Giá: {fmt(close)}\n"
+    text_part1 += f"⭐ RS Rating: <code>{rs_score}/100</code> | Trap Alert: <code>{'🚨 CÓ BẪY' if is_trap else '✅ An toàn'}</code>\n"
     text_part1 += f"🏛️ Thị trường: <b>{html.escape(mkt_health['note'])}</b>\n\n"
-    text_part1 += f"⛽ Dòng tiền CMF: <code>{cmf:.2f}</code> | RVOL: <code>{rvol:.2f}x</code>\n"
+    text_part1 += f"☁️ Ichimoku -> Tenkan: <code>{fmt(tenkan)}</code> | Kijun: <code>{fmt(kijun)}</code> | Mây: <code>{fmt(cloud_bottom)}-{fmt(cloud_top)}</code>\n"
+    text_part1 += f"⛽ CMF: <code>{cmf:.2f}</code> | RVOL: <code>{rvol:.2f}x</code> | RSI: <code>{rsi:.1f}</code> | ATR: <code>{atr:.2f}k</code>\n"
+    text_part1 += f"📦 Volume Profile -> POC: <code>{fmt(poc)}</code> | VAH: <code>{fmt(vah)}</code> | VAL: <code>{fmt(val)}</code>\n"
     text_part1 += f"🚛 Order Block: <code>{'Có (' + fmt(smc['ob_price']) + ')' if smc['has_ob'] else 'Chưa'}</code> | Trạng thái: <b>{ob_title}</b>\n"
     text_part1 += f"🏗️ Khuyến nghị: <b>{system_status}</b>\n• {action_note}\n\n"
 
-    text_part2 = f"⚡ <b>HỘI TỤ:</b> {'; '.join(confluence_points)}\n\n{driving_conclusion}\n\n🏁 {final_icon}"
+    text_part2 = f"⚡ <b>HỘI TỤ BỘ LỌC:</b> {'; '.join(confluence_points)}\n\n{driving_conclusion}\n\n🏁 {final_icon}"
 
     keyboard = [
         [
@@ -509,7 +604,7 @@ def analyze_stock(symbol, resolution="D", count=200):
         ],
         [
             InlineKeyboardButton("🛡️ Check Kỷ Luật Mua", callback_data=f"checkmua_cb|{symbol}"),
-            InlineKeyboardButton("🤖 AI Đọc Vị & Vòng Lặp", callback_data=f"pt_cb|{symbol}"),
+            InlineKeyboardButton("🤖 AI Phân Tích Toàn Diện", callback_data=f"pt_cb|{symbol}"),
         ],
         [
             InlineKeyboardButton("🎯 Lọc Đáy An Toàn", callback_data="run_dipbuy_callback"),
@@ -517,15 +612,40 @@ def analyze_stock(symbol, resolution="D", count=200):
         ]
     ]
 
-    fig, ax = plt.subplots(figsize=(9, 5), dpi=110)
-    ax.plot(df["time"], df["Close"], label="Giá đóng cửa", color="#111111", lw=1.3, zorder=3)
-    if "EMA20" in df.columns: ax.plot(df["time"], df["EMA20"], label="EMA 20", color="#ff7f0e", lw=1.1, alpha=0.85)
-    if "SMA200" in df.columns: ax.plot(df["time"], df["SMA200"], label="SMA 200", color="#d62728", lw=1.2, linestyle="-.", alpha=0.85)
-    ax.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.9, lw=1.2)
-    ax.set_title(f"Bản Đồ GPS Kỹ Thuật - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold", pad=10)
-    ax.legend(loc="upper left", fontsize=6.5, ncol=2, framealpha=0.8)
-    ax.grid(True, linestyle=":", alpha=0.4)
+    # VẼ BIỂU ĐỒ 2 TẦNG (TÍCH HỢP ICHIMOKU & CÁC VÙNG LỌC)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6.8), dpi=110, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
+    
+    ax1.plot(df["time"], df["Close"], label="Giá đóng cửa", color="#111111", lw=1.3, zorder=4)
+    ax1.plot(df["time"], df["Tenkan_sen"], label="Tenkan (9)", color="#00bcd4", lw=1.0, alpha=0.9)
+    ax1.plot(df["time"], df["Kijun_sen"], label="Kijun (26)", color="#e91e63", lw=1.1, alpha=0.9)
+    
+    ax1.plot(df["time"], df["Senkou_Span_A"], color="green", alpha=0.3, lw=0.8, label="Span A")
+    ax1.plot(df["time"], df["Senkou_Span_B"], color="red", alpha=0.3, lw=0.8, label="Span B")
+    ax1.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
+                     where=(df["Senkou_Span_A"] >= df["Senkou_Span_B"]), color="lightgreen", alpha=0.2, interpolate=True)
+    ax1.fill_between(df["time"], df["Senkou_Span_A"], df["Senkou_Span_B"], 
+                     where=(df["Senkou_Span_A"] < df["Senkou_Span_B"]), color="lightcoral", alpha=0.2, interpolate=True)
+
+    if "BB_Upper" in df.columns:
+        ax1.plot(df["time"], df["BB_Upper"], color="gray", linestyle="--", alpha=0.4, lw=0.7)
+        ax1.plot(df["time"], df["BB_Lower"], color="gray", linestyle="--", alpha=0.4, lw=0.7)
+
+    ax1.axhline(poc, color="purple", linestyle=":", label=f"POC: {fmt(poc)}", alpha=0.9, lw=1.2)
+    ax1.axhline(vah, color="blue", linestyle="--", label=f"VAH: {fmt(vah)}", alpha=0.5, lw=1.0)
+    ax1.axhline(val, color="green", linestyle="--", label=f"VAL: {fmt(val)}", alpha=0.5, lw=1.0)
+    
+    ax1.set_title(f"Bản Đồ GPS Quant & Ichimoku - {symbol.upper()} ({resolution})", fontsize=10, fontweight="bold", pad=8)
+    ax1.legend(loc="upper left", fontsize=5.5, ncol=3, framealpha=0.8)
+    ax1.grid(True, linestyle=":", alpha=0.4)
+
+    ax2.plot(df["time"], df["MACD_Line"], label="MACD", color="blue", lw=1)
+    ax2.plot(df["time"], df["MACD_Signal"], label="Signal", color="orange", lw=1)
+    ax2.bar(df["time"], df["MACD_Hist"], label="Histogram", color=np.where(df["MACD_Hist"] >= 0, 'green', 'red'), alpha=0.5, width=0.8)
+    ax2.legend(loc="upper left", fontsize=6, framealpha=0.8)
+    ax2.grid(True, linestyle=":", alpha=0.4)
+
     fig.autofmt_xdate()
+    plt.tight_layout()
 
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
@@ -544,15 +664,16 @@ def scan_super_stock(symbol):
         df_d = calculate_indicators(df_d)
         last_d = df_d.iloc[-1]
         close, sma200, cmf_d, rvol_d = last_d["Close"], last_d.get("SMA200", close), last_d.get("CMF", 0.0), last_d.get("RVOL", 1.0)
+        rs_score = calculate_relative_strength(df_d, symbol)
         if close < sma200 and not ((close >= sma200 * 0.97) and cmf_d > 0.03): return None
-        if cmf_d < 0.03 or rvol_d < 1.2: return None
+        if cmf_d < 0.03 or rvol_d < 1.2 or rs_score < 60: return None
         smc = calculate_smc_structures(df_d)
         entry_price = round(close, 2)
         stop_loss = round(min(entry_price * 0.93, df_d["Low"].tail(10).min() * 0.98), 2)
         sug_qty, _ = calculate_position_size_1pct(entry_price, stop_loss)
-        score = 50 + (15 if smc["has_ob"] else 0) + (20 if smc["has_liquidity_sweep"] else 0) + (15 if cmf_d > 0.05 else 0)
+        score = 50 + (15 if smc["has_ob"] else 0) + (20 if smc["has_liquidity_sweep"] else 0) + (15 if cmf_d > 0.05 else 0) + (10 if rs_score >= 75 else 0)
         if score >= 70:
-            return {"symbol": symbol, "close": close, "score": min(score, 98), "entry": entry_price, "stop_loss": stop_loss, "cmf": round(cmf_d, 2), "rvol": round(rvol_d, 2), "suggested_qty": sug_qty}
+            return {"symbol": symbol, "close": close, "score": min(score, 98), "rs": rs_score, "entry": entry_price, "stop_loss": stop_loss, "cmf": round(cmf_d, 2), "rvol": round(rvol_d, 2), "suggested_qty": sug_qty}
     except Exception: pass
     return None
 
@@ -595,7 +716,7 @@ def scan_single_dip_stock(symbol):
     close, cmf, sma200 = last["Close"], last.get("CMF", 0.0), last.get("SMA200", last["Close"])
     if close < sma200 * 0.95 or cmf <= 0: return None
     smc = calculate_smc_structures(df)
-    poc, _, _ = calculate_volume_profile(df)
+    poc, _, _, _ = calculate_volume_profile_detailed(df)
     recent_high = df["High"].tail(15).max()
     drop_pct = ((recent_high - close) / recent_high) * 100
     if drop_pct >= 4.0 and (close <= poc * 1.02 or smc["has_ob"] or smc["has_liquidity_sweep"]):
@@ -637,7 +758,7 @@ async def run_sector_flow_screener_with_progress(msg):
 # ==========================================
 
 async def sieuco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await (update.message or update.callback_query.message).reply_text("🚀 Đang quét Siêu Cổ Phiếu...", parse_mode="HTML")
+    msg = await (update.message or update.callback_query.message).reply_text("🚀 Đang quét Siêu Cổ Phiếu (Tích hợp RS & Mây)...", parse_mode="HTML")
     try:
         picks = await run_super_stock_screener_with_progress(msg)
         if not picks:
@@ -645,7 +766,7 @@ async def sieuco_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         text = "🚀 <b>DANH SÁCH SIÊU CỔ PHIẾU BỨT PHÁ</b>\n====================================\n\n"
         for i, it in enumerate(picks, 1):
-            text += f"{i}. 🔹 <b>{it['symbol']}</b> | Giá: <code>{it['close']}k</code> | Điểm: <code>{it['score']}%</code>\n   • Mua: <code>{it['entry']}k</code> | SL: <code>{it['stop_loss']}k</code> | Qty: <code>{it['suggested_qty']:,}</code>\n"
+            text += f"{i}. 🔹 <b>{it['symbol']}</b> | Giá: <code>{it['close']}k</code> | RS: <code>{it['rs']}/100</code>\n   • Mua: <code>{it['entry']}k</code> | SL: <code>{it['stop_loss']}k</code> | Qty: <code>{it['suggested_qty']:,}</code>\n"
         await msg.edit_text(text, parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi: {html.escape(str(e))}", parse_mode="HTML")
@@ -666,6 +787,8 @@ async def check_buy_discipline_command(update: Update, context: ContextTypes.DEF
             return
         df = calculate_indicators(df)
         smc = calculate_smc_structures(df)
+        rs_score = calculate_relative_strength(df, symbol)
+        is_trap = check_bull_trap(df)
         close = df.iloc[-1]["Close"]
         cmf = df.iloc[-1].get("CMF", 0.0)
         ob_price = smc["ob_price"] if smc["has_ob"] else 0
@@ -674,6 +797,8 @@ async def check_buy_discipline_command(update: Update, context: ContextTypes.DEF
         report = (
             f"📋 <b>CHECKLIST KỶ LUẬT MUA: {symbol}</b>\n====================================\n"
             f"• Giá: <code>{close:.1f}k</code>\n"
+            f"• Sức mạnh RS: <code>{rs_score}/100</code>\n"
+            f"• Cảnh báo Bẫy giá (Trap): <code>{'🚨 CÓ' if is_trap else '✅ Không'}</code>\n"
             f"• Thuộc Thùng Đặc: <code>{'✅' if symbol in WATCHLIST_SCAN else '❌'}</code>\n"
             f"• Sát vùng Order Block ({ob_price:.1f}k): <code>{'✅' if is_near_ob else '⚠️ Chưa sát'}</code>\n"
             f"• Dòng tiền CMF dương ({cmf:.2f}): <code>{'✅' if cmf > 0 else '❌'}</code>\n"
@@ -770,7 +895,7 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Lỗi tải tin: {html.escape(str(e))}", parse_mode="HTML")
 
 # ==========================================
-# LỆNH GỘP /phantich (hoặc /pt) - CÓ CHIA NHỎ TIN NHẮN
+# LỆNH GỘP /phantich (hoặc /pt)
 # ==========================================
 async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -785,7 +910,7 @@ async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     symbol = args[0].upper().strip()
-    msg = await target_msg.reply_text(f"🤖 <b>Groq AI đang phân tích toàn diện (Vòng lặp, Đa khung, Đọc vị nhà cái) cho {symbol}...</b>", parse_mode="HTML")
+    msg = await target_msg.reply_text(f"🤖 <b>Groq AI đang phân tích định lượng (Ichimoku, RS, Trap Detector) cho {symbol}...</b>", parse_mode="HTML")
     
     try:
         loop = asyncio.get_running_loop()
@@ -819,7 +944,6 @@ async def phantich_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         await msg.edit_text(f"❌ Lỗi phân tích AI: {html.escape(str(e))}", parse_mode="HTML")
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().upper()
@@ -900,8 +1024,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 <b>CHÀO MỪNG BẠN ĐẾN VỚI QUANT TRADING SYSTEM PRO!</b>\n\n"
         "1️⃣ <b>TRA CỨU NHANH:</b> Gửi mã cổ phiếu bất kỳ (VD: <code>TCB</code>, <code>HPG</code>)\n"
         "2️⃣ <b>KIỂM TRA KỶ LUẬT MUA:</b> Gõ <code>/checkmua TCB</code>\n"
-        "3️⃣ 🤖 <b>PHÂN TÍCH AI TOÀN DIỆN (GỘP ĐỘC QUYỀN):</b>\n"
-        "   └ Gõ <code>/phantich TCB</code> hoặc <code>/pt TCB</code> (AI tự động so khớp vòng lặp, đa khung và đọc vị nhà cái)\n"
+        "3️⃣ 🤖 <b>PHÂN TÍCH AI TOÀN DIỆN (ICHIMOKU, RS, TRAP FILTER):</b>\n"
+        "   └ Gõ <code>/phantich TCB</code> hoặc <code>/pt TCB</code>\n"
         "4️⃣ <b>BỘ LỌC TỰ ĐỘNG:</b>\n"
         "   ├ 🚀 /sieuco | 🎯 /dipbuy | 📈 /nangday\n"
         "   ├ 🤖 /autobuy | 🏢 /sectors | 🌍 /khoingoai\n"
@@ -910,37 +1034,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 # ==========================================
-# 5. TIẾN TRÌNH AUTO-SCAN CHẠY NGẦM
-# ==========================================
-def run_scheduled_auto_scan(application):
-    import pytz
-    vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
-    while True:
-        try:
-            now = datetime.datetime.now(vn_tz)
-            if (0 <= now.weekday() <= 3) and (now.hour == 15 and now.minute == 30):
-                if ACTIVE_CHAT_IDS:
-                    super_stocks = [scan_super_stock(s) for s in WATCHLIST_SCAN]
-                    super_stocks = [s for s in super_stocks if s]
-                    if super_stocks:
-                        sorted_picks = sorted(super_stocks, key=lambda x: x["score"], reverse=True)[:5]
-                        text = "🚨 <b>BẢN TIN AUTO-SCAN: TOP SIÊU CỔ PHIẾU</b>\n"
-                        for i, it in enumerate(sorted_picks, 1):
-                            text += f"{i}. 🔹 <b>{it['symbol']}</b> | Giá: <code>{it['close']}k</code>\n"
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        for cid in ACTIVE_CHAT_IDS:
-                            try: loop.run_until_complete(application.bot.send_message(chat_id=cid, text=text, parse_mode="HTML"))
-                            except: pass
-                        loop.close()
-                time.sleep(70)
-            else:
-                time.sleep(30)
-        except:
-            time.sleep(60)
-
-# ==========================================
-# 6. SERVER & CHẠY BOT (CÓ TÍCH HỢP HÀM ĐÁNH THỨC RENDER MỖI 3 GIÂY)
+# 5. SERVER & CHẠY BOT (CÓ TÍCH HỢP HÀM ĐÁNH THỨC RENDER MỖI 3 GIÂY)
 # ==========================================
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -955,7 +1049,6 @@ def run_http_server():
 def render_awakener_daemon():
     """Hàm tự động ping HTTP chính mình mỗi 3 giây để đánh thức Render không bị ngủ đông"""
     port = os.environ.get("PORT", "8080")
-    # Lấy URL Render từ biến môi trường nếu có, hoặc tự động trỏ về localhost
     render_external_url = os.environ.get("RENDER_EXTERNAL_URL", f"http://127.0.0.1:{port}")
     
     while True:
@@ -994,7 +1087,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    threading.Thread(target=run_scheduled_auto_scan, args=(app,), daemon=True).start()
-
-    print("🚀 Bot Quant Trading Pro đã tích hợp Groq AI và Auto-Awakener (3s/lần) thành công!")
+    print("🚀 Bot Quant Trading Pro đã tích hợp trọn bộ Ichimoku, RS Rating, Trap Detector và Auto-Awakener thành công!")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
